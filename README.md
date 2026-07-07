@@ -81,16 +81,17 @@ flowchart LR
 
 架构约束：
 
-- Gitea 只保存状态、权限、token 绑定、审计、日志元数据和 Runtime Metadata。
+- Gitea 只保存状态、权限、token 绑定、审计和日志元数据。
 - Codespace Manager 是运行侧唯一 Gitea 注册身份。
 - Codespace Gateway 属于 Codespace Manager deployment，不单独注册 Gitea 身份。
-- Runtime Instance 只调用 Codespace Manager Runtime HTTP API。
+- Runtime Instance 的 codespace 专用控制面 API 只调用 Codespace Manager Runtime HTTP API。
 - 用户 Endpoint / SSH 流量不经过 Gitea 代理。
 - Incus、Docker、镜像、资源规格、挂载、网络、DinD 都是 Codespace Manager 本地实现细节。
 - Gitea 与 Codespace Manager 之间只使用 ManagerService RPC。
 - Runtime HTTP API 只在 Manager 私有网络内开放。
 - Codespace Gateway 对用户暴露 Endpoint 与 SSH 入口。
-- Runtime Instance 不直接调用 Gitea。
+- Runtime Instance 可以访问 Gitea 标准数据面能力，例如 git HTTP/SSH、repository web URL 和其他非 codespace 专用入口。
+- Gitea 不接受 Runtime Instance 直接调用 codespace 专用内部接口。
 - Gateway 用户流量只在需要鉴权时回到 Gitea。
 - Endpoint upstream 只由 Codespace Gateway 和 Codespace Manager 解析。
 - Gitea 不保存 Endpoint upstream。
@@ -144,7 +145,7 @@ sequenceDiagram
 | Gitea Token | Gitea 签发给 Runtime Instance 做 git 访问的 access token。 |
 | Runtime Token | Codespace Manager 签发给 Runtime Instance 调用 Runtime HTTP API 的 token。 |
 | Manager Token | Codespace Manager 调用 ManagerService RPC 的长期凭据。 |
-| Runtime Metadata | Codespace Manager 上报并保存到 `codespace.meta_json` 的动态运行时信息。 |
+| Runtime Metadata | Codespace Manager 上报到 Gitea 本地 cache 的动态运行时信息。 |
 | Interactive Access | open Endpoint、SSH、resume。 |
 | Administrative Permission | 查看最小信息、日志、stop、delete。 |
 | State Finalization | Gitea 根据 operation 结果推导 codespace 主状态的服务逻辑。 |
@@ -471,8 +472,7 @@ Endpoint label：
 - 仅供 UI 展示。
 - 不参与查找、路由、授权、默认选择或审计身份。
 - trim 后长度为 1 到 64。
-- 只允许中文、英文字母、数字和空格。
-- 禁止 HTML 和控制字符。
+- 禁止控制字符。
 - UI 仍必须按普通文本 escape 后展示。
 
 默认 open：
@@ -503,7 +503,7 @@ Gateway Open Token 是：
 - opaque bearer token
 - 非 JWT
 - 不进入数据库
-- 以 token hash 写入 Gitea 共享 cache
+- 以 token hash 写入 Gitea 本地 cache
 - 绑定 `user_id / codespace_uuid / generation / endpoint_id / manager_uuid`
 
 签发算法：
@@ -518,11 +518,10 @@ token_hash = sha256(open_token)
 
 规则：
 
-- 多 Gitea 节点部署时必须使用共享 cache。
 - token 明文只出现在 `302 Location` 中，不写 DB、不写日志。
 - cache 写入前若 `token_hash` 冲突，必须重新生成。
 - hash 比较使用常量时间比较。
-- token 消费必须是原子 get-and-delete；cache 后端不支持原子删除时，必须用 per-token lock 实现同等语义。
+- token 消费通过本机锁串行化执行 `get -> validate -> delete`。
 
 Cache 结构：
 
@@ -535,7 +534,7 @@ ttl = OPEN_TOKEN_EXPIRE
 校验必须执行：
 
 1. 计算提交 token 的 hash。
-2. 原子 get-and-delete cache 记录。
+2. 在本机锁保护下读取并删除 cache 记录。
 3. 校验过期时间。
 4. 校验调用方 Manager 身份等于 `manager_uuid`。
 5. 重新读取 codespace。
@@ -544,6 +543,7 @@ ttl = OPEN_TOKEN_EXPIRE
 8. 校验用户仍具备 Interactive Access。
 9. 校验 Endpoint 仍存在于当前 Runtime Metadata。
 10. 校验 Manager 仍在线。
+11. 校验 Manager 未被 disabled。
 
 成功返回：
 
@@ -556,6 +556,12 @@ manager_uuid
 ```
 
 Cache 丢失即 token 失效，用户必须重新从 Gitea 发起 open。
+
+Gateway session 规则：
+
+- Gateway 必须维护 `codespace_uuid -> live sessions` 的本地索引。
+- open 建立的 HTTP/WebSocket/IDE 会话在 `stop`、`delete`、Manager disabled、repo access lost、user access lost 后必须被 Gateway 主动关闭。
+- 上述条件发生后，Gateway 同时拒绝该 codespace 的新 open。
 
 ## SSH 设计
 
@@ -607,7 +613,7 @@ Gateway 终止外部 SSH 并重建内部 SSH，不采用纯 TCP forwarding，也
 - `tcpip-forward`
 - `cancel-tcpip-forward`
 
-SSH forwarding 属于 SSH 会话能力，不写回 `meta_json.endpoints`。
+SSH forwarding 属于 SSH 会话能力，不写入 Runtime Metadata `endpoints`。
 
 ## SSH 认证 RPC
 
@@ -686,6 +692,7 @@ Gitea 校验：
 - 创建用户当前允许登录。
 - 满足站点 2FA 要求。
 - repository access precondition 仍通过。
+- 绑定 Manager 当前在线且未被 disabled。
 - 密码认证被该 codespace 允许。
 - 本地密码和 TOTP 使用 Gitea 现有校验与消费逻辑。
 - 公钥通过 Gitea 现有 SSH key 模型归属于创建用户。
@@ -693,6 +700,12 @@ Gitea 校验：
 Gateway 必须至少按 source IP、`ssh_user`、`codespace_uuid` 做限流和退避。Gitea 不新增通用 rate limiter。
 
 Gitea 可以向 Gateway 返回失败分类用于审计和退避。Gateway 对 SSH client 只能返回统一认证失败。
+
+SSH session 规则：
+
+- Gateway 必须维护 `codespace_uuid -> live SSH sessions` 的本地索引。
+- 已建立 SSH 会话在 `stop`、`delete`、Manager disabled、repo access lost、user access lost 后必须被 Gateway 主动断开。
+- 上述条件发生后，Gateway 同时拒绝新的 SSH 认证与会话建立。
 
 ## 内部 SSH
 
@@ -798,6 +811,12 @@ GITEA_BASE_REPO_CLONE_URL
 GITEA_BASE_REPO_WEB_URL
 GITEA_HEAD_REPO_CLONE_URL
 GITEA_HEAD_REPO_WEB_URL
+GITEA_REPO_ID
+GITEA_REPO_FULL_NAME
+GITEA_OWNER_ID
+GITEA_OWNER_NAME
+GITEA_OWNER_TYPE
+GITEA_OWNER_DISPLAY_NAME
 GITEA_REF_TYPE
 GITEA_REF_NAME
 GITEA_COMMIT_SHA
@@ -861,6 +880,16 @@ gitea-codespace serve
 4. Manager 将凭据保存到本地配置。
 5. `gitea-codespace serve` 使用该凭据调用后续所有 RPC。
 
+registration token 设计：
+
+- registration token 不建数据库表。
+- registration token 只写入 Gitea 本地 cache。
+- key：`codespace:manager-reg-token:{token_hash}`
+- value：`owner_id + repo_id + created_by + expires_unix`
+- ttl：`REGISTRATION_TOKEN_EXPIRE`
+- 消费时通过本机锁串行化执行 `get -> validate -> delete`。
+- Gitea 重启后，所有未消费的 registration token 失效，需要重新生成。
+
 注册 scope：
 
 - `global`：站点管理员
@@ -878,14 +907,13 @@ repo_id
 gateway_url
 gateway_ssh_addr
 gateway_internal_ssh_public_key
-status
+admin_state=enabled|disabled
 capacity_total
 capacity_available
 token_hash
 token_salt
 tags_json
 last_online_unix
-last_active_unix
 created_by
 created_unix
 updated_unix
@@ -899,6 +927,7 @@ Scope 规则：
 - `owner_id=0 && repo_id>0`：repo
 - `owner_id>0 && repo_id>0` 非法
 - 不设计单独的 Manager binding 表
+- `admin_state` 只表达管理态，不表达在线态；在线态由 `last_online_unix` 和 timeout 推导。
 
 Declare 必须声明：
 
@@ -996,7 +1025,9 @@ ReportInstances
 `DeclareManager`：
 
 - 更新 Manager 版本、gateway 地址、tags、capacity、内部 SSH 公钥和诊断 metadata。
-- 更新 `last_online_unix` 与 `last_active_unix`。
+- 更新 `last_online_unix`。
+- `DeclareManager` 同时承担 heartbeat。
+- Manager 必须周期调用 `DeclareManager`；心跳间隔必须严格小于 `MANAGER_OFFLINE_TIMEOUT`，建议不超过其三分之一。
 
 `FetchOperation`：
 
@@ -1020,8 +1051,10 @@ ReportInstances
 
 `ReportRuntimeMetadata`：
 
-- 只写 Runtime Metadata 到 `codespace.meta_json`。
+- 只写 Runtime Metadata 到本地 cache。
 - 永远不写主状态。
+- Manager 启动后必须为所有仍由自己持有且处于 `booting|running|stopping|resuming` 的 codespace 重建 Runtime Metadata cache。
+- Manager 运行期间必须周期刷新 active codespace 的 Runtime Metadata cache，避免 Gitea 重启或本地 cache 丢失后长期失去交互能力。
 
 `RequestGiteaToken`：
 
@@ -1129,7 +1162,7 @@ delete failed: deleting -> error
 - stop timeout：`stopping -> error`
 - delete timeout：`deleting -> error`
 
-stop/delete/error 时吊销 active Gitea Token。
+进入 `stopping`、`deleting`、`error` 的同一事务里吊销 active Gitea Token。
 
 ## State Reconciliation
 
@@ -1254,38 +1287,55 @@ PUT  /api/runtime/v1/internal-ssh
 - `endpoint_id` 由 Manager 上报并保证在同一 `codespace_uuid + generation` 内唯一。
 - 不同 codespace 或不同 generation 可以使用相同 `endpoint_id`。
 - `label` 只用于 UI 展示，可以重复，不能作为路由键。
-- 只要所属 Manager 在线，Gitea 即信任当前 `meta_json.endpoints`。
+- Runtime Metadata 不持久化到数据库，只保存在 Gitea 本地 cache。
+- key：`codespace:runtime-meta:{codespace_uuid}:{generation}`
+- value：当前 generation 的 `endpoints + internal_ssh + boot + resource_usage + last_reported_unix`
+- ttl：`MANAGER_OFFLINE_TIMEOUT * 2`
+- 只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。
+- Gitea 重启或本地 cache 丢失后，Runtime Metadata 必须由 Manager 重建。
 - Manager 离线时，不允许新的 Endpoint 打开动作。
 - Manager 离线时，不允许新的 SSH 接入。
 - resource usage 是可选展示信息。
 - 缺失 resource usage 时显示 `unavailable`。
-- Runtime Metadata 不保存历史。
+- Runtime Metadata 不保存历史，cache miss 只影响交互与展示，不直接推进主状态。
 
 ## Gitea Token
 
 Codespace Gitea Token 复用 Gitea 现有 `access_token` 模型。
 
-当前 Gitea access token scope 是 category 级，例如 `read:repository`、`write:repository`，不是 repository 级 scope。Codespace 不新增通用细粒度 repo-scoped token。
+设计依据：
+
+- 参考 Gitea Actions 的 token 认证与 repository 绑定模型，而不是新增新的通用 token 类型。
+- Actions 现有实现先把 task token 识别为内部 actor，再在 repository 权限判定阶段按 `task.RepoID` 校验目标 repository；同 repo 允许正常权限，跨 repo 再按额外限制收紧。
+- Codespace 采用同类设计：继续复用现有 `access_token` 与 `write:repository` scope，再增加 `codespace.repo_id` 绑定校验，而不是扩展 repository 级 scope。
+- 这样做的原因是 Gitea 现有 access token scope 只有 category 级，没有单仓库语义；把“能做 repository 类操作”和“只能访问哪个 repository”拆开，才能在不扩展通用 token 系统的前提下得到可执行且可审计的边界。
+
+当前 Gitea access token scope 是 category 级，例如 `write:repository`，不是 repository 级 scope。Codespace 不新增通用细粒度 repo-scoped token。
 
 规则：
 
 - token 归属于 codespace 创建用户。
-- token 使用现有最小 repository category scope：
-  - 只读访问：`read:repository`
-  - 创建用户有写权限且需要 push 时：`write:repository`
+- 所有 codespace token 统一签发 `write:repository`。
+- 这是 repository 类能力开关，不表达单仓库范围，也不提升创建用户原有 repository 权限。
 - `codespace.gitea_token_id` 指向当前 active access token。
-- `codespace.repo_id` 是额外 repository binding。
+- `codespace.repo_id` 是唯一 repository binding。
 - Git HTTP/SSH 认证链路必须识别 codespace-bound token。
-- codespace-bound token 只能访问 `codespace.repo_id`。
-- 访问其他 repository 时即使 token scope 正常允许，也必须拒绝。
+- repository 访问只在现有支持 token/basic auth 的入口做 repo binding 校验。
+- 最小必需入口是：git HTTP、git SSH、API v1 repository routes，以及显式启用 `AllowBasic`/`AllowOAuth2` 的 repository HTTP 路径。
+- 上述入口在 scope 校验外，必须额外校验 `target_repo_id == codespace.repo_id`。
+- codespace-bound token 只能访问 `codespace.repo_id`；访问其他 repository 时即使 token scope 正常允许，也必须拒绝。
+- codespace token 不授予 `read:user`、`read:organization` 或其他非 repository scope。
+- Runtime 需要的 owner/org 展示信息由 Gitea 在 create/resume 时作为只读环境变量注入，不通过 codespace token 调用通用 user/org API。
 - 每次 create/resume 都替换 token。
 - stop/delete/error/source repo 删除/user 删除时吊销 token。
-- stopped、deleting、error 状态不允许申请新 token。
+- 只有 `booting`、`running`、`resuming` 允许持有 active token；`stopped`、`deleting`、`error` 不允许申请或继续使用 token。
 
 删除保护：
 
 - 被 `codespace.gitea_token_id` 引用的 access token 不允许手动删除。
 - 用户设置页和 API token 列表必须展示该 token 被 codespace 使用。
+- 这是对现有 Gitea access token 管理页与 API 的 codespace 定制扩展，不引入新的通用 token 子系统。
+- UI/API 必须能显示该 token 当前被哪个 codespace 占用。
 - 手动删除返回：
   - Web：提示先 stop/delete 对应 codespace。
   - API：`409 Conflict`。
@@ -1366,34 +1416,17 @@ Manager 删除：
 - 名称每次展示时解析。
 - `ssh_user` 创建后不随重命名变化。
 - create/resume operation payload 使用当时当前名称重新生成 clone/web URL。
-- 显示缓存可以放入 `meta_json`，但不能参与权限、路由、删除检查或 Manager Selection。
+- 显示缓存和 runtime 动态数据不持久化到数据库。
 
 ## 数据模型
 
 最小表集合：
 
 - `codespace_manager`
-- `codespace_manager_registration_token`
 - `codespace`
 - `codespace_operation`
 
 不为 Endpoint、port、Runtime Token、Git token、Gateway Open Token、quota counter、Manager binding 建独立表。
-
-### codespace_manager_registration_token
-
-```text
-id
-token_hash
-token_salt
-owner_id
-repo_id
-is_active
-expires_unix
-created_by
-created_unix
-updated_unix
-consumed_unix
-```
 
 ### codespace_manager
 
@@ -1406,14 +1439,13 @@ repo_id
 gateway_url
 gateway_ssh_addr
 gateway_internal_ssh_public_key
-status
+admin_state=enabled|disabled
 capacity_total
 capacity_available
 token_hash
 token_salt
 tags_json
 last_online_unix
-last_active_unix
 created_by
 created_unix
 updated_unix
@@ -1430,6 +1462,7 @@ meta_json
 - `gateway_url` 存放用户 Endpoint 入口地址。
 - `gateway_ssh_addr` 存放用户 SSH 入口地址。
 - `gateway_internal_ssh_public_key` 是 Gateway 连接 Runtime Instance 内部 sshd 的固定公钥。
+- `admin_state` 只表达管理态，不表达在线态。
 - `capacity_total / capacity_available` 是调度和 operation 领取使用的一等字段，不放入 `meta_json`。
 - `meta_json` 只存放诊断与扩展信息，例如 `backend_capabilities`。
 
@@ -1459,7 +1492,6 @@ created_unix
 updated_unix
 stopped_unix
 status_message
-meta_json
 ```
 
 说明：
@@ -1480,6 +1512,7 @@ meta_json
 - create operation 被领取后 `manager_id` 固定，后续 stop、resume、delete 都回到该 Manager。
 - `generation` 每次创建新的 active operation 时递增，用于拒绝 Stale Report。
 - `gitea_token_id` 表示当前有效的 Gitea access token 标识，用于精确吊销；为空表示当前没有有效 token。
+- endpoint、boot、resource usage、internal SSH 和 last_reported 不持久化到 `codespace`，只保存在本地 cache。
 
 索引：
 
@@ -1520,6 +1553,20 @@ log_expired
 - `log_size` 是按 offset 增量读取日志的必要元数据。
 - 列表页和非日志详情区只读取 `log_line_count / log_size / last_log_unix / log_expired`。
 - 只有日志面板需要读取 DBFS 日志内容。
+
+## 本地 Cache
+
+单实例设计下，Gitea 本地 cache 只保存短期易失数据：
+
+- `codespace:open-token:{token_hash}`
+- `codespace:manager-reg-token:{token_hash}`
+- `codespace:runtime-meta:{codespace_uuid}:{generation}`
+
+规则：
+
+- cache 只影响交互能力和页面展示，不影响主状态权威。
+- 主状态推进、权限闭环、删除闭环和 operation 超时闭环只依赖数据库。
+- 一次性 token 消费通过本机锁串行化，不依赖 cache 原生原子操作。
 
 ## 日志
 
