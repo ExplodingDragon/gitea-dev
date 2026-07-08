@@ -27,14 +27,14 @@ Content-Type: application/json
 
 最小接口：
 
-```text
-GET    /api/runtime/v1/boot
-POST   /api/runtime/v1/boot
-GET    /api/runtime/v1/endpoints/{endpoint_id}
-POST   /api/runtime/v1/endpoints/{endpoint_id}
-PUT    /api/runtime/v1/endpoints/{endpoint_id}
-DELETE /api/runtime/v1/endpoints/{endpoint_id}
-```
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/runtime/v1/boot` | 查询初始化所需的完整 boot session 信息 |
+| `POST` | `/api/runtime/v1/boot` | 上报初始化完成结果（一次调用） |
+| `GET` | `/api/runtime/v1/endpoints/{endpoint_id}` | 查询单个 Endpoint 当前声明 |
+| `POST` | `/api/runtime/v1/endpoints/{endpoint_id}` | 创建 Endpoint |
+| `PUT` | `/api/runtime/v1/endpoints/{endpoint_id}` | 更新 Endpoint |
+| `DELETE` | `/api/runtime/v1/endpoints/{endpoint_id}` | 删除 Endpoint |
 
 Runtime Instance 只需要获取初始化信息和声明可打开入口。生命周期状态、Gitea token、日志和 Runtime Metadata 都由 Manager 统一转接到 Gitea，接口面保持在 boot/endpoints 可减少 Runtime 与 Gitea 设计的耦合。
 
@@ -45,37 +45,37 @@ Runtime Instance 只需要获取初始化信息和声明可打开入口。生命
 - 不改变 boot 状态。
 - 返回内容包含：
 
-```text
-codespace_uuid
-generation
-operation_uuid
-operation_type=create|resume
-server_time_unix
-workspace_dir
-runtime_token_bound_source_ip
-gitea_repo_clone_url
-gitea_repo_web_url
-gitea_base_repo_clone_url
-gitea_base_repo_web_url
-gitea_head_repo_clone_url
-gitea_head_repo_web_url
-gitea_repo_id
-gitea_repo_full_name
-gitea_owner_id
-gitea_owner_name
-gitea_owner_type
-gitea_owner_display_name
-gitea_ref_type
-gitea_ref_name
-gitea_commit_sha
-gitea_pull_id
-gitea_token
-codespace_name
-codespace_owner_name
-codespace_repo_name
-codespace_ssh_user
-gateway_internal_ssh_public_key
-```
+| 字段 | 来源 |
+| --- | --- |
+| `codespace_uuid` | Operation payload |
+| `generation` | Operation payload |
+| `operation_uuid` | Operation payload |
+| `operation_type` | `create` / `resume` |
+| `server_time_unix` | Manager 当前时间 |
+| `workspace_dir` | Manager 本地决定 |
+| `runtime_token_bound_source_ip` | Manager 记录 |
+| `gitea_repo_clone_url` | Operation payload |
+| `gitea_repo_web_url` | Operation payload |
+| `gitea_base_repo_clone_url` | Operation payload |
+| `gitea_base_repo_web_url` | Operation payload |
+| `gitea_head_repo_clone_url` | Operation payload |
+| `gitea_head_repo_web_url` | Operation payload |
+| `gitea_repo_id` | Operation payload |
+| `gitea_repo_full_name` | Operation payload |
+| `gitea_owner_id` | Operation payload |
+| `gitea_owner_name` | Operation payload |
+| `gitea_owner_type` | Operation payload |
+| `gitea_owner_display_name` | Operation payload |
+| `gitea_ref_type` | Operation payload |
+| `gitea_ref_name` | Operation payload |
+| `gitea_commit_sha` | Operation payload |
+| `gitea_pull_id` | Operation payload |
+| `gitea_token` | Gitea `RequestGiteaToken` |
+| `codespace_name` | Manager 派生（`cs-{short_uuid}`） |
+| `codespace_owner_name` | Operation payload |
+| `codespace_repo_name` | Operation payload |
+| `codespace_ssh_user` | Operation payload |
+| `gateway_internal_ssh_public_key` | Manager 配置 |
 
 `GET /boot` 规则：
 
@@ -92,23 +92,23 @@ gateway_internal_ssh_public_key
 - 重复调用返回 conflict，不覆盖第一次结果。
 - 请求内容包含：
 
-```text
-success=true|false
-stage
-message
-started_unix
-completed_unix
-```
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `success` | 是 | `true` / `false` |
+| `stage` | 否 | 当前 boot stage |
+| `message` | 否 | 状态消息 |
+| `started_unix` | 否 | 启动时间戳 |
+| `completed_unix` | 否 | 完成时间戳 |
 
-`success=true` 时请求内容还包含：
+`success=true` 时额外包含：
 
-```text
-workspace_head_sha
-internal_ssh_host
-internal_ssh_port
-internal_ssh_user
-internal_ssh_host_key_fingerprint
-```
+| 字段 | 说明 |
+| --- | --- |
+| `workspace_head_sha` | 当前 HEAD SHA，必须与锁定 `commit_sha` 一致 |
+| `internal_ssh_host` | 内部 SSH host |
+| `internal_ssh_port` | 内部 SSH port |
+| `internal_ssh_user` | 内部 SSH user |
+| `internal_ssh_host_key_fingerprint` | 内部 SSH host key fingerprint |
 
 `POST /boot` 规则：
 
@@ -221,7 +221,7 @@ Endpoint API 规则：
 
 ## Gitea Token
 
-Codespace Gitea Token 复用 Gitea 现有 `access_token` 模型（`models/auth/access_token.go`）。
+[Gitea Token](glossary.md#gitea-token) 复用 Gitea 现有 `access_token` 模型（`models/auth/access_token.go`）。
 
 设计依据：
 
@@ -292,7 +292,7 @@ Runtime Token 只用于 Runtime Instance 调用 Runtime HTTP API。
 
 ## Manager Secret
 
-manager secret 用于认证已注册 Manager 调用 ManagerService RPC。
+[Manager Secret](glossary.md#manager-secret) 用于认证已注册 Manager 调用 ManagerService RPC。
 
 规则：
 

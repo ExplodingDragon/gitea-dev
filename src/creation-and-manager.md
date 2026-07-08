@@ -91,34 +91,34 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为唯一初始
 
 必需环境变量：
 
-```text
-GITEA_REPO_CLONE_URL
-GITEA_REPO_WEB_URL
-GITEA_BASE_REPO_CLONE_URL
-GITEA_BASE_REPO_WEB_URL
-GITEA_HEAD_REPO_CLONE_URL
-GITEA_HEAD_REPO_WEB_URL
-GITEA_REPO_ID
-GITEA_REPO_FULL_NAME
-GITEA_OWNER_ID
-GITEA_OWNER_NAME
-GITEA_OWNER_TYPE
-GITEA_OWNER_DISPLAY_NAME
-GITEA_REF_TYPE
-GITEA_REF_NAME
-GITEA_COMMIT_SHA
-GITEA_PULL_ID
-GITEA_TOKEN
-CODESPACE_UUID
-CODESPACE_NAME
-CODESPACE_OWNER_NAME
-CODESPACE_REPO_NAME
-CODESPACE_WORKSPACE_DIR
-CODESPACE_SSH_USER
-CODESPACE_MANAGER_BASE_URL
-CODESPACE_RUNTIME_TOKEN
-CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY
-```
+| 环境变量 | 说明 |
+| --- | --- |
+| `GITEA_REPO_CLONE_URL` | 仓库 Git HTTP(S) clone URL |
+| `GITEA_REPO_WEB_URL` | 仓库 Web URL |
+| `GITEA_BASE_REPO_CLONE_URL` | PR base 仓库 clone URL（非 PR 场景可空） |
+| `GITEA_BASE_REPO_WEB_URL` | PR base 仓库 Web URL（非 PR 场景可空） |
+| `GITEA_HEAD_REPO_CLONE_URL` | PR head 仓库 clone URL（非 PR 场景可空） |
+| `GITEA_HEAD_REPO_WEB_URL` | PR head 仓库 Web URL（非 PR 场景可空） |
+| `GITEA_REPO_ID` | 仓库 ID |
+| `GITEA_REPO_FULL_NAME` | 仓库完整名称（如 `owner/repo`） |
+| `GITEA_OWNER_ID` | 仓库 owner ID |
+| `GITEA_OWNER_NAME` | 仓库 owner 名称 |
+| `GITEA_OWNER_TYPE` | 仓库 owner 类型（user/org） |
+| `GITEA_OWNER_DISPLAY_NAME` | 仓库 owner 展示名称 |
+| `GITEA_REF_TYPE` | ref 类型（branch/tag/commit/pull） |
+| `GITEA_REF_NAME` | ref 名称 |
+| `GITEA_COMMIT_SHA` | 锁定的 commit SHA |
+| `GITEA_PULL_ID` | PR ID（非 PR 场景为空） |
+| `GITEA_TOKEN` | Gitea access token，用于 git 操作 |
+| `CODESPACE_UUID` | codespace UUID |
+| `CODESPACE_NAME` | 派生名称，格式 `cs-{short_uuid}` |
+| `CODESPACE_OWNER_NAME` | codespace 创建者名称 |
+| `CODESPACE_REPO_NAME` | 仓库名称 |
+| `CODESPACE_WORKSPACE_DIR` | 工作目录路径（由 Manager 注入） |
+| `CODESPACE_SSH_USER` | SSH 用户名 |
+| `CODESPACE_MANAGER_BASE_URL` | Runtime HTTP API 基础 URL（由 Manager 注入） |
+| `CODESPACE_RUNTIME_TOKEN` | Runtime Token（由 Manager 注入） |
+| `CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY` | Gateway 内部 SSH 公钥 |
 
 环境变量规则：
 
@@ -132,9 +132,9 @@ CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY
 
 可选环境变量：
 
-```text
-CODESPACE_BOOT_LOG_PATH
-```
+| 环境变量 | 说明 |
+| --- | --- |
+| `CODESPACE_BOOT_LOG_PATH` | boot 阶段日志写入路径 |
 
 Boot 完成条件：
 
@@ -190,25 +190,25 @@ registration secret 设计：
 
 Manager 记录字段：
 
-```text
-id
-uuid
-name
-gateway_url
-gateway_ssh_addr
-gateway_internal_ssh_public_key
-admin_state=enabled|disabled
-last_capacity_total
-last_capacity_available
-secret_hash
-secret_salt
-tags_json
-last_online_unix
-created_by
-created_unix
-updated_unix
-meta_json
-```
+| 字段 | 类型与说明 |
+| --- | --- |
+| `id` | 自增主键 |
+| `uuid` | 全局唯一标识 |
+| `name` | 名称 |
+| `gateway_url` | 用户 Endpoint 入口 URL |
+| `gateway_ssh_addr` | 用户 SSH 入口地址（host:port） |
+| `gateway_internal_ssh_public_key` | Gateway 连接内部 sshd 的固定公钥 |
+| `admin_state` | `enabled` / `disabled` |
+| `last_capacity_total` | 最近上报的总容量快照 |
+| `last_capacity_available` | 最近上报的可用容量快照 |
+| `secret_hash` | manager secret 哈希 |
+| `secret_salt` | manager secret 盐值 |
+| `tags_json` | 支持的 tags JSON |
+| `last_online_unix` | 最近在线时间戳 |
+| `created_by` | 创建者 user ID |
+| `created_unix` | 创建时间戳 |
+| `updated_unix` | 更新时间戳 |
+| `meta_json` | 诊断与扩展信息 JSON |
 
 Manager 规则：
 
@@ -245,8 +245,8 @@ Manager tag matching：
 - disabled Manager 不参与 tag 匹配。
 - 没有 enabled Manager 支持 `repo_tag` 时，create 直接失败。
 - create 创建时不绑定具体 Manager。
-- 具体 `manager_id` 只在某个 Manager 通过 `FetchOperation` 成功领取 create operation 时写入。
-- 有匹配 Manager 但全部离线、满载、不调用 `FetchOperation`，或调用 `FetchOperation` 但声明不可接收 create 时，create 保持 `queued`。
+- 具体 `manager_id` 只在某个 Manager 通过 `FetchOperation` 成功领取 create [Operation](glossary.md#operation) 时写入。
+- 有匹配 Manager 但全部离线、满载、不调用 `FetchOperation`，或调用 `FetchOperation` 但声明不可接收 create 时，create 保持 `queued`（参见 [Manager Capacity](glossary.md#manager-capacity)）。
 
 设计决策：
 
@@ -272,7 +272,7 @@ Manager Capacity：
 - create/resume 需要 Manager 在本次 `FetchOperation` 中声明可接收，且 `capacity_available > 0`。
 - stop/delete 不需要可用 capacity。
 - capacity 是 Manager 最近上报的本地可接收能力快照，不是 Gitea quota。
-- Manager 是实际运行容量权威，自行确保不拉取超过本地真实容量的 create/resume operation。
+- Manager 是实际运行容量权威，自行确保不拉取超过本地真实容量的 create/resume [Operation](glossary.md#operation)。
 - Gitea 只保证 operation 不被重复领取，不保护 Manager 的本地运行并发。
 - `DeclareManager` 和 `FetchOperation` 使用 request 中的 `capacity_total / capacity_available` 覆盖数据库中的 `last_capacity_total / last_capacity_available`。
 
@@ -318,19 +318,19 @@ x-codespace-manager-secret: <manager secret>
 
 RPC：
 
-```text
-RegisterManager
-DeclareManager
-FetchOperation
-UpdateOperation
-UpdateLog
-ReportRuntimeMetadata
-RequestGiteaToken
-ValidateOpenToken
-VerifySSHPassword
-VerifySSHPublicKey
-ReportInstances
-```
+| RPC | 用途 |
+| --- | --- |
+| `RegisterManager` | 将一次性 registration secret 兑换为 Manager identity |
+| `DeclareManager` | 更新 Manager 声明信息，同时作为 heartbeat |
+| `FetchOperation` | 主动拉取可领取的 operation |
+| `UpdateOperation` | 续租 lease、更新进度、写入终态结果 |
+| `UpdateLog` | 按 offset 追加已脱敏日志 |
+| `ReportRuntimeMetadata` | 上报 Runtime Metadata 快照 |
+| `RequestGiteaToken` | 为 active create/resume operation 申请 Gitea access token |
+| `ValidateOpenToken` | 校验并消费 Gateway Open Token |
+| `VerifySSHPassword` | SSH 密码 + TOTP 认证 |
+| `VerifySSHPublicKey` | SSH 公钥认证 |
+| `ReportInstances` | Manager 重启后上报本地 Runtime Instance 集合 |
 
 `RegisterManager`：
 
@@ -446,33 +446,28 @@ Stale report 不改变当前状态。
 
 ### Operation Payload
 
-`FetchOperation` 返回给 Manager 的 operation payload 基础字段：
+`FetchOperation` 返回给 Manager 的 operation payload 字段：
 
-```text
-operation_uuid
-operation_type
-codespace_uuid
-generation
-ssh_user
-lease_deadline_unix
-```
-
-`create|resume` payload 额外包含：
-
-```text
-repo_clone_url
-repo_web_url
-repo_tag
-base_repo_clone_url
-base_repo_web_url
-head_repo_clone_url
-head_repo_web_url
-start_ref
-ref_type
-ref_name
-commit_sha
-pull_id
-```
+| 字段 | 适用类型 | 说明 |
+| --- | --- | --- |
+| `operation_uuid` | 全部 | Operation UUID |
+| `operation_type` | 全部 | `create`/`resume`/`stop`/`delete` |
+| `codespace_uuid` | 全部 | Codespace UUID |
+| `generation` | 全部 | 当前 generation |
+| `ssh_user` | 全部 | SSH 用户名 |
+| `lease_deadline_unix` | 全部 | Lease 截止时间 |
+| `repo_clone_url` | create/resume | 仓库 clone URL |
+| `repo_web_url` | create/resume | 仓库 Web URL |
+| `repo_tag` | create/resume | 从 `.gitea/codespace.yaml` 解析的 tag |
+| `base_repo_clone_url` | create/resume | PR base 仓库 clone URL |
+| `base_repo_web_url` | create/resume | PR base 仓库 Web URL |
+| `head_repo_clone_url` | create/resume | PR head 仓库 clone URL |
+| `head_repo_web_url` | create/resume | PR head 仓库 Web URL |
+| `start_ref` | create/resume | Manager fetch/checkout 的 ref 提示 |
+| `ref_type` | create/resume | `branch`/`tag`/`commit`/`pull` |
+| `ref_name` | create/resume | ref 名称 |
+| `commit_sha` | create/resume | 锁定 commit SHA |
+| `pull_id` | create/resume | PR ID |
 
 规则：
 

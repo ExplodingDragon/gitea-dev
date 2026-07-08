@@ -13,159 +13,116 @@
 
 ### codespace_manager_registration_secret
 
-```text
-id
-secret_hash
-secret_salt
-is_active
-expires_unix
-created_by
-created_unix
-updated_unix
-consumed_unix
-```
+| 字段 | 类型说明 | 备注 |
+| --- | --- | --- |
+| `id` | 自增主键 | |
+| `secret_hash` | registration secret 哈希 | |
+| `secret_salt` | 盐值 | |
+| `is_active` | 是否 active | 同一时间只能有一个 active 且未消费 registration secret |
+| `expires_unix` | 过期时间戳 | |
+| `created_by` | 创建者 user ID | |
+| `created_unix` | 创建时间戳 | |
+| `updated_unix` | 更新时间戳 | |
+| `consumed_unix` | 消费时间戳 | |
 
-说明：
-
-- registration secret 明文只在创建或重置时展示一次。
-- 同一时间只能有一个 active 且未消费 registration secret。
-- 重置 registration secret 只会使旧的未消费 registration secret inactive。
+registration secret 明文只在创建或重置时展示一次。重置只使旧的未消费 secret inactive，不影响现有 Manager 的 manager secret。
 
 ### codespace_manager
 
-```text
-id
-uuid
-name
-gateway_url
-gateway_ssh_addr
-gateway_internal_ssh_public_key
-admin_state=enabled|disabled
-last_capacity_total
-last_capacity_available
-secret_hash
-secret_salt
-tags_json
-last_online_unix
-created_by
-created_unix
-updated_unix
-meta_json
-```
-
-说明：
-
-- Manager 不按 owner、organization 或 repository 分组。
-- `tags_json` 存放该 Manager 当前声明支持的 tags。
-- `gateway_url` 存放用户 Endpoint 入口地址。
-- `gateway_ssh_addr` 存放用户 SSH 入口地址。
-- `gateway_internal_ssh_public_key` 是 Gateway 连接 Runtime Instance 内部 sshd 的固定公钥。
-- `admin_state` 只表示管理态，不表示在线态。
-- `last_capacity_total / last_capacity_available` 是 Manager 最近通过 `DeclareManager` 或 `FetchOperation` 上报的容量快照，用于 UI、诊断和 `FetchOperation` 准入检查；不是 Gitea 运行容量计数，不会因 claim、`done|failed` 或 timeout 自动变化。
-- `meta_json` 只存放诊断与扩展信息，例如 `backend_capabilities`。
+| 字段 | 类型说明 | 备注 |
+| --- | --- | --- |
+| `id` | 自增主键 | |
+| `uuid` | 全局唯一标识 | |
+| `name` | 名称 | |
+| `gateway_url` | 用户 Endpoint 入口 URL | |
+| `gateway_ssh_addr` | 用户 SSH 入口地址（host:port） | |
+| `gateway_internal_ssh_public_key` | Gateway 连接内部 sshd 的固定公钥 | |
+| `admin_state` | `enabled` / `disabled` | 只表示管理态，不表示在线态 |
+| `last_capacity_total` | 最近上报的总容量快照 | 用于 UI、诊断和 FetchOperation 准入检查，不是 Gitea 运行容量计数；不会因 claim、`done|failed` 或 timeout 自动变化 |
+| `last_capacity_available` | 最近上报的可用容量快照 | 同上 |
+| `secret_hash` | manager secret 哈希 | |
+| `secret_salt` | 盐值 | |
+| `tags_json` | 支持的 tags JSON | Manager 不按 owner/org/repo 分组 |
+| `last_online_unix` | 最近在线时间戳 | |
+| `created_by` | 创建者 user ID | |
+| `created_unix` | 创建时间戳 | |
+| `updated_unix` | 更新时间戳 | |
+| `meta_json` | 诊断与扩展信息 JSON | 如 `backend_capabilities` |
 
 ### codespace
 
-```text
-id
-uuid
-user_id
-repo_id
-ref_type=branch|tag|commit|pull
-ref_name
-repo_tag
-commit_sha
-pull_id
-manager_id
-ssh_user
-ssh_password_auth_allowed
-status
-active_operation_id
-generation
-gitea_token_id
-last_active_unix
-created_unix
-updated_unix
-stopped_unix
-status_message
-```
+| 字段 | 类型说明 | 备注 |
+| --- | --- | --- |
+| `id` | 自增主键 | |
+| `uuid` | 全局唯一标识 | |
+| `user_id` | 创建者 user ID | 允许悬空引用，表示该 codespace 的历史创建者；被物理删除后不改写、不重分配 |
+| `repo_id` | 代码来源 repository ID | 允许历史引用，不表示删除检查归属；repository 被删除后显示 `source repository deleted` |
+| `ref_type` | `branch` / `tag` / `commit` / `pull` | |
+| `ref_name` | ref 名称 | |
+| `repo_tag` | 从 `.gitea/codespace.yaml` 解析的 tag | create 时确定，后续不随仓库文件变化 |
+| `commit_sha` | 锁定 commit SHA | |
+| `pull_id` | PR ID | |
+| `manager_id` | 绑定 Manager ID | create 被领取前为 0，领取后固定 |
+| `ssh_user` | SSH 用户名（全局唯一） | 插入唯一索引冲突时重试生成；delete 后不复用 |
+| `ssh_password_auth_allowed` | 是否允许 SSH 密码认证 | 由 Gitea 创建服务层写入，默认值来自站点策略 |
+| `status` | 当前主状态 | |
+| `active_operation_id` | 当前未完成 lifecycle operation ID | operation 进入 `done|failed` 并完成 State Finalization 后清空 |
+| `generation` | 递增 generation 号 | 每次创建新的 active operation 时递增，用于拒绝 Stale Report |
+| `gitea_token_id` | 当前有效 Gitea access token ID | 为空表示当前没有有效 token |
+| `last_active_unix` | 最近用户交互时间戳 | 成功 open Endpoint/SSH auth/resume 进入 running 后更新；Runtime Metadata refresh/DeclareManager/UpdateLog/stop/delete/error 不更新；仅用于 UI 排序和清理参考，不用于权限判断 |
+| `created_unix` | 创建时间戳 | |
+| `updated_unix` | 更新时间戳 | |
+| `stopped_unix` | 最近停止时间戳 | |
+| `status_message` | 状态消息 | 最长 1024 字符，超长截断，禁止控制字符；UI 按普通文本 escape 后展示 |
 
-说明：
-
-- `user_id` 表示创建该 codespace 的历史创建者 Gitea user id。
-- `user_id` 允许悬空引用；创建者被物理删除后不改写、不重分配。
-- `repo_id` 表示代码来源 repository，不表示删除检查归属。
-- `repo_id` 允许在 source repository 物理删除后成为历史引用；repository 解析不到时显示 `source repository deleted`。
-- repository owner 仍通过 `repository.owner_id` 表示，不在 codespace 表中重复存 `owner_id`。
-- `repo_tag` 表示 create 时从 `.gitea/codespace.yaml` 解析出的 tag，后续不随仓库文件变化而改变。
-- `ssh_user` 全局唯一，插入唯一索引冲突时重试生成。
-- `ssh_user` delete 后不复用。
-- `ssh_password_auth_allowed` 表示该 codespace 是否允许 SSH 密码认证，由 Gitea 创建服务层写入，默认值来自站点策略。
-- create operation 被领取前 `manager_id=0`。
-- create operation 被领取后 `manager_id` 固定，后续 stop、resume、delete 都回到该 Manager。
-- `generation` 每次创建新的 active operation 时递增，用于拒绝 Stale Report。
-- `active_operation_id` 只表示当前未完成 lifecycle operation；operation 进入 `done|failed` 并完成 State Finalization 后清空。
-- `gitea_token_id` 表示当前有效的 Gitea access token 标识，用于精确吊销；为空表示当前没有有效 token。
-- `last_active_unix` 只记录用户交互，不记录 Manager heartbeat。
-- 成功 open Endpoint、成功 SSH auth/session 建立、resume 成功进入 `running` 后更新 `last_active_unix`。
-- Runtime Metadata refresh、DeclareManager、UpdateLog、stop、delete 和 error 不更新 `last_active_unix`。
-- `last_active_unix` 只用于 UI 排序和清理参考，不用于权限或状态判断。
-- `status_message` 最长 1024 字符，超长截断，禁止控制字符。
-- `status_message` UI 按普通文本 escape 后展示。
-- endpoint、boot、resource usage、internal SSH 和 last_reported 不持久化到 `codespace`，只保存在本地 cache。
+repository owner 通过 `repository.owner_id` 表示，不在 codespace 表中重复存 `owner_id`。endpoint、boot、resource usage、internal SSH 和 last_reported 不持久化到 `codespace`，只保存在本地 cache。
 
 索引：
 
-- `uuid`
-- `(user_id, status)`
-- `(repo_id, status)`
-- `(manager_id, status)`
-- `(manager_id, status, repo_tag)`
-- `(ssh_user)`
+| 表 | 索引列 |
+| --- | --- |
+| codespace | `uuid`（唯一） |
+| codespace | `(user_id, status)` |
+| codespace | `(repo_id, status)` |
+| codespace | `(manager_id, status)` |
+| codespace | `(manager_id, status, repo_tag)` |
+| codespace | `(ssh_user)`（唯一） |
 
 ### codespace_operation
 
-```text
-id
-uuid
-codespace_id
-manager_id
-generation
-type=create|resume|stop|delete
-status=queued|running|done|failed
-deadline_unix
-created_unix
-updated_unix
-finished_unix
-status_message
-log_filename
-log_line_count
-log_size
-last_log_unix
-log_expired
-```
-
-说明：
-
-- create operation 被领取前 `manager_id=0`。
-- create operation 被领取时与 `codespace.manager_id` 在同一事务中写入。
-- resume、stop、delete operation 从创建时就绑定既有 `codespace.manager_id`。
-- `log_size` 是按 offset 增量读取日志的必要元数据。
-- 列表页和非日志详情区只读取 `log_line_count / log_size / last_log_unix / log_expired`。
-- 只有日志面板需要读取 DBFS 日志内容。
+| 字段 | 类型说明 | 备注 |
+| --- | --- | --- |
+| `id` | 自增主键 | |
+| `uuid` | 全局唯一标识 | |
+| `codespace_id` | 所属 codespace ID | |
+| `manager_id` | 执行 Manager ID | create 被领取前为 0，被领取时与 codespace.manager_id 在同一事务中写入；resume/stop/delete 从创建即绑定既有 manager_id |
+| `type` | `create` / `resume` / `stop` / `delete` | |
+| `status` | `queued` / `running` / `done` / `failed` | |
+| `deadline_unix` | lease 截止时间戳 | |
+| `created_unix` | 创建时间戳 | |
+| `updated_unix` | 更新时间戳 | |
+| `finished_unix` | 完成时间戳 | |
+| `status_message` | 状态消息 | |
+| `log_filename` | 日志文件名 | |
+| `log_line_count` | 日志行数 | |
+| `log_size` | 日志大小 | 按 offset 增量读取日志的必要元数据 |
+| `last_log_unix` | 最近日志时间戳 | |
+| `log_expired` | 日志是否过期 | 列表页和非日志详情区只读取 `log_line_count / log_size / last_log_unix / log_expired`；只有日志面板需要读取 DBFS 日志内容 |
 
 索引：
 
-- `uuid`
-- `(manager_id, status, type)`
-- `(codespace_id, generation)`
+| 表 | 索引列 |
+| --- | --- |
+| codespace_operation | `uuid`（唯一） |
+| codespace_operation | `(manager_id, status, type)` |
+| codespace_operation | `(codespace_id, generation)` |
 
 ## 本地 Cache
 
 Gitea 本地 cache 只保存短期易失数据：
 
-- `codespace:open-token:{token_hash}`
-- `codespace:runtime-meta:{codespace_uuid}:{generation}`
+- `codespace:open-token:{token_hash}`（参见 [Gateway Open Token](glossary.md#gateway-open-token)）
+- `codespace:runtime-meta:{codespace_uuid}:{generation}`（参见 [Runtime Metadata](glossary.md#runtime-metadata)）
 
 规则：
 
@@ -177,7 +134,7 @@ Gitea 本地 cache 只保存短期易失数据：
 
 ## 日志
 
-Codespace operation 日志存储在 DBFS（`models/dbfs/`，32KB 分块 + 乐观锁）。
+Codespace [Operation](glossary.md#operation) 日志存储在 DBFS（`models/dbfs/`，32KB 分块 + 乐观锁）。
 
 路径：
 
@@ -326,10 +283,10 @@ SCHEDULE = @daily
 
 说明：
 
-- `OPEN_TOKEN_EXPIRE` 是 Gateway Open Token 的有效期和 Gitea cache TTL。
+- `OPEN_TOKEN_EXPIRE` 也是 [Gateway Open Token](glossary.md#gateway-open-token) 的 Gitea cache TTL。
 - `SSH_PASSWORD_AUTH_ALLOWED` 是新建 codespace 的默认内部策略值，可由 Gitea 服务层按站点策略进一步收紧。
 - SSH 认证限流与退避属于 Gateway 配置，不属于 Gitea 配置。
-- `OPERATION_LEASE_TIMEOUT` 是 Manager claim/续租 operation 的 lease 时长。
+- `OPERATION_LEASE_TIMEOUT` 是 [Manager Claim](glossary.md#manager-matching)/续租 [Operation](glossary.md#operation) 的 lease 时长。
 - `REGISTRATION_SECRET_EXPIRE` 是 registration secret 的有效期。
 - registration secret 清理不新增独立 cron，由 `cleanup_failed_codespaces` 处理。
 

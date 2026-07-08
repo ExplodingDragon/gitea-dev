@@ -106,83 +106,89 @@ repository 边界复用 Gitea 现有结果：
 - repository code unit 可读性（`CanRead(unit.Code)`）
 - archived、mirror、empty、being migrated、pending transfer、broken 等 repository 状态
 
-Create 要求：
+### Create 要求
 
-- 当前用户已登录。
-- 当前用户满足 Gitea 登录限制。
-- 当前用户拥有 repository code-read 权限。
-- repository code unit 可读。
-- repository 不处于 archived、migrating、pending transfer、broken、empty 或无法解析目标 ref/commit 的状态。
+| 条件 | 说明 |
+| --- | --- |
+| 登录 | 当前用户已登录 |
+| 登录限制 | 满足 Gitea 登录限制（`is_active`、`prohibit_login`、`must_change_password`、站点强制 2FA） |
+| 代码读取 | 拥有 repository code-read 权限（`CanRead(unit.Code)`） |
+| 仓库状态 | 不处于 archived、migrating、pending transfer、broken、empty 或无法解析目标 ref/commit |
 
-Interactive Access（`open`、SSH、`resume`）要求：
+### Interactive Access 要求
 
-- 仅 codespace 创建用户本人。
-- 创建用户当前仍满足 Gitea 登录限制。
-- 创建用户当前仍有 repository code-read 权限。
-- repository 当前状态允许交互访问。
-- codespace 与 Manager 状态允许该动作。
-- open 时 Endpoint metadata 必须存在。
+适用于 `open`、SSH、`resume`：
 
-Administrative Permission（查看最小信息、日志、stop、delete）：
+| 条件 | 说明 |
+| --- | --- |
+| 身份 | 仅 codespace 创建用户本人 |
+| 登录限制 | 创建用户当前仍满足 Gitea 登录限制 |
+| 代码读取 | 创建用户当前仍有 repository code-read 权限 |
+| 仓库状态 | 仓库当前状态允许交互访问 |
+| codespace 状态 | codespace 与 Manager 状态允许该动作 |
+| Endpoint | open 时 [Endpoint](glossary.md#endpoint) metadata 必须存在 |
 
-- 创建用户本人始终拥有管理权限，除非创建用户已被物理删除。
-- 组织仓库下，组织管理员额外拥有管理权限（由 `IsOrganizationAdmin(ctx, orgID, userID)` 判定，覆盖 Owners 团队和具备 admin 权限的团队成员）。
-- 管理权限不要求创建用户当前仍具备 repo code-read。
-- 组织管理员不能进入其他用户 workspace。
-- 普通协作者和普通 repo 管理员不会因为 repo 权限获得他人 codespace 权限。
+### Administrative Permission
 
-个人仓库：
+适用于查看最小信息、日志、stop、delete：
 
-- 不存在 owner 代理管理他人 codespace。
-- 创建用户被删除后，只保留后台清理和日志保留。
+| 角色 | 权限范围 |
+| --- | --- |
+| 创建用户本人 | 始终拥有，除非已被物理删除 |
+| 组织管理员 | 组织仓库下额外拥有（`IsOrganizationAdmin(ctx, orgID, userID)` 判定） |
+| 普通协作者/repo 管理员 | 不获得他人 codespace 权限 |
+| 组织管理员限制 | 不能进入其他用户 workspace |
 
-组织仓库：
+管理权限不要求创建用户当前仍具备 repo code-read。
 
-- 创建用户失去 repo 访问、被禁用或被删除后，组织管理员仍可 stop/delete 和查看日志/最小信息。
+### 个人仓库与组织仓库
 
-Minimal info 只允许返回：
+| 场景 | 规则 |
+| --- | --- |
+| 个人仓库 | 不存在 owner 代理管理他人 codespace；创建用户被删除后只保留后台清理和日志保留 |
+| 组织仓库 | 创建用户失去 repo 访问、被禁用或被删除后，组织管理员仍可 stop/delete 和查看日志/最小信息 |
 
-```text
-uuid
-status
-status_message
-created_unix
-updated_unix
-stopped_unix
-creator_id
-creator_display_name
-creator_deleted
-repo_id
-repo_display_name
-repo_deleted
-ref_type
-ref_name
-commit_sha
-pull_id
-manager_id
-manager_display_name
-manager_online
-log_line_count
-log_size
-last_log_unix
-log_expired
-allowed_actions
-```
+### Minimal Info
 
-Minimal info 禁止返回：
+只允许返回：
 
-```text
-gitea_token_id
-Manager Secret
-Runtime Token
-Gateway Open Token
-token hash / salt
-internal_ssh
-Endpoint upstream
-完整 meta_json
-日志正文
-Runtime Instance 内部 host / port / user
-```
+- `uuid`
+- `status`
+- `status_message`
+- `created_unix`
+- `updated_unix`
+- `stopped_unix`
+- `creator_id`
+- `creator_display_name`
+- `creator_deleted`
+- `repo_id`
+- `repo_display_name`
+- `repo_deleted`
+- `ref_type`
+- `ref_name`
+- `commit_sha`
+- `pull_id`
+- `manager_id`
+- `manager_display_name`
+- `manager_online`
+- `log_line_count`
+- `log_size`
+- `last_log_unix`
+- `log_expired`
+- `allowed_actions`
+
+禁止返回：
+
+- `gitea_token_id`
+- Manager Secret
+- Runtime Token
+- Gateway Open Token
+- `token hash / salt`
+- `internal_ssh`
+- Endpoint upstream
+- 完整 `meta_json`
+- 日志正文
+- Runtime Instance 内部 host / port / user
 
 ## Endpoint 打开流程
 
@@ -423,18 +429,18 @@ failure_retryable
 
 失败分类：
 
-```text
-invalid_credentials
-login_restricted
-totp_required_or_invalid
-codespace_not_found
-codespace_not_running
-ssh_disabled
-repo_access_lost
-manager_mismatch
-permission_denied
-internal_error
-```
+| 分类 | 含义 |
+| --- | --- |
+| `invalid_credentials` | 密码或公钥无效 |
+| `login_restricted` | 用户登录受限 |
+| `totp_required_or_invalid` | 需要 TOTP 或 TOTP 无效 |
+| `codespace_not_found` | codespace 不存在 |
+| `codespace_not_running` | codespace 未运行 |
+| `ssh_disabled` | SSH 已禁用 |
+| `repo_access_lost` | 仓库访问权限丢失 |
+| `manager_mismatch` | Manager 不匹配 |
+| `permission_denied` | 权限拒绝 |
+| `internal_error` | 内部错误 |
 
 Gitea 校验：
 
