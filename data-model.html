@@ -175,14 +175,8 @@
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
-<tr><td><code>uuid</code></td><td>全局唯一标识</td><td></td></tr>
 <tr><td><code>name</code></td><td>名称</td><td></td></tr>
-<tr><td><code>gateway_url</code></td><td>用户 Endpoint 入口 URL</td><td></td></tr>
-<tr><td><code>gateway_ssh_addr</code></td><td>用户 SSH 入口地址（host:port）</td><td></td></tr>
-<tr><td><code>gateway_internal_ssh_public_key</code></td><td>Gateway 连接内部 sshd 的固定公钥</td><td></td></tr>
 <tr><td><code>admin_state</code></td><td><code>enabled</code> / <code>disabled</code></td><td>只表示管理态，不表示在线态</td></tr>
-<tr><td><code>last_capacity_total</code></td><td>最近上报的总容量快照</td><td>用于 UI、诊断和 FetchOperation 准入检查，不是 Gitea 运行容量计数；不会因 claim、`done</td></tr>
-<tr><td><code>last_capacity_available</code></td><td>最近上报的可用容量快照</td><td>同上</td></tr>
 <tr><td><code>secret_hash</code></td><td>manager secret 哈希</td><td></td></tr>
 <tr><td><code>secret_salt</code></td><td>盐值</td><td></td></tr>
 <tr><td><code>tags_json</code></td><td>支持的 tags JSON</td><td>Manager 不按 owner/org/repo 分组</td></tr>
@@ -190,7 +184,7 @@
 <tr><td><code>created_by</code></td><td>创建者 user ID</td><td></td></tr>
 <tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
 <tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
-<tr><td><code>meta_json</code></td><td>诊断与扩展信息 JSON</td><td>如 <code>backend_capabilities</code></td></tr>
+<tr><td><code>meta_json</code></td><td>诊断与扩展信息 JSON</td><td>包含 <code>gateway_url</code>、<code>gateway_ssh_addr</code>、<code>last_capacity_total</code>、<code>last_capacity_available</code>、<code>backend_capabilities</code> 等 Manager 上报的动态元数据</td></tr>
 </tbody></table>
 </div>
 <h3 id="codespace"><a class="header" href="#codespace">codespace</a></h3>
@@ -205,13 +199,10 @@
 <tr><td><code>commit_sha</code></td><td>锁定 commit SHA</td><td></td></tr>
 <tr><td><code>pull_id</code></td><td>PR ID</td><td></td></tr>
 <tr><td><code>manager_id</code></td><td>绑定 Manager ID</td><td>create 被领取前为 0，领取后固定</td></tr>
-<tr><td><code>ssh_user</code></td><td>SSH 用户名（全局唯一）</td><td>插入唯一索引冲突时重试生成；delete 后不复用</td></tr>
-<tr><td><code>ssh_password_auth_allowed</code></td><td>是否允许 SSH 密码认证</td><td>由 Gitea 创建服务层写入，默认值来自站点策略</td></tr>
 <tr><td><code>status</code></td><td>当前主状态</td><td></td></tr>
 <tr><td><code>active_operation_id</code></td><td>当前未完成 lifecycle operation ID</td><td>operation 进入 `done</td></tr>
-<tr><td><code>generation</code></td><td>递增 generation 号</td><td>每次创建新的 active operation 时递增，用于拒绝 Stale Report</td></tr>
 <tr><td><code>gitea_token_id</code></td><td>当前有效 Gitea access token ID</td><td>为空表示当前没有有效 token</td></tr>
-<tr><td><code>last_active_unix</code></td><td>最近用户交互时间戳</td><td>成功 open Endpoint/SSH auth/resume 进入 running 后更新；Runtime Metadata refresh/DeclareManager/UpdateLog/stop/delete/error 不更新；仅用于 UI 排序和清理参考，不用于权限判断</td></tr>
+<tr><td><code>last_active_unix</code></td><td>最近用户交互时间戳</td><td>成功 open Endpoint/SSH auth/resume 进入 running 后更新；<code>ReportRuntimeMetadata</code> 成功写入时更新；仅用于 UI 排序和清理参考，不用于权限判断</td></tr>
 <tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
 <tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
 <tr><td><code>stopped_unix</code></td><td>最近停止时间戳</td><td></td></tr>
@@ -222,7 +213,6 @@
 <h3 id="codespace_operation"><a class="header" href="#codespace_operation">codespace_operation</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
-<tr><td><code>uuid</code></td><td>全局唯一标识</td><td></td></tr>
 <tr><td><code>codespace_id</code></td><td>所属 codespace ID</td><td></td></tr>
 <tr><td><code>manager_id</code></td><td>执行 Manager ID</td><td>create 被领取前为 0，被领取时与 codespace.manager_id 在同一事务中写入；resume/stop/delete 从创建即绑定既有 manager_id</td></tr>
 <tr><td><code>type</code></td><td><code>create</code> / <code>resume</code> / <code>stop</code> / <code>delete</code></td><td></td></tr>
@@ -234,11 +224,13 @@
 <tr><td><code>status_message</code></td><td>状态消息</td><td></td></tr>
 <tr><td><code>log_filename</code></td><td>日志文件名</td><td></td></tr>
 <tr><td><code>log_line_count</code></td><td>日志行数</td><td></td></tr>
-<tr><td><code>log_size</code></td><td>日志大小</td><td>按 offset 增量读取日志的必要元数据</td></tr>
-<tr><td><code>last_log_unix</code></td><td>最近日志时间戳</td><td></td></tr>
-<tr><td><code>log_expired</code></td><td>日志是否过期</td><td>列表页和非日志详情区只读取 <code>log_line_count / log_size / last_log_unix / log_expired</code>；只有日志面板需要读取 DBFS 日志内容</td></tr>
+<tr><td><code>log_size</code></td><td>日志大小</td><td></td></tr>
+<tr><td><code>log_indexes</code></td><td>行号到 byte offset 的索引</td><td>LONGBLOB，varint 编码的 <code>[]int64</code>，用于按行 seek</td></tr>
+<tr><td><code>log_in_storage</code></td><td>日志在 DBFS 还是对象存储</td><td><code>false</code> 表示日志仍在 DBFS</td></tr>
+<tr><td><code>log_expired</code></td><td>日志是否过期</td><td>列表页和非日志详情区只读取 <code>log_line_count / log_size / log_expired</code>；只有日志面板需要读取 DBFS 日志内容</td></tr>
 </tbody></table>
 </div>
+<p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
 <h2 id="索引"><a class="header" href="#索引">索引</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
 <tr><td>codespace</td><td><code>uuid</code>（唯一）</td></tr>
@@ -246,17 +238,15 @@
 <tr><td>codespace</td><td><code>(repo_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status, repo_tag)</code></td></tr>
-<tr><td>codespace</td><td><code>(ssh_user)</code>（唯一）</td></tr>
-<tr><td>codespace_operation</td><td><code>uuid</code>（唯一）</td></tr>
 <tr><td>codespace_operation</td><td><code>(manager_id, status, type)</code></td></tr>
-<tr><td>codespace_operation</td><td><code>(codespace_id, generation)</code></td></tr>
+<tr><td>codespace_operation</td><td><code>(codespace_id)</code></td></tr>
 </tbody></table>
 </div>
 <h2 id="本地-cache"><a class="header" href="#本地-cache">本地 Cache</a></h2>
 <p>Gitea 本地 cache 只保存短期易失数据：</p>
 <ul>
 <li><code>codespace:open-token:{token_hash}</code>（参见 <a href="glossary.html#gateway-open-token">Gateway Open Token</a>）</li>
-<li><code>codespace:runtime-meta:{codespace_uuid}:{generation}</code>（参见 <a href="glossary.html#runtime-metadata">Runtime Metadata</a>）</li>
+<li><code>codespace:runtime-meta:{codespace_id}</code>（参见 <a href="glossary.html#runtime-metadata">Runtime Metadata</a>）</li>
 </ul>
 <p>规则：</p>
 <ul>
@@ -307,13 +297,13 @@
 <ul>
 <li><code>endpoints</code> 以 JSON 数组存储在 Runtime Metadata cache 中。</li>
 <li><code>internal_ssh</code> 不在普通 UI/API 输出中暴露。</li>
-<li><code>endpoint_id</code> 由 Manager 上报并确保在同一 <code>codespace_uuid + generation</code> 内唯一。</li>
-<li>不同 codespace 或不同 generation 可以使用相同 <code>endpoint_id</code>。</li>
+<li><code>endpoint_id</code> 由 Manager 上报并确保在同一 <code>codespace_id</code> 内唯一。</li>
+<li>不同 codespace 可以使用相同 <code>endpoint_id</code>。</li>
 <li><code>label</code> 只用于 UI 展示，可以重复，不是路由键。</li>
 <li><code>health</code> 可以作为 Endpoint 可选展示字段，不参与授权。</li>
 <li>Runtime Metadata 保存在 Gitea 本地 cache。</li>
-<li>key：<code>codespace:runtime-meta:{codespace_uuid}:{generation}</code></li>
-<li>value：当前 generation 的 <code>endpoints + internal_ssh + boot + resource_usage + last_reported_unix</code></li>
+<li>key：<code>codespace:runtime-meta:{codespace_id}</code></li>
+<li>value：当前 <code>endpoints + internal_ssh + boot + resource_usage + last_reported_unix</code></li>
 <li>ttl：<code>MANAGER_OFFLINE_TIMEOUT * 2</code></li>
 <li>只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。</li>
 <li>Gitea 信任 Runtime Metadata cache 仅表示展示和 Endpoint existence check 信任 cache，不表示绕过 codespace 主状态校验。</li>
@@ -332,7 +322,7 @@
 <pre><code class="language-text">codespace_log/
   {manager_id}/
     {codespace_uuid}/
-      {operation_uuid}.log
+      {operation_id}.log
 </code></pre>
 <p>规则：</p>
 <ul>
@@ -340,17 +330,18 @@
 <li>每条存储日志都是已脱敏单行</li>
 <li>每行包含 timestamp 和 message</li>
 <li>message 内部不允许真实换行</li>
-<li>按 cursor/offset 读取</li>
+<li>按 <code>log_indexes</code> 提供的行号到 byte offset 映射进行 seek 读取</li>
 <li>delete 成功后删除 codespace 日志</li>
 <li><code>error</code> 日志保留到用户 delete 或 failed cleanup</li>
 </ul>
-<p>日志文件以 <code>operation_uuid</code> 命名，因为 Gitea 只保存 lifecycle operation 执行期日志。日志元数据归属 <code>codespace_operation</code>，running 期间没有未完成 operation 时不追加 Gitea operation log。</p>
+<p>日志文件以 <code>operation_id</code> 命名，因为 Gitea 只保存 lifecycle operation 执行期日志。日志元数据归属 <code>codespace_operation</code>，running 期间没有未完成 operation 时不追加 Gitea operation log。</p>
 <p>operation 日志元数据：</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
 <tr><td><code>log_filename</code></td><td>日志文件名</td></tr>
 <tr><td><code>log_line_count</code></td><td>日志行数</td></tr>
 <tr><td><code>log_size</code></td><td>日志大小</td></tr>
-<tr><td><code>last_log_unix</code></td><td>最近日志时间戳</td></tr>
+<tr><td><code>log_indexes</code></td><td>行号到 byte offset 索引（LONGBLOB，varint <code>[]int64</code>）</td></tr>
+<tr><td><code>log_in_storage</code></td><td>日志存储位置（DBFS 或对象存储）</td></tr>
 <tr><td><code>log_expired</code></td><td>日志是否过期</td></tr>
 </tbody></table>
 </div>

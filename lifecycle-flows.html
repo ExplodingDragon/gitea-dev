@@ -228,7 +228,7 @@
 <li>claim 前：<code>codespace.manager_id=0</code>，<code>operation.manager_id=0</code>。</li>
 <li><code>FetchOperation</code> 原子 claim operation。</li>
 <li>claim 同时写入 <code>codespace.manager_id</code>、<code>operation.manager_id</code>，并将 codespace 从 <code>queued</code> 推进到 <code>booting</code>。</li>
-<li>claim 条件包含 caller Manager enabled、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>manager_id=0</code>、当前 status、active operation 和 generation。</li>
+<li>claim 条件包含 caller Manager enabled、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>manager_id=0</code>、当前 status 和 active operation。</li>
 <li>本次 <code>FetchOperation</code> 的 <code>capacity_available</code> 必须大于 0。</li>
 <li>Gitea 不在 claim、<code>done|failed</code> 或 timeout 时修改 <code>last_capacity_total / last_capacity_available</code>。</li>
 <li>claim 成功后，operation 归属不可被后续 <code>DeclareManager</code> 覆盖。</li>
@@ -277,7 +277,6 @@
 <tr><td><code>CODESPACE_OWNER_NAME</code></td><td>codespace 创建者名称</td></tr>
 <tr><td><code>CODESPACE_REPO_NAME</code></td><td>仓库名称</td></tr>
 <tr><td><code>CODESPACE_WORKSPACE_DIR</code></td><td>工作目录路径（由 Manager 注入）</td></tr>
-<tr><td><code>CODESPACE_SSH_USER</code></td><td>SSH 用户名</td></tr>
 <tr><td><code>CODESPACE_MANAGER_BASE_URL</code></td><td>Runtime HTTP API 基础 URL（由 Manager 注入）</td></tr>
 <tr><td><code>CODESPACE_RUNTIME_TOKEN</code></td><td>Runtime Token（由 Manager 注入）</td></tr>
 <tr><td><code>CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY</code></td><td>Gateway 内部 SSH 公钥</td></tr>
@@ -294,8 +293,8 @@
 <li><code>CODESPACE_NAME</code> 生成规则固定为 <code>cs-{short_uuid}</code>，其中 <code>short_uuid</code> 取 <code>codespace.uuid</code> 前 12 位。</li>
 <li>UI 展示名称使用同一派生规则。</li>
 <li>delete 后 <code>CODESPACE_NAME</code> 不复用。</li>
-<li>Runtime Instance name 由 Manager 用 <code>codespace_uuid + generation</code> 本地生成，<code>CODESPACE_NAME</code> 作为补充标识。</li>
-<li>Runtime Instance name 仍由 Manager 用 <code>codespace_uuid + generation</code> 本地生成。</li>
+<li>Runtime Instance name 由 Manager 用 <code>codespace_uuid</code> 本地生成，<code>CODESPACE_NAME</code> 作为补充标识。</li>
+<li>Runtime Instance name 仍由 Manager 用 <code>codespace_uuid</code> 本地生成。</li>
 <li><code>CODESPACE_WORKSPACE_DIR</code>、<code>CODESPACE_MANAGER_BASE_URL</code> 和 <code>CODESPACE_RUNTIME_TOKEN</code> 由 Manager 创建 Runtime 时注入，不来自 Gitea Operation Payload。</li>
 </ul>
 <p>Boot 完成条件：</p>
@@ -345,7 +344,7 @@ report-endpoints
 <li>Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 <code>deleting</code>，等待 Manager 回来领取。</li>
 <li>delete timeout 后进入 <code>error</code>。</li>
 <li>repository 删除事务创建的 delete operation 不依赖 repository row 生成 payload。</li>
-<li>repository DB 记录删除后，Manager 仍能通过 <code>codespace_uuid + generation</code> 领取 delete operation 并完成 Runtime cleanup。</li>
+<li>repository DB 记录删除后，Manager 仍能通过 <code>codespace_uuid</code> 领取 delete operation 并完成 Runtime cleanup。</li>
 <li>source repository 删除后，相关 codespace 列表和详情页显示 <code>source repository deleted</code>。</li>
 <li>repository 删除不发送站点通知。</li>
 </ul>
@@ -375,7 +374,6 @@ report-endpoints
 <ul>
 <li>ID 是权威关联。</li>
 <li>名称每次展示时解析。</li>
-<li><code>ssh_user</code> 创建后不随重命名变化。</li>
 <li>create/resume operation payload 使用当时当前名称重新生成 clone/web URL。</li>
 <li>显示缓存和 runtime 动态数据按需从 cache 或 Manager 获取，每次展示时计算。</li>
 </ul>

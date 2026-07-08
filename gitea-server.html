@@ -287,9 +287,9 @@ DELETE /codespace/{uuid}
 <li><code>created_unix</code></li>
 <li><code>updated_unix</code></li>
 <li><code>stopped_unix</code></li>
-<li><code>creator_id</code></li>
-<li><code>creator_display_name</code></li>
-<li><code>creator_deleted</code></li>
+<li><code>user_id</code></li>
+<li><code>user_display_name</code></li>
+<li><code>user_deleted</code></li>
 <li><code>repo_id</code></li>
 <li><code>repo_display_name</code></li>
 <li><code>repo_deleted</code></li>
@@ -302,7 +302,6 @@ DELETE /codespace/{uuid}
 <li><code>manager_online</code></li>
 <li><code>log_line_count</code></li>
 <li><code>log_size</code></li>
-<li><code>last_log_unix</code></li>
 <li><code>log_expired</code></li>
 <li><code>allowed_actions</code></li>
 </ul>
@@ -330,7 +329,7 @@ DELETE /codespace/{uuid}
 <li>仅通过 Connect RPC 对 Manager 暴露控制面接口</li>
 </ul>
 <p>Manager 认证 header：</p>
-<pre><code class="language-text">x-codespace-manager-uuid: &lt;manager uuid&gt;
+<pre><code class="language-text">x-codespace-manager-id: &lt;manager id&gt;
 x-codespace-manager-secret: &lt;manager secret&gt;
 </code></pre>
 <p>只有 <code>RegisterManager</code> 不使用 Manager header。它使用一次性 registration secret 认证。</p>
@@ -343,7 +342,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 </ul>
 <h3 id="declaremanager"><a class="header" href="#declaremanager">DeclareManager</a></h3>
 <ul>
-<li>更新 Manager 版本、gateway 地址、tags、capacity、内部 SSH 公钥和诊断 metadata。</li>
+<li>更新 Manager 版本、gateway 地址、tags 和诊断 metadata。</li>
 <li>更新 <code>last_online_unix</code>。</li>
 <li><code>DeclareManager</code> 同时作为 heartbeat。</li>
 <li>Manager 周期调用 <code>DeclareManager</code>；心跳间隔严格小于 <code>MANAGER_OFFLINE_TIMEOUT</code>，建议不超过其三分之一。</li>
@@ -391,7 +390,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>更新 progress/stage。</li>
 <li>写入终态结果 <code>done|failed</code>。</li>
 <li>触发 Gitea 服务层同步执行 <a href="glossary.html#state-finalization">State Finalization</a>。</li>
-<li>匹配 <code>operation.uuid</code>、<code>operation.manager_id</code>、<code>codespace.active_operation_id</code> 和 <code>codespace.generation</code>。</li>
+<li>匹配 <code>operation.id</code>、<code>operation.manager_id</code> 和 <code>codespace.active_operation_id</code>。</li>
 <li>operation 已进入 <code>done|failed</code> 后终态不可再改变。</li>
 <li>重复提交相同终态可以幂等返回当前结果，但不重复执行 State Finalization。</li>
 <li>lease 过期后拒绝 progress 和 lease update。</li>
@@ -405,22 +404,23 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <ul>
 <li>按 offset 追加已脱敏日志。</li>
 <li>拒绝日志空洞。</li>
-<li>要求匹配 <code>operation_uuid / codespace_uuid / generation</code>。</li>
-<li><code>operation_uuid</code> 始终存在，不允许为空。</li>
-<li>匹配 <code>operation.uuid</code>、<code>operation.manager_id</code>、<code>codespace.active_operation_id</code> 和 <code>codespace.generation</code>。</li>
+<li>要求匹配 <code>operation_id / codespace_uuid</code>。</li>
+<li><code>operation_id</code> 始终存在，不允许为空。</li>
+<li>匹配 <code>operation.id</code>、<code>operation.manager_id</code> 和 <code>codespace.active_operation_id</code>。</li>
 <li>只允许 <code>operation.status=queued|running</code> 时追加日志。</li>
 <li>operation 进入 <code>done|failed</code> 后不允许继续追加日志。</li>
 </ul>
 <h3 id="reportruntimemetadata"><a class="header" href="#reportruntimemetadata">ReportRuntimeMetadata</a></h3>
 <ul>
 <li>只写 <a href="glossary.html#runtime-metadata">Runtime Metadata</a> 到本地 cache。</li>
+<li>成功写入时更新 <code>last_active_unix</code>。</li>
 <li>不写主状态。</li>
 <li>校验调用方 Manager 已通过认证。</li>
 <li>校验 <code>codespace.manager_id == caller.manager_id</code>。</li>
-<li>校验 <code>generation == codespace.generation</code>。</li>
+<li>校验 <code>caller operation_id == codespace.active_operation_id</code>，不匹配则拒绝为 stale。</li>
 <li>只接受 <code>booting|running|resuming|stopping</code> 状态写入。</li>
 <li><code>queued|stopped|deleting|error</code> 拒绝写入 Runtime Metadata。</li>
-<li>stale generation 返回 stale，不写 cache，不改主状态。</li>
+<li>stale 上报返回 stale，不写 cache，不改主状态。</li>
 <li>成功写入时刷新 cache TTL 为 <code>MANAGER_OFFLINE_TIMEOUT * 2</code>。</li>
 <li><code>stopping</code> 写入只用于展示 stop 过程中的运行信息，不允许 open/SSH。</li>
 <li>Manager 启动后为所有仍由自己持有且处于 <code>booting|running|stopping|resuming</code> 的 codespace 重建 Runtime Metadata cache。</li>
@@ -437,35 +437,6 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>校验并消费 <a href="glossary.html#gateway-open-token">Gateway Open Token</a>。</li>
 <li>返回校验后的 open binding。</li>
 </ul>
-<h3 id="verifysshpassword"><a class="header" href="#verifysshpassword">VerifySSHPassword</a></h3>
-<ul>
-<li>Gateway 调用，做 Gitea 侧认证和授权判定。</li>
-<li>不返回长期凭据。</li>
-</ul>
-<p><code>VerifySSHPasswordRequest</code>：</p>
-<div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>ssh_user</code></td><td>SSH 用户名</td></tr>
-<tr><td><code>password</code></td><td>密码（含 TOTP 后缀）</td></tr>
-<tr><td><code>source_ip</code></td><td>来源 IP</td></tr>
-<tr><td><code>user_agent_or_client_version</code></td><td>客户端版本</td></tr>
-<tr><td><code>gateway_session_id</code></td><td>Gateway session ID</td></tr>
-</tbody></table>
-</div>
-<p>若用户启用 TOTP，SSH 标准 password auth 仍只提供一个密码字段。Gateway 使用后缀约定承载 TOTP：</p>
-<pre><code class="language-text">&lt;account_password&gt;:totp=&lt;6-digit-code&gt;
-</code></pre>
-<p>Gitea 只在密码字段末尾匹配 <code>:totp=([0-9]{6})$</code>。匹配成功时，前缀原样作为账户密码，6 位数字作为 TOTP code。未匹配时，整个字段都作为账户密码。</p>
-<p>WebAuthn-only 用户不能使用 SSH 密码认证，只能使用 SSH 公钥认证。</p>
-<p><code>VerifySSHPasswordResponse</code>：</p>
-<div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>allowed</code></td><td>是否允许</td></tr>
-<tr><td><code>user_id</code></td><td>用户 ID</td></tr>
-<tr><td><code>codespace_uuid</code></td><td>codespace UUID</td></tr>
-<tr><td><code>generation</code></td><td>generation</td></tr>
-<tr><td><code>failure_category</code></td><td>失败分类</td></tr>
-<tr><td><code>failure_retryable</code></td><td>是否可重试</td></tr>
-</tbody></table>
-</div>
 <h3 id="verifysshpublickey"><a class="header" href="#verifysshpublickey">VerifySSHPublicKey</a></h3>
 <ul>
 <li>Gateway 调用，做 Gitea 侧认证和授权判定。</li>
@@ -473,7 +444,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 </ul>
 <p><code>VerifySSHPublicKeyRequest</code>：</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>ssh_user</code></td><td>SSH 用户名</td></tr>
+<tr><td><code>codespace_uuid</code></td><td>codespace UUID（Gateway 从 SSH 连接串 <code>cs-{id}</code> 解析）</td></tr>
 <tr><td><code>public_key_blob</code></td><td>公钥 blob</td></tr>
 <tr><td><code>public_key_fingerprint</code></td><td>公钥 fingerprint（仅日志诊断，可为空）</td></tr>
 <tr><td><code>public_key_algorithm</code></td><td>公钥算法（仅日志诊断，可为空）</td></tr>
@@ -487,36 +458,28 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <tr><td><code>allowed</code></td><td>是否允许</td></tr>
 <tr><td><code>user_id</code></td><td>用户 ID</td></tr>
 <tr><td><code>codespace_uuid</code></td><td>codespace UUID</td></tr>
-<tr><td><code>generation</code></td><td>generation</td></tr>
 <tr><td><code>failure_category</code></td><td>失败分类</td></tr>
 <tr><td><code>failure_retryable</code></td><td>是否可重试</td></tr>
 </tbody></table>
 </div>
 <p>Gitea 校验：</p>
 <ul>
-<li><code>ssh_user</code> 映射到有效 codespace。</li>
+<li><code>codespace_uuid</code> 映射到有效 codespace。</li>
 <li>codespace 为 <code>running</code>。</li>
-<li>认证者是 codespace 创建用户。</li>
+<li>公钥认证解析 <code>public_key_blob</code>，并确认其通过 Gitea 现有 SSH key 模型归属于 codespace 创建用户（<code>models/asymkey/ssh_key.go</code>）；若站点强制 2FA，用户必须已启用符合站点要求的 2FA。</li>
 <li>创建用户当前允许登录。</li>
-<li>密码认证满足 password 与 TOTP 要求。</li>
-<li>公钥认证通过 SSH key 归属判定用户身份；若站点强制 2FA，用户必须已启用符合站点要求的 2FA。</li>
-<li>WebAuthn-only 用户不能使用 SSH 密码认证。</li>
 <li>repository access precondition 仍通过。</li>
 <li>绑定 Manager 当前在线且未被 disabled。</li>
-<li>密码认证被该 codespace 允许。</li>
-<li>本地密码和 TOTP 使用 Gitea 现有校验逻辑（<code>twofactor.go:ValidateAndConsumeTOTP</code>）。</li>
-<li>公钥认证解析 <code>public_key_blob</code>，并确认其通过 Gitea 现有 SSH key 模型归属于创建用户（<code>models/asymkey/ssh_key.go</code>）。</li>
 <li>请求中的 <code>public_key_fingerprint</code> 和 <code>public_key_algorithm</code> 仅用于日志诊断，可以为空，不参与认证判断。</li>
 <li><code>public_key_blob</code> 解析失败返回 <code>invalid_credentials</code>。</li>
 <li><code>public_key_blob</code> 是认证的唯一依据，Gateway 仅在 <code>VerifySSHPublicKey</code> 中传递完整公钥。</li>
 </ul>
-<p>Gateway 按 source IP、<code>ssh_user</code>、<code>codespace_uuid</code> 做限流和退避。限流和退避由 Gateway 负责。</p>
+<p>Gateway 按 source IP、<code>codespace_uuid</code> 做限流和退避。限流和退避由 Gateway 负责。</p>
 <p>Gitea 可以向 Gateway 返回失败分类用于日志和退避。Gateway 对 SSH client 只返回统一认证失败。</p>
 <p>失败分类：</p>
 <div class="table-wrapper"><table><thead><tr><th>分类</th><th>含义</th></tr></thead><tbody>
-<tr><td><code>invalid_credentials</code></td><td>密码或公钥无效</td></tr>
+<tr><td><code>invalid_credentials</code></td><td>公钥无效</td></tr>
 <tr><td><code>login_restricted</code></td><td>用户登录受限</td></tr>
-<tr><td><code>totp_required_or_invalid</code></td><td>需要 TOTP 或 TOTP 无效</td></tr>
 <tr><td><code>codespace_not_found</code></td><td>codespace 不存在</td></tr>
 <tr><td><code>codespace_not_running</code></td><td>codespace 未运行</td></tr>
 <tr><td><code>ssh_disabled</code></td><td>SSH 已禁用</td></tr>
@@ -532,19 +495,16 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>Gitea 检测 <a href="glossary.html#state-divergence">State Divergence</a>，并可返回 <a href="glossary.html#manager-instruction">Manager Instruction</a> <code>cleanup_local_runtime</code>。</li>
 </ul>
 <p>所有 operation-bound RPC 都携带：</p>
-<pre><code class="language-text">operation_uuid
+<pre><code class="language-text">operation_id
 codespace_uuid
-generation
 </code></pre>
 <p><a href="glossary.html#stale-report">Stale Report</a> 不改变当前状态。</p>
 <h3 id="operation-payload"><a class="header" href="#operation-payload">Operation Payload</a></h3>
 <p><code>FetchOperation</code> 返回给 Manager 的 operation payload 字段：</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>适用类型</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>operation_uuid</code></td><td>全部</td><td>Operation UUID</td></tr>
+<tr><td><code>operation_id</code></td><td>全部</td><td>Operation ID</td></tr>
 <tr><td><code>operation_type</code></td><td>全部</td><td><code>create</code>/<code>resume</code>/<code>stop</code>/<code>delete</code></td></tr>
 <tr><td><code>codespace_uuid</code></td><td>全部</td><td>Codespace UUID</td></tr>
-<tr><td><code>generation</code></td><td>全部</td><td>当前 generation</td></tr>
-<tr><td><code>ssh_user</code></td><td>全部</td><td>SSH 用户名</td></tr>
 <tr><td><code>lease_deadline_unix</code></td><td>全部</td><td>Lease 截止时间</td></tr>
 <tr><td><code>repo_clone_url</code></td><td>create/resume</td><td>仓库 clone URL</td></tr>
 <tr><td><code>repo_web_url</code></td><td>create/resume</td><td>仓库 Web URL</td></tr>
@@ -568,10 +528,10 @@ generation
 <li>PR 场景下 <code>create|resume</code> payload 同时包含 base/head clone URL 与 web URL。</li>
 <li><code>stop|delete</code> payload 不包含 repository clone/web URL、base/head URL、ref、commit 或 pull 字段。</li>
 <li><code>delete</code> payload 不依赖 repository row 生成；repository DB 记录删除后，Manager 仍可领取并完成 cleanup。</li>
-<li>Manager 删除 Runtime 只依赖 <code>codespace_uuid + generation</code> 的本地确定性映射。</li>
+<li>Manager 删除 Runtime 只依赖 <code>codespace_uuid</code> 的本地确定性映射。</li>
 <li>Gitea 不下发 <code>workspace_dir</code> 或 <code>manager_base_url</code>。</li>
 <li>Gitea 不下发 Runtime Instance ID、Runtime Instance name、镜像、资源、backend、mount、network 或 Endpoint upstream。</li>
-<li>Manager 使用 <code>codespace_uuid</code> 和 <code>generation</code> 在本地生成或查找 Runtime Instance 的确定性映射。</li>
+<li>Manager 使用 <code>codespace_uuid</code> 在本地生成或查找 Runtime Instance 的确定性映射。</li>
 <li>Manager 创建 Runtime 时自己决定并注入 <code>CODESPACE_WORKSPACE_DIR</code>、<code>CODESPACE_MANAGER_BASE_URL</code> 和 <code>CODESPACE_RUNTIME_TOKEN</code>。</li>
 <li><code>lease_deadline_unix</code> 是本次 claim/续租的截止时间，Manager 在截止前通过 <code>UpdateOperation</code> 续租或上报终态。</li>
 </ul>
@@ -606,8 +566,8 @@ generation
 <li>每次 create/resume 都替换 token。</li>
 <li>stop/delete/error/source repo 删除/user 删除时吊销 token。</li>
 <li>只有 <code>booting</code>、<code>running</code>、<code>resuming</code> 允许持有 active token；<code>stopped</code>、<code>deleting</code>、<code>error</code> 不允许申请或继续使用 token。</li>
-<li>同一 <code>codespace_uuid + generation</code> 只允许保留一个 active token。</li>
-<li>同一 generation 重复 <code>RequestGiteaToken</code> 时，Gitea 先吊销旧 token，再签发新 token，并更新 <code>codespace.gitea_token_id</code>。</li>
+<li>同一 codespace 只允许保留一个 active token。</li>
+<li>重复 <code>RequestGiteaToken</code> 时，Gitea 先吊销旧 token，再签发新 token，并更新 <code>codespace.gitea_token_id</code>。</li>
 </ul>
 <p>删除保护：</p>
 <ul>
@@ -638,7 +598,7 @@ generation
 <li>非 JWT</li>
 <li>不进入数据库</li>
 <li>以 token hash 写入 Gitea 本地 cache</li>
-<li>绑定 <code>user_id / codespace_uuid / generation / endpoint_id / manager_uuid</code></li>
+<li>绑定 <code>user_id / codespace_uuid / endpoint_id / manager_id</code></li>
 </ul>
 <p>签发算法（与现有 access_token 风格一致，使用纯随机 + sha256）：</p>
 <pre><code class="language-text">token = hex(crypto random 32 bytes)
@@ -655,7 +615,7 @@ token_hash = sha256(salt + token)
 </ul>
 <p>Cache 结构：</p>
 <pre><code class="language-text">key = codespace:open-token:{token_hash}
-value = user_id + codespace_uuid + generation + endpoint_id + manager_uuid + issued_unix + expires_unix
+value = user_id + codespace_uuid + endpoint_id + manager_id + issued_unix + expires_unix
 ttl = OPEN_TOKEN_EXPIRE
 </code></pre>
 <p>校验步骤：</p>
@@ -663,10 +623,9 @@ ttl = OPEN_TOKEN_EXPIRE
 <li>计算提交 token 的 hash。</li>
 <li>在本机锁保护下读取并删除 cache 记录。</li>
 <li>校验过期时间。</li>
-<li>校验调用方 Manager 身份等于 <code>manager_uuid</code>。</li>
+<li>校验调用方 Manager 身份等于 <code>manager_id</code>。</li>
 <li>重新读取 codespace。</li>
-<li>校验 generation 仍匹配。</li>
-<li>校验 codespace 当前为 <code>running</code>。</li>
+<li>校验 codespace 当前为 <code>running</code>，且 <code>active_operation_id</code> 匹配。</li>
 <li>校验用户仍具备 Interactive Access。</li>
 <li>校验 Endpoint 仍存在于当前 Runtime Metadata。</li>
 <li>校验 Manager 仍在线。</li>
@@ -675,9 +634,8 @@ ttl = OPEN_TOKEN_EXPIRE
 <p>成功返回：</p>
 <pre><code class="language-text">user_id
 codespace_uuid
-generation
 endpoint_id
-manager_uuid
+manager_id
 </code></pre>
 <p>Cache 丢失即 token 失效，用户重新从 Gitea 发起 open。</p>
 <p>Token 是一次性跳转凭据，写入 Gitea 本地 cache；cache 丢失只影响当次 open，不改变 codespace 生命周期状态。</p>
@@ -704,7 +662,6 @@ RESUME_TIMEOUT = 15m
 STOP_TIMEOUT = 10m
 DELETE_TIMEOUT = 15m
 OPEN_TOKEN_EXPIRE = 60s
-SSH_PASSWORD_AUTH_ALLOWED = true
 LOG_MAX_LINE_SIZE = 64KiB
 LOG_RETENTION_DAYS = 365
 FAILED_RETENTION_DAYS = 365
@@ -728,7 +685,6 @@ SCHEDULE = @daily
 <p>说明：</p>
 <ul>
 <li><code>OPEN_TOKEN_EXPIRE</code> 也是 <a href="glossary.html#gateway-open-token">Gateway Open Token</a> 的 Gitea cache TTL。</li>
-<li><code>SSH_PASSWORD_AUTH_ALLOWED</code> 是新建 codespace 的默认内部策略值，可由 Gitea 服务层按站点策略进一步收紧。</li>
 <li>SSH 认证限流与退避属于 Gateway 配置，不属于 Gitea 配置。</li>
 <li><code>OPERATION_LEASE_TIMEOUT</code> 是 Manager claim/续租 <a href="glossary.html#operation">Operation</a> 的 lease 时长。</li>
 <li><code>REGISTRATION_SECRET_EXPIRE</code> 是 registration secret 的有效期。</li>
