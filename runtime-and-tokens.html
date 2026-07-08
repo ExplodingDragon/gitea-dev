@@ -1,0 +1,489 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>运行时与凭据 - Gitea Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="运行时与凭据"><a class="header" href="#运行时与凭据">运行时与凭据</a></h1>
+<h2 id="runtime-http-api"><a class="header" href="#runtime-http-api">Runtime HTTP API</a></h2>
+<p><code>CODESPACE_MANAGER_BASE_URL</code> 是 Runtime Instance 访问 Manager Runtime HTTP API 的根地址。</p>
+<p>Runtime HTTP API 属于 Manager 私有运行网络，不属于 Gitea 路由。</p>
+<p>所有请求使用：</p>
+<pre><code class="language-text">Authorization: Bearer &lt;CODESPACE_RUNTIME_TOKEN&gt;
+Content-Type: application/json
+</code></pre>
+<p>网络规则：</p>
+<ul>
+<li>只允许 Runtime Instance 私网 source IP 调用。</li>
+<li>source IP 与 Runtime Token 同时校验。</li>
+<li>禁止公网、浏览器页面或普通用户终端直接调用。</li>
+</ul>
+<p>路径前缀：</p>
+<pre><code class="language-text">{CODESPACE_MANAGER_BASE_URL}/api/runtime/v1
+</code></pre>
+<p>最小接口：</p>
+<pre><code class="language-text">GET    /api/runtime/v1/boot
+POST   /api/runtime/v1/boot
+GET    /api/runtime/v1/endpoints/{endpoint_id}
+POST   /api/runtime/v1/endpoints/{endpoint_id}
+PUT    /api/runtime/v1/endpoints/{endpoint_id}
+DELETE /api/runtime/v1/endpoints/{endpoint_id}
+</code></pre>
+<p>Runtime Instance 只需要获取初始化信息和声明可打开入口。生命周期状态、Gitea token、日志和 Runtime Metadata 都由 Manager 统一转接到 Gitea，接口面保持在 boot/endpoints 可减少 Runtime 与 Gitea 设计的耦合。</p>
+<p><code>GET /boot</code>：</p>
+<ul>
+<li>Runtime Instance 启动后调用，用于查询初始化所需的完整 boot session 信息。</li>
+<li>返回 Manager 当前 Runtime Token 绑定的信息。</li>
+<li>不改变 boot 状态。</li>
+<li>返回内容包含：</li>
+</ul>
+<pre><code class="language-text">codespace_uuid
+generation
+operation_uuid
+operation_type=create|resume
+server_time_unix
+workspace_dir
+runtime_token_bound_source_ip
+gitea_repo_clone_url
+gitea_repo_web_url
+gitea_base_repo_clone_url
+gitea_base_repo_web_url
+gitea_head_repo_clone_url
+gitea_head_repo_web_url
+gitea_repo_id
+gitea_repo_full_name
+gitea_owner_id
+gitea_owner_name
+gitea_owner_type
+gitea_owner_display_name
+gitea_ref_type
+gitea_ref_name
+gitea_commit_sha
+gitea_pull_id
+gitea_token
+codespace_name
+codespace_owner_name
+codespace_repo_name
+codespace_ssh_user
+gateway_internal_ssh_public_key
+</code></pre>
+<p><code>GET /boot</code> 规则：</p>
+<ul>
+<li>这些信息由 Manager 根据 Gitea operation payload 和 Manager 本地配置组合生成。</li>
+<li><code>workspace_dir</code> 由 Manager 决定，不来自 Gitea payload。</li>
+<li><code>gitea_token</code> 来自 Gitea <code>RequestGiteaToken</code>。</li>
+<li><code>codespace_name</code> 使用 <code>cs-{short_uuid}</code> 派生规则。</li>
+<li><code>runtime_token_bound_source_ip</code> 只用于 Runtime 自检，不参与 Gitea 权限判断。</li>
+</ul>
+<p><code>POST /boot</code>：</p>
+<ul>
+<li>Runtime 初始化完成后调用一次。</li>
+<li>成功后 Manager 将 boot 结果作为 create/resume operation 的完成依据之一。</li>
+<li>重复调用返回 conflict，不覆盖第一次结果。</li>
+<li>请求内容包含：</li>
+</ul>
+<pre><code class="language-text">success=true|false
+stage
+message
+started_unix
+completed_unix
+</code></pre>
+<p><code>success=true</code> 时请求内容还包含：</p>
+<pre><code class="language-text">workspace_head_sha
+internal_ssh_host
+internal_ssh_port
+internal_ssh_user
+internal_ssh_host_key_fingerprint
+</code></pre>
+<p><code>POST /boot</code> 规则：</p>
+<ul>
+<li><code>success=true</code> 时，workspace checkout 到锁定 <code>commit_sha</code>。</li>
+<li><code>success=true</code> 时，<code>workspace_head_sha == commit_sha</code>。</li>
+<li><code>success=true</code> 时，internal SSH 信息完整，且 internal SSH 可被 Gateway 连通。</li>
+<li><code>success=false</code> 时，Manager 将 create/resume operation 标记 failed。</li>
+<li><code>POST /boot</code> 不上报 Endpoint。</li>
+<li>boot 完成后，Runtime 仍可增删改 Endpoint，但不能再次 <code>POST /boot</code>。</li>
+</ul>
+<p>Endpoint API：</p>
+<ul>
+<li><code>GET /endpoints/{endpoint_id}</code> 查询单个 Endpoint 当前声明，不存在返回 404。</li>
+<li><code>POST /endpoints/{endpoint_id}</code> 创建 Endpoint，已存在返回 conflict。</li>
+<li><code>PUT /endpoints/{endpoint_id}</code> 更新 Endpoint，不存在返回 404。</li>
+<li><code>DELETE /endpoints/{endpoint_id}</code> 删除 Endpoint；不存在返回 204。</li>
+<li><code>endpoint_id</code> 必须匹配 <code>[A-Za-z0-9_-]+</code>。</li>
+<li><code>workspace</code> 是默认 Web IDE 保留 ID。</li>
+<li>删除 <code>workspace</code> 允许；UI 默认 Open 会退回 codespace 详情页。</li>
+</ul>
+<p>Endpoint create/update 请求体：</p>
+<pre><code class="language-text">label
+upstream_scheme
+upstream_host
+upstream_port
+upstream_path
+health
+</code></pre>
+<p>Endpoint API 规则：</p>
+<ul>
+<li><code>label</code> 会进入 Gitea Runtime Metadata。</li>
+<li><code>upstream_*</code> 只保存在 Manager/Gateway 内部状态，不上报 Gitea。upstream 是 Manager/Gateway 内部网络细节，可能包含私网地址和本地路径；Gitea 只需要 Endpoint 是否存在、展示 label 和可选 health。</li>
+<li><code>health</code> 可选；若上报 Gitea，只作为 UI 展示，不参与授权。</li>
+<li>每次 Endpoint create/update/delete 后，Manager 重新生成当前 Runtime Metadata 快照并调用 <code>ReportRuntimeMetadata</code>。</li>
+<li>Gitea 不保存 upstream。</li>
+</ul>
+<h2 id="runtime-metadata"><a class="header" href="#runtime-metadata">Runtime Metadata</a></h2>
+<p><code>ReportRuntimeMetadata</code> 只写当前 Runtime Metadata 快照。</p>
+<p>允许的结构：</p>
+<pre><code class="language-json">{
+  "runtime": {
+    "internal_ssh": {
+      "host": "10.0.0.12",
+      "port": 2222,
+      "user": "coder",
+      "auth_mode": "publickey",
+      "host_key_fingerprint": "SHA256:..."
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint_id": "workspace",
+      "label": "Workspace"
+    },
+    {
+      "endpoint_id": "app-3000",
+      "label": "App 3000"
+    }
+  ],
+  "boot": {
+    "stage": "run-init-script",
+    "message": "running init script",
+    "started_unix": 0,
+    "last_update_unix": 0
+  },
+  "resource_usage": {
+    "cpu": "unavailable",
+    "memory": "unavailable",
+    "disk": "unavailable",
+    "network": "unavailable"
+  },
+  "last_reported_unix": 0
+}
+</code></pre>
+<p>规则：</p>
+<ul>
+<li><code>endpoints</code> 不建独立表。</li>
+<li><code>internal_ssh</code> 不在普通 UI/API 输出中暴露。</li>
+<li><code>endpoint_id</code> 由 Manager 上报并确保在同一 <code>codespace_uuid + generation</code> 内唯一。</li>
+<li>不同 codespace 或不同 generation 可以使用相同 <code>endpoint_id</code>。</li>
+<li><code>label</code> 只用于 UI 展示，可以重复，不是路由键。</li>
+<li><code>health</code> 可以作为 Endpoint 可选展示字段，不参与授权。</li>
+<li>Runtime Metadata 不持久化到数据库，只保存在 Gitea 本地 cache。</li>
+<li>key：<code>codespace:runtime-meta:{codespace_uuid}:{generation}</code></li>
+<li>value：当前 generation 的 <code>endpoints + internal_ssh + boot + resource_usage + last_reported_unix</code></li>
+<li>ttl：<code>MANAGER_OFFLINE_TIMEOUT * 2</code></li>
+<li>只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。</li>
+<li>Gitea 信任 Runtime Metadata cache 仅表示展示和 Endpoint existence check 信任 cache，不表示绕过 codespace 主状态校验。</li>
+<li>Gitea 重启或本地 cache 丢失后，Runtime Metadata 由 Manager 重建。</li>
+<li>Manager 离线时，不允许新的 Endpoint 打开动作。</li>
+<li>Manager 离线时，不允许新的 SSH 接入。</li>
+<li>resource usage 是可选展示信息。</li>
+<li>缺失 resource usage 时显示 <code>unavailable</code>。</li>
+<li>Runtime Metadata 不保存历史，cache miss 只影响交互与展示，不直接推进主状态。</li>
+<li>Manager 在 <code>POST /boot</code> 成功或失败后、Endpoint create/update/delete 后、Manager 重启重建 active Runtime Metadata 后、周期 refresh 时调用 <code>ReportRuntimeMetadata</code>。</li>
+<li>Runtime Instance 不直接调用 Gitea 上报 Runtime Metadata。</li>
+</ul>
+<p>设计决策：</p>
+<ul>
+<li>Runtime Metadata 是动态观测数据，不是 lifecycle 事实。cache miss 只影响展示和交互入口，不推进或回滚主状态。</li>
+<li>主状态只能由 operation finalization 和 reconciliation 写入，避免运行时观测数据绕过状态机。</li>
+</ul>
+<h2 id="gitea-token"><a class="header" href="#gitea-token">Gitea Token</a></h2>
+<p>Codespace Gitea Token 复用 Gitea 现有 <code>access_token</code> 模型（<code>models/auth/access_token.go</code>）。</p>
+<p>设计依据：</p>
+<ul>
+<li>参考 Gitea Actions 的 token 认证与 repository 绑定模型。</li>
+<li>Actions 现有实现先把 task token 识别为内部 actor，再在 repository 权限判定阶段按 <code>task.RepoID</code> 校验目标 repository；同 repo 允许正常权限，跨 repo 再按额外限制收紧。</li>
+<li>Codespace 采用同类设计：继续复用现有 <code>access_token</code> 与 <code>write:repository</code> scope，再增加 <code>codespace.repo_id</code> 绑定校验。</li>
+<li>Gitea 现有 access token scope 只有 category 级（位图实现，如 <code>write:repository</code>），没有单仓库 scope。把"能做 repository 类操作"和"只能访问哪个 repository"拆开，才能在不扩展通用 token 系统的前提下得到可执行且可追踪的边界。</li>
+</ul>
+<p>规则：</p>
+<ul>
+<li>token 归属于 codespace 创建用户。</li>
+<li>所有 codespace token 统一签发 <code>write:repository</code>。</li>
+<li>这是 repository 类能力开关，不限定单仓库范围，也不提升创建用户原有 repository 权限。</li>
+<li><code>codespace.gitea_token_id</code> 指向当前 active access token。</li>
+<li><code>codespace.repo_id</code> 是唯一 repository binding。</li>
+<li>Runtime clone、fetch 和 push 只使用 Git HTTP(S) clone URL。</li>
+<li>Runtime 不使用 Gitea Git SSH clone URL。</li>
+<li>Git HTTP 认证链路识别 codespace-bound token。</li>
+<li>repository 访问只在现有支持 token/basic auth 的入口做 repo binding 校验。</li>
+<li>API v1 repository routes 在 <code>APIContext.TokenCanAccessRepo(repo)</code> 或同等公共入口追加 codespace-bound token 校验。</li>
+<li>Web/git HTTP 在 <code>CheckRepoScopedToken(ctx, repo, level)</code> 或同等公共入口追加 codespace-bound token 校验。</li>
+<li>显式启用 <code>AllowBasic</code> 或 <code>AllowOAuth2</code> 的 repository HTTP 路径复用上述公共校验入口。</li>
+<li>上述入口在 scope 校验外，额外校验 <code>target_repo_id == codespace.repo_id</code>。</li>
+<li>codespace-bound token 只能访问 <code>codespace.repo_id</code>；访问其他 repository 时即使 token scope 正常允许，也拒绝。</li>
+<li>codespace token 不授予 <code>read:user</code>、<code>read:organization</code> 或其他非 repository scope。</li>
+<li>Runtime 需要的 owner/org 展示信息由 Gitea 在 create/resume 时作为只读环境变量注入，不通过 codespace token 调用通用 user/org API。</li>
+<li>每次 create/resume 都替换 token。</li>
+<li>stop/delete/error/source repo 删除/user 删除时吊销 token。</li>
+<li>只有 <code>booting</code>、<code>running</code>、<code>resuming</code> 允许持有 active token；<code>stopped</code>、<code>deleting</code>、<code>error</code> 不允许申请或继续使用 token。</li>
+<li>同一 <code>codespace_uuid + generation</code> 只允许保留一个 active token。</li>
+<li>同一 generation 重复 <code>RequestGiteaToken</code> 时，Gitea 先吊销旧 token，再签发新 token，并更新 <code>codespace.gitea_token_id</code>。</li>
+</ul>
+<p>删除保护：</p>
+<ul>
+<li>被 <code>codespace.gitea_token_id</code> 引用的 access token 不允许手动删除。</li>
+<li>用户设置页和 API token 列表展示该 token 被 codespace 使用。</li>
+<li>这是对现有 access token 管理页的 codespace 扩展（增加占用状态展示），不引入新的 token 类型。</li>
+<li>UI/API 显示该 token 当前被哪个 codespace 占用。</li>
+<li>手动删除返回：
+<ul>
+<li>Web：提示先 stop/delete 对应 codespace。</li>
+<li>API：<code>409 Conflict</code>。</li>
+</ul>
+</li>
+<li>删除保护在 <code>DeleteAccessTokenByID</code> 或其统一服务入口执行，Web、API 和当前 token 删除都走同一判断。</li>
+<li>只有 codespace 生命周期服务可以吊销/删除该 token。</li>
+<li>codespace 生命周期服务使用专用内部入口 <code>DeleteAccessTokenByIDForCodespaceLifecycle(ctx, tokenID, codespaceID)</code> 删除。</li>
+<li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 必须校验 <code>codespace.gitea_token_id == tokenID</code>。</li>
+<li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 在同一事务内清空或更新 <code>codespace.gitea_token_id</code>。</li>
+<li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 不能暴露给 Web/API handler 直接调用。</li>
+<li>reconciliation 负责清理 codespace 已不存在但 token 仍标记占用的异常状态。</li>
+</ul>
+<h2 id="runtime-token"><a class="header" href="#runtime-token">Runtime Token</a></h2>
+<p>Runtime Token 只由 Manager 生成和校验。</p>
+<p>Gitea：</p>
+<ul>
+<li>不签发 Runtime Token。</li>
+<li>不保存 Runtime Token。</li>
+<li>不校验 Runtime Token。</li>
+<li>不在 ManagerService RPC 中接收 Runtime Token。</li>
+</ul>
+<p>Runtime Token 只用于 Runtime Instance 调用 Runtime HTTP API。</p>
+<p>设计决策：</p>
+<ul>
+<li>Runtime HTTP API 属于 Manager 私有面，不是 Gitea route。</li>
+<li>Gitea 不需要理解 Runtime Token，也不把 Runtime Token 纳入 Gitea token 生命周期。</li>
+<li>Manager 可以把 Runtime Token 与本地 Runtime Instance、source IP 和 generation 绑定。</li>
+</ul>
+<h2 id="manager-secret"><a class="header" href="#manager-secret">Manager Secret</a></h2>
+<p>manager secret 用于认证已注册 Manager 调用 ManagerService RPC。</p>
+<p>规则：</p>
+<ul>
+<li>只在 <code>RegisterManager</code> 响应中返回一次。</li>
+<li>由 Manager 保存在本地配置。</li>
+<li>Gitea 只保存 hash/salt。</li>
+<li>使用常量时间比较（<code>subtle.ConstantTimeCompare</code>）。</li>
+<li>registration secret 和 manager secret 是两个不同生命周期的凭据。</li>
+<li>registration secret 只用于 <code>gitea-codespace register</code> 调用 <code>RegisterManager</code>。</li>
+<li>manager secret 只用于已注册 Manager 调用后续 ManagerService RPC。</li>
+<li>重置 registration secret 只影响尚未消费的注册凭据，不影响任何现有 Manager 的 manager secret。</li>
+<li>已注册 Manager 的 manager secret 继续有效，除非管理员显式重置该 Manager 的 manager secret、禁用 Manager，或物理删除 Manager 记录。</li>
+<li>manager secret 明文只在 <code>RegisterManager</code> 成功或管理员显式重置该 Manager secret 时展示一次。</li>
+<li>Manager secret reset 是针对单个 Manager 的管理动作。</li>
+<li>reset 时 Gitea 生成新的 manager secret hash/salt，旧 manager secret 立即失效。</li>
+<li>Manager 需要更新本地配置后重新 <code>serve</code> 或重新 <code>DeclareManager</code>。</li>
+<li>不提供 Manager 自助 rotate RPC；manager secret reset 只能由具备管理权限的 Gitea 用户触发。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="user-access.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="data-and-operations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="user-access.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="data-and-operations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

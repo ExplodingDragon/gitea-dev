@@ -1,0 +1,608 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>用户接入 - Gitea Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="用户接入"><a class="header" href="#用户接入">用户接入</a></h1>
+<h2 id="web-页面"><a class="header" href="#web-页面">Web 页面</a></h2>
+<p>Web 页面只保留三类。</p>
+<h3 id="repository-codespace-入口页"><a class="header" href="#repository-codespace-入口页">Repository Codespace 入口页</a></h3>
+<pre><code class="language-text">GET  /{owner}/{repo}/codespace
+POST /{owner}/{repo}/codespace
+</code></pre>
+<p>作用：</p>
+<ul>
+<li>基于当前 repository/ref 上下文创建 codespace。</li>
+<li>展示当前用户在该 repository 下创建的 codespace。</li>
+<li>组织仓库下展示组织管理员可管理的其他成员 codespace。</li>
+<li>提供进入用户 codespace 列表页的入口。</li>
+</ul>
+<p>Repository 页面可以提供 "Open in Codespace" 入口：</p>
+<ul>
+<li>repository 主页</li>
+<li>branch/tag 下拉菜单</li>
+<li>pull request 页面</li>
+<li>commit 页面</li>
+</ul>
+<p>这些入口只提交 git 上下文，不提交 runtime 参数、image、VM/container 类型、Endpoint、SSH 或 backend 选项。</p>
+<p>创建输入：</p>
+<pre><code class="language-text">repo_id
+ref_type=branch|tag|commit|pull
+ref_name
+commit_sha
+pull_id
+</code></pre>
+<h3 id="用户-codespace-列表页"><a class="header" href="#用户-codespace-列表页">用户 Codespace 列表页</a></h3>
+<pre><code class="language-text">GET /codespace
+</code></pre>
+<p>该页面只展示当前用户创建的 codespace。</p>
+<p>展示字段：</p>
+<ul>
+<li>repo</li>
+<li>ref</li>
+<li>status</li>
+<li>last active</li>
+<li>状态摘要</li>
+<li>open / stop / resume / delete</li>
+</ul>
+<p>列表页不读取日志文件。</p>
+<h3 id="单个-codespace-页面"><a class="header" href="#单个-codespace-页面">单个 Codespace 页面</a></h3>
+<pre><code class="language-text">GET    /codespace/{uuid}
+GET    /codespace/{uuid}/logs
+POST   /codespace/{uuid}/open
+POST   /codespace/{uuid}/resume
+POST   /codespace/{uuid}/stop
+DELETE /codespace/{uuid}
+</code></pre>
+<p><code>GET /codespace/{uuid}</code> 是唯一对象页面，不存在 <code>/boot</code> 或 <code>/create</code> 子页面。</p>
+<p><code>GET /codespace/{uuid}/logs</code> 是日志数据接口，不是独立页面。</p>
+<p>路由行为：</p>
+<ul>
+<li><code>POST /{owner}/{repo}/codespace</code> 成功后重定向到 <code>GET /codespace/{uuid}</code>。</li>
+<li>首次 create 期间停留在同一个对象路径，只按状态切换布局。</li>
+<li>stop/resume 后停留在 <code>GET /codespace/{uuid}</code>。</li>
+<li>delete 后返回显式 <code>return_to</code>；若没有，则 repository 可见时回到 repository codespace 页，否则回到 <code>/codespace</code>。</li>
+</ul>
+<p>布局：</p>
+<ul>
+<li><code>queued|booting|error|首次 create 链路中的 deleting</code>：中心日志布局；除 deleting 外只允许 delete。</li>
+<li><code>running|stopping|stopped|resuming|非首次 create 链路中的 deleting</code>：左右分栏；左侧日志，右侧控制与信息。</li>
+<li><code>running</code>：按条件展示 Endpoint 与 SSH 区域。</li>
+<li><code>stopped</code>：按条件展示 resume/delete。</li>
+<li><code>error</code>：只展示日志和 delete。</li>
+</ul>
+<h2 id="权限"><a class="header" href="#权限">权限</a></h2>
+<p>所有权限判断复用 Gitea 现有用户、组织、仓库、unit、visibility、blocking、restricted user、login restriction、2FA 和 repository permission 逻辑。</p>
+<p>Gitea 登录限制至少包括：</p>
+<ul>
+<li><code>is_active</code></li>
+<li><code>prohibit_login</code></li>
+<li><code>must_change_password</code></li>
+<li>站点强制 2FA</li>
+</ul>
+<p>repository 边界复用 Gitea 现有结果：</p>
+<ul>
+<li>user blocking</li>
+<li>restricted user</li>
+<li>owner visibility</li>
+<li>internal/private repository visibility</li>
+<li>repository code unit 可读性（<code>CanRead(unit.Code)</code>）</li>
+<li>archived、mirror、empty、being migrated、pending transfer、broken 等 repository 状态</li>
+</ul>
+<p>Create 要求：</p>
+<ul>
+<li>当前用户已登录。</li>
+<li>当前用户满足 Gitea 登录限制。</li>
+<li>当前用户拥有 repository code-read 权限。</li>
+<li>repository code unit 可读。</li>
+<li>repository 不处于 archived、migrating、pending transfer、broken、empty 或无法解析目标 ref/commit 的状态。</li>
+</ul>
+<p>Interactive Access（<code>open</code>、SSH、<code>resume</code>）要求：</p>
+<ul>
+<li>仅 codespace 创建用户本人。</li>
+<li>创建用户当前仍满足 Gitea 登录限制。</li>
+<li>创建用户当前仍有 repository code-read 权限。</li>
+<li>repository 当前状态允许交互访问。</li>
+<li>codespace 与 Manager 状态允许该动作。</li>
+<li>open 时 Endpoint metadata 必须存在。</li>
+</ul>
+<p>Administrative Permission（查看最小信息、日志、stop、delete）：</p>
+<ul>
+<li>创建用户本人始终拥有管理权限，除非创建用户已被物理删除。</li>
+<li>组织仓库下，组织管理员额外拥有管理权限（由 <code>IsOrganizationAdmin(ctx, orgID, userID)</code> 判定，覆盖 Owners 团队和具备 admin 权限的团队成员）。</li>
+<li>管理权限不要求创建用户当前仍具备 repo code-read。</li>
+<li>组织管理员不能进入其他用户 workspace。</li>
+<li>普通协作者和普通 repo 管理员不会因为 repo 权限获得他人 codespace 权限。</li>
+</ul>
+<p>个人仓库：</p>
+<ul>
+<li>不存在 owner 代理管理他人 codespace。</li>
+<li>创建用户被删除后，只保留后台清理和日志保留。</li>
+</ul>
+<p>组织仓库：</p>
+<ul>
+<li>创建用户失去 repo 访问、被禁用或被删除后，组织管理员仍可 stop/delete 和查看日志/最小信息。</li>
+</ul>
+<p>Minimal info 只允许返回：</p>
+<pre><code class="language-text">uuid
+status
+status_message
+created_unix
+updated_unix
+stopped_unix
+creator_id
+creator_display_name
+creator_deleted
+repo_id
+repo_display_name
+repo_deleted
+ref_type
+ref_name
+commit_sha
+pull_id
+manager_id
+manager_display_name
+manager_online
+log_line_count
+log_size
+last_log_unix
+log_expired
+allowed_actions
+</code></pre>
+<p>Minimal info 禁止返回：</p>
+<pre><code class="language-text">gitea_token_id
+Manager Secret
+Runtime Token
+Gateway Open Token
+token hash / salt
+internal_ssh
+Endpoint upstream
+完整 meta_json
+日志正文
+Runtime Instance 内部 host / port / user
+</code></pre>
+<h2 id="endpoint-打开流程"><a class="header" href="#endpoint-打开流程">Endpoint 打开流程</a></h2>
+<p><code>POST /codespace/{uuid}/open</code> 打开一个 Runtime Metadata Endpoint。</p>
+<p>输入：</p>
+<pre><code class="language-text">endpoint_id=&lt;endpoint_id&gt;
+</code></pre>
+<p>规则：</p>
+<ul>
+<li><code>workspace</code> 是唯一保留 Endpoint ID，表示默认 Web IDE。</li>
+<li>SSH 不是 Endpoint。</li>
+<li>预览端口、服务入口和 IDE 入口都通过 Endpoint 打开。</li>
+<li>除 <code>workspace</code> 外，Gitea 不定义 Endpoint 协议或产品类型。</li>
+<li>Gitea 不读取 Endpoint 协议、端口、进程或 upstream。</li>
+<li>Gitea 只校验 <code>endpoint_id</code> 存在于当前 Runtime Metadata。</li>
+<li><code>endpoint_id</code> 必须匹配 <code>[A-Za-z0-9_-]+</code>。</li>
+<li>不接受 <code>path</code>、任意 <code>redirect</code>、upstream、URL 或 port 参数。</li>
+</ul>
+<p>Endpoint label：</p>
+<ul>
+<li>仅供 UI 展示。</li>
+<li>不参与查找、路由、授权、默认选择或日志身份。</li>
+<li>trim 后长度为 1 到 64。</li>
+<li>禁止控制字符。</li>
+<li>禁止 <code>&lt;</code> 和 <code>&gt;</code>。</li>
+<li>UI 仍必须按普通文本 escape 后展示。</li>
+</ul>
+<p>默认 open：</p>
+<ul>
+<li>当前 Runtime Metadata 存在 <code>endpoint_id=workspace</code> 时，列表页/repo 页默认 Open 打开 <code>workspace</code>。</li>
+<li>不存在 <code>workspace</code> 时，默认 Open 进入 <code>GET /codespace/{uuid}</code>，让用户手动选择 Endpoint。</li>
+</ul>
+<p>open 成功响应：</p>
+<pre><code class="language-text">302 Location: {manager.gateway_url}/open?open_token={token}
+</code></pre>
+<p>规则：</p>
+<ul>
+<li><code>open_token</code> 是唯一授权凭据。</li>
+<li>Gitea 可以追加只读路由提示参数，但不凭这些参数授权。</li>
+<li>Gateway 调用 <code>ValidateOpenToken</code> 校验。</li>
+<li>Gateway 不把 <code>open_token</code> 转发给 Runtime Instance。</li>
+<li>Gateway access log 不记录完整 token。</li>
+</ul>
+<h2 id="gateway-open-token"><a class="header" href="#gateway-open-token">Gateway Open Token</a></h2>
+<p>Gateway Open Token 是：</p>
+<ul>
+<li>短期有效</li>
+<li>一次性使用</li>
+<li>opaque bearer token</li>
+<li>非 JWT</li>
+<li>不进入数据库</li>
+<li>以 token hash 写入 Gitea 本地 cache</li>
+<li>绑定 <code>user_id / codespace_uuid / generation / endpoint_id / manager_uuid</code></li>
+</ul>
+<p>签发算法（与现有 access_token 风格一致，使用纯随机 + sha256）：</p>
+<pre><code class="language-text">token = hex(crypto random 32 bytes)
+salt = crypto random string
+token_hash = sha256(salt + token)
+</code></pre>
+<p>设计决策：Gateway Open Token 不持久化到数据库，纯随机 + sha256 满足一次性校验需求，不需要现有 access_token 的 pbkdf2 方案（<code>HashToken</code>），也不需要 HMAC 绑定 SECRET_KEY。</p>
+<p>规则：</p>
+<ul>
+<li>token 明文只出现在 <code>302 Location</code> 中，不落数据库和日志。</li>
+<li>cache 写入时若 <code>token_hash</code> 冲突，重新生成。</li>
+<li>hash 比较使用常量时间比较（<code>subtle.ConstantTimeCompare</code>）。</li>
+<li>token 校验通过本机锁串行化（get → validate → delete）。</li>
+</ul>
+<p>Cache 结构：</p>
+<pre><code class="language-text">key = codespace:open-token:{token_hash}
+value = user_id + codespace_uuid + generation + endpoint_id + manager_uuid + issued_unix + expires_unix
+ttl = OPEN_TOKEN_EXPIRE
+</code></pre>
+<p>校验步骤：</p>
+<ol>
+<li>计算提交 token 的 hash。</li>
+<li>在本机锁保护下读取并删除 cache 记录。</li>
+<li>校验过期时间。</li>
+<li>校验调用方 Manager 身份等于 <code>manager_uuid</code>。</li>
+<li>重新读取 codespace。</li>
+<li>校验 generation 仍匹配。</li>
+<li>校验 codespace 当前为 <code>running</code>。</li>
+<li>校验用户仍具备 Interactive Access。</li>
+<li>校验 Endpoint 仍存在于当前 Runtime Metadata。</li>
+<li>校验 Manager 仍在线。</li>
+<li>校验 Manager 未被 disabled。</li>
+</ol>
+<p>成功返回：</p>
+<pre><code class="language-text">user_id
+codespace_uuid
+generation
+endpoint_id
+manager_uuid
+</code></pre>
+<p>Cache 丢失即 token 失效，用户重新从 Gitea 发起 open。</p>
+<p>设计决策：</p>
+<ul>
+<li>Token 是一次性跳转凭据，不需要恢复；cache 丢失只影响当次 open，不改变 codespace 生命周期状态。</li>
+<li>不写数据库，避免短生命周期 token 带来的高频 DB 写入和清理成本。</li>
+</ul>
+<p>Gateway session 规则：</p>
+<ul>
+<li>Gateway 维护 <code>codespace_uuid -&gt; live sessions</code> 的本地索引。</li>
+<li>Gateway 和 Manager 是同一 deployment 内的一体化组件。</li>
+<li>Manager 执行 stop/delete 前，先通知本地 Gateway 关闭该 <code>codespace_uuid</code> 的 HTTP/WebSocket/IDE 会话。</li>
+<li>Manager disabled 后，本地 Gateway 拒绝新 open，并关闭该 Manager 负责的 live sessions。</li>
+<li>repo access lost、user access lost 后，新的 open 由 Gitea <code>ValidateOpenToken</code> 拒绝。</li>
+<li>已建立 session 在下一次 Manager operation、Gateway 周期校验或 Runtime 断开时关闭。</li>
+<li>不设计 Gitea 到 Gateway 的主动 callback。</li>
+</ul>
+<h2 id="ssh-设计"><a class="header" href="#ssh-设计">SSH 设计</a></h2>
+<p>SSH 是 codespace 自身稳定接入面，不是 Endpoint。</p>
+<p>Gitea 在创建 codespace 时生成 <code>ssh_user</code>。<code>ssh_user</code> 在 codespace 生命周期内保持不变，delete 后失效且不复用。</p>
+<p>示例：</p>
+<pre><code class="language-text">dragon+12141qwdada@1.2.3.4
+</code></pre>
+<p>规则：</p>
+<ul>
+<li>只有 <code>running</code> 允许 SSH。</li>
+<li><code>queued|booting|stopping|stopped|resuming|deleting|error</code> 均拒绝 SSH。</li>
+<li>SSH 不自动唤醒 stopped codespace。</li>
+<li><code>ssh_password_auth_allowed</code> 由 Gitea 创建服务策略写入。</li>
+<li><code>ssh_password_auth_allowed=false</code> 时拒绝密码认证，但不影响公钥认证。</li>
+</ul>
+<p>Manager 确保 Runtime Instance 存在兼容 OpenSSH 的 sshd。</p>
+<p>Gateway 模型：</p>
+<ol>
+<li>用户连接 <code>ssh_user@gateway_host</code>。</li>
+<li>Gateway 解析 <code>ssh_user</code>。</li>
+<li>Gateway 调用 Gitea 完成密码/TOTP 或公钥认证。</li>
+<li>Gateway 确认 codespace 为 running。</li>
+<li>Gateway 作为 SSH client 连接 Runtime Instance 内部 sshd。</li>
+<li>Gateway 在外部 SSH 连接与内部 SSH 连接之间转发 channel。</li>
+</ol>
+<p>Gateway 终止外部 SSH 并重建内部 SSH，不采用纯 TCP forwarding，也不自行实现 shell/sftp/pty。</p>
+<p>支持的 SSH channel 能力：</p>
+<ul>
+<li>shell</li>
+<li>exec</li>
+<li>subsystem <code>sftp</code></li>
+<li><code>pty-req</code></li>
+<li><code>window-change</code></li>
+<li><code>signal</code></li>
+<li><code>env</code></li>
+<li><code>exit-status</code></li>
+<li><code>exit-signal</code></li>
+<li><code>auth-agent-req</code></li>
+<li><code>x11-req</code></li>
+<li><code>direct-tcpip</code></li>
+<li><code>tcpip-forward</code></li>
+<li><code>cancel-tcpip-forward</code></li>
+</ul>
+<p>SSH forwarding 属于 SSH 会话能力，不写入 Runtime Metadata <code>endpoints</code>。</p>
+<h2 id="ssh-认证-rpc"><a class="header" href="#ssh-认证-rpc">SSH 认证 RPC</a></h2>
+<p>Gateway 每次 SSH 认证尝试都调用 Gitea。不跨连接缓存密码或公钥认证成功结果。</p>
+<p><code>VerifySSHPasswordRequest</code>：</p>
+<pre><code class="language-text">ssh_user
+password
+source_ip
+user_agent_or_client_version
+gateway_session_id
+</code></pre>
+<p>若用户启用 TOTP，SSH 标准 password auth 仍只提供一个密码字段。Gateway 使用后缀约定承载 TOTP：</p>
+<pre><code class="language-text">&lt;account_password&gt;:totp=&lt;6-digit-code&gt;
+</code></pre>
+<p>Gitea 只在密码字段末尾匹配 <code>:totp=([0-9]{6})$</code>。匹配成功时，前缀原样作为账户密码，6 位数字作为 TOTP code。未匹配时，整个字段都作为账户密码。</p>
+<p>WebAuthn-only 用户不能使用 SSH 密码认证，只能使用 SSH 公钥认证。</p>
+<p><code>VerifySSHPasswordResponse</code>：</p>
+<pre><code class="language-text">allowed
+user_id
+codespace_uuid
+generation
+failure_category
+failure_retryable
+</code></pre>
+<p><code>VerifySSHPublicKeyRequest</code>：</p>
+<pre><code class="language-text">ssh_user
+public_key_blob
+public_key_fingerprint
+public_key_algorithm
+source_ip
+user_agent_or_client_version
+gateway_session_id
+</code></pre>
+<p><code>VerifySSHPublicKeyResponse</code>：</p>
+<pre><code class="language-text">allowed
+user_id
+codespace_uuid
+generation
+failure_category
+failure_retryable
+</code></pre>
+<p>失败分类：</p>
+<pre><code class="language-text">invalid_credentials
+login_restricted
+totp_required_or_invalid
+codespace_not_found
+codespace_not_running
+ssh_disabled
+repo_access_lost
+manager_mismatch
+permission_denied
+internal_error
+</code></pre>
+<p>Gitea 校验：</p>
+<ul>
+<li><code>ssh_user</code> 映射到有效 codespace。</li>
+<li>codespace 为 <code>running</code>。</li>
+<li>认证者是 codespace 创建用户。</li>
+<li>创建用户当前允许登录。</li>
+<li>密码认证满足 password 与 TOTP 要求。</li>
+<li>公钥认证不要求输入 TOTP；若站点强制 2FA，用户必须已启用符合站点要求的 2FA。</li>
+<li>WebAuthn-only 用户不能使用 SSH 密码认证。</li>
+<li>repository access precondition 仍通过。</li>
+<li>绑定 Manager 当前在线且未被 disabled。</li>
+<li>密码认证被该 codespace 允许。</li>
+<li>本地密码和 TOTP 使用 Gitea 现有校验逻辑（<code>twofactor.go:ValidateAndConsumeTOTP</code>）。</li>
+<li>公钥认证解析 <code>public_key_blob</code>，并确认其通过 Gitea 现有 SSH key 模型归属于创建用户（<code>models/asymkey/ssh_key.go</code>）。</li>
+<li>请求中的 <code>public_key_fingerprint</code> 和 <code>public_key_algorithm</code> 仅用于日志诊断，可以为空，不参与认证判断。</li>
+<li><code>public_key_blob</code> 解析失败返回 <code>invalid_credentials</code>。</li>
+<li>Gateway 不单独传 fingerprint 让 Gitea 查 key。</li>
+</ul>
+<p>Gateway 按 source IP、<code>ssh_user</code>、<code>codespace_uuid</code> 做限流和退避。Gitea 不新增通用 rate limiter。</p>
+<p>Gitea 可以向 Gateway 返回失败分类用于日志和退避。Gateway 对 SSH client 只返回统一认证失败。</p>
+<p>SSH session 规则：</p>
+<ul>
+<li>Gateway 维护 <code>codespace_uuid -&gt; live SSH sessions</code> 的本地索引。</li>
+<li>Manager 执行 stop/delete 前，先通知本地 Gateway 关闭该 <code>codespace_uuid</code> 的 SSH sessions。</li>
+<li>Manager disabled 后，本地 Gateway 拒绝新 SSH，并关闭该 Manager 负责的 live SSH sessions。</li>
+<li>repo access lost、user access lost 后，新的 SSH auth 由 Gitea <code>VerifySSHPassword</code> / <code>VerifySSHPublicKey</code> 拒绝。</li>
+<li>已建立 SSH session 在下一次 Manager operation、Gateway 周期校验或 Runtime 断开时关闭。</li>
+<li>不设计 Gitea 到 Gateway 的主动 callback。</li>
+</ul>
+<h2 id="内部-ssh"><a class="header" href="#内部-ssh">内部 SSH</a></h2>
+<p>每条 Manager 注册记录拥有一对固定内部 Gateway SSH key。</p>
+<p>规则：</p>
+<ul>
+<li>Manager 声明 <code>gateway_internal_ssh_public_key</code>。</li>
+<li>create/resume 时将该公钥写入 Runtime Instance 内部工作用户 <code>authorized_keys</code>。</li>
+<li>Gateway 使用对应 private key 连接内部 sshd。</li>
+<li>内部 host、port、user、host key fingerprint 通过 <code>POST /boot</code> 上报。</li>
+<li>用户密码、用户公钥、TOTP 不在 Runtime Instance 内部校验。</li>
+<li>内部 SSH metadata 不在普通 UI/API 输出中暴露。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="creation-and-manager.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="runtime-and-tokens.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="creation-and-manager.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="runtime-and-tokens.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

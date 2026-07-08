@@ -1,0 +1,407 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>生命周期与状态机 - Gitea Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="生命周期与状态机"><a class="header" href="#生命周期与状态机">生命周期与状态机</a></h1>
+<h2 id="生命周期状态"><a class="header" href="#生命周期状态">生命周期状态</a></h2>
+<p>用户可见状态与存储主状态使用单轴状态图：</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    direction LR
+
+    queued: queued
+    booting: booting
+    running: running
+    stopping: stopping
+    stopped: stopped
+    resuming: resuming
+    deleting: deleting
+    error: error
+
+    [*] --&gt; queued
+    queued --&gt; booting
+    booting --&gt; running
+    running --&gt; stopping
+    stopping --&gt; stopped
+    stopped --&gt; resuming
+    resuming --&gt; running
+    queued --&gt; deleting
+    booting --&gt; deleting
+    running --&gt; deleting
+    stopping --&gt; deleting
+    stopped --&gt; deleting
+    resuming --&gt; deleting
+    error --&gt; deleting
+    deleting --&gt; [*]
+
+    queued --&gt; error
+    booting --&gt; error
+    stopping --&gt; error
+    resuming --&gt; error
+    deleting --&gt; error
+</code></pre>
+<p>状态含义：</p>
+<ul>
+<li><code>queued</code>：请求和 operation 已创建，但尚未被 Manager 通过 <code>FetchOperation</code> 成功领取。</li>
+<li><code>booting</code>：首次 create 正在构建环境并执行 <code>init.sh</code>。</li>
+<li><code>running</code>：Runtime Instance 正在运行，可按条件 open/SSH。</li>
+<li><code>stopping</code>：正在停止 Runtime Instance。</li>
+<li><code>stopped</code>：Runtime Instance 已停止，可按条件 resume。</li>
+<li><code>resuming</code>：正在恢复 stopped Runtime Instance。</li>
+<li><code>deleting</code>：正在删除 Runtime Instance 和 Gitea 记录。</li>
+<li><code>error</code>：生命周期失败终态，用户只能 delete。</li>
+</ul>
+<p>规则：</p>
+<ul>
+<li><code>booting</code> 只能由 create 进入。</li>
+<li>resume 不进入 <code>booting</code>。</li>
+<li><code>error</code> 不回到正常状态。</li>
+<li><code>error</code> 后 delete 会创建新的 delete operation 并递增 generation，不视为 retry。</li>
+<li>open、SSH、resume、stop、delete、logs 是否可用，由主状态、repo 状态、用户状态、Manager 在线状态和 Runtime Metadata 共同决定。</li>
+</ul>
+<h2 id="operation-状态"><a class="header" href="#operation-状态">Operation 状态</a></h2>
+<p>Operation status 统一为：</p>
+<pre><code class="language-text">queued
+running
+done
+failed
+</code></pre>
+<p>含义：</p>
+<ul>
+<li><code>queued</code>：operation 已创建，但尚未被任何 Manager 通过 <code>FetchOperation</code> 成功领取。</li>
+<li><code>running</code>：已被 Manager claim，lease 有效或可续租。</li>
+<li><code>done</code>：Manager 上报成功，且 Gitea 已完成 State Finalization。</li>
+<li><code>failed</code>：Manager 上报失败或 Gitea 判定超时失败，且 Gitea 已完成 State Finalization。</li>
+</ul>
+<p>不使用 <code>leased</code>、<code>succeeded</code>、<code>cancelled</code>、<code>attempts</code>、<code>max_attempts</code>、<code>retry</code>。</p>
+<h2 id="state-finalization"><a class="header" href="#state-finalization">State Finalization</a></h2>
+<p>Codespace 主状态只能由 Gitea State Finalization 写入。</p>
+<p><code>UpdateOperation</code> 只记录 operation 事实并触发 State Finalization。Manager 永远不能直接覆盖 codespace 主状态。</p>
+<p>State Finalization 在同一事务内执行：</p>
+<ol>
+<li>读取 codespace 和 operation。</li>
+<li>校验 <code>active_operation_id</code>。</li>
+<li>校验 <code>generation</code>。</li>
+<li>校验当前状态转移合法。</li>
+<li>应用 operation 终态结果。</li>
+<li>更新 codespace 主状态。</li>
+<li>更新 token 状态。</li>
+<li>写入 <code>stopped_unix</code>、<code>status_message</code>、<code>gitea_token_id</code> 等主状态字段。</li>
+<li>清空 <code>active_operation_id</code>。</li>
+</ol>
+<p><code>active_operation_id</code> 含义：</p>
+<ul>
+<li><code>active_operation_id</code> 只表示当前未完成 lifecycle operation。</li>
+<li>lifecycle operation 处于 <code>queued|running</code> 时，<code>active_operation_id</code> 指向该 operation。</li>
+<li>lifecycle operation 进入 <code>done|failed</code> 并完成 State Finalization 后，<code>active_operation_id</code> 清空。</li>
+<li>创建新的 stop、resume 或 delete operation 时，<code>active_operation_id</code> 写入新 operation。</li>
+<li>日志展示通过历史 operation 记录查询，不依赖 <code>active_operation_id</code> 保留。</li>
+<li>delete done 后物理删除 codespace、operation 和日志。</li>
+</ul>
+<p>状态推进：</p>
+<pre><code class="language-text">create done:   booting -&gt; running
+create failed: queued|booting -&gt; error
+resume done:   resuming -&gt; running
+resume failed: resuming -&gt; error
+stop done:     stopping -&gt; stopped
+stop failed:   stopping -&gt; error
+delete done:   deleting -&gt; physical delete
+delete failed: deleting -&gt; error
+</code></pre>
+<p>超时：</p>
+<ul>
+<li>queue timeout：<code>queued -&gt; error</code></li>
+<li>boot timeout：<code>booting -&gt; error</code></li>
+<li>resume timeout：<code>resuming -&gt; error</code></li>
+<li>stop timeout：<code>stopping -&gt; error</code></li>
+<li>delete timeout：<code>deleting -&gt; error</code></li>
+</ul>
+<p>进入 <code>stopping</code>、<code>deleting</code>、<code>error</code> 的同一事务里吊销 active Gitea Token。</p>
+<h2 id="state-reconciliation"><a class="header" href="#state-reconciliation">State Reconciliation</a></h2>
+<p><code>reconcile_codespace_operations</code> 周期运行。</p>
+<p>职责：</p>
+<ul>
+<li>检查中间态。</li>
+<li>检查 active operation deadline。</li>
+<li>检查 Manager offline timeout。</li>
+<li>将超时 operation 标记为 failed。</li>
+<li>通过 State Finalization 进入 <code>error</code>。</li>
+<li>吊销失效 Gitea Token。</li>
+<li>写入 <code>status_message</code>。</li>
+<li>处理 stale Runtime Metadata 与 ReportInstances 分歧。</li>
+</ul>
+<p>规则：</p>
+<ul>
+<li>Gitea 是状态权威。</li>
+<li>Manager 观测事实不能恢复 Gitea 主状态。</li>
+<li>Gitea 当前为 <code>error</code> 而 Manager 报告 runtime 仍存在时，Gitea 记录分歧并返回 cleanup 指令。</li>
+<li>Gitea 已物理删除 codespace 而 Manager 继续上报时，Gitea 返回 <code>NotFound + cleanup_local_runtime</code>。</li>
+<li>Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 <code>error</code> 并吊销 token。</li>
+<li>Gitea 认为 deleting 时，任何非 delete 上报都不能改变状态。</li>
+</ul>
+<h2 id="删除与外部状态变化"><a class="header" href="#删除与外部状态变化">删除与外部状态变化</a></h2>
+<p>Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时：</p>
+<ul>
+<li>不允许 create。</li>
+<li>不允许 resume。</li>
+<li>不允许新的 open。</li>
+<li>不允许新的 SSH。</li>
+<li>仍按 Administrative Permission 允许 logs、stop、delete。</li>
+</ul>
+<p>Repository 删除：</p>
+<ul>
+<li>repository 删除不会因为 Manager 分组被阻止；不存在 repository 级 Manager。</li>
+<li>repository 删除确认 UI 提示会清理或影响的 codespace 数量。</li>
+<li>repository 删除成功页或确认摘要展示受影响的 codespace 数量。</li>
+<li>repository 删除在 <code>repo_service.DeleteRepository</code> / <code>DeleteRepositoryDirectly</code> 删除 DB repository 记录前执行 codespace pre-cleanup。</li>
+<li>对引用该 repository 的关联 codespace，repository 删除事务内：
+<ul>
+<li>吊销 Gitea Token。</li>
+<li>不允许 open/SSH/resume。</li>
+<li>写入 <code>status_message=source repository deleted; cleanup required</code>。</li>
+<li>codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 <code>deleting</code>。</li>
+<li>codespace 从未绑定 Manager 或 Manager 记录不存在时进入 <code>error</code>。</li>
+</ul>
+</li>
+<li>disabled Manager 也允许领取已绑定给自己的 delete operation。</li>
+<li>Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 <code>deleting</code>，等待 Manager 回来领取。</li>
+<li>delete timeout 后进入 <code>error</code>。</li>
+<li>repository 删除事务创建的 delete operation 不依赖 repository row 生成 payload。</li>
+<li>repository DB 记录删除后，Manager 仍能通过 <code>codespace_uuid + generation</code> 领取 delete operation 并完成 Runtime cleanup。</li>
+<li>source repository 删除后，相关 codespace 列表和详情页显示 <code>source repository deleted</code>。</li>
+<li>repository 删除不发送站点通知。</li>
+</ul>
+<p>Owner/user/org 删除：</p>
+<ul>
+<li>owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。</li>
+<li>删除该 owner 下 repository 时按 repository 删除规则处理。</li>
+<li>Manager 和 registration secret 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration secret。</li>
+<li>owner/org 删除不向 Manager 下发 delete RPC，不依赖 Manager 在线。</li>
+<li>某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。</li>
+<li>创建用户删除后吊销 token，并不允许 open/SSH/resume。</li>
+<li>组织管理员可清理组织仓库下的相关 codespace。</li>
+</ul>
+<p>Manager 删除：</p>
+<ul>
+<li>普通管理操作只允许禁用 Manager。</li>
+<li>物理删除 Manager 记录前确认没有未删除 codespace 引用该 Manager。</li>
+<li>物理删除 Manager 记录前确认没有 active operation 绑定该 Manager。</li>
+<li>禁用 Manager 与 codespace 生命周期状态更新不在同一事务里批量改写；后续 open/SSH/resume/claim 根据 Manager disabled 状态实时拒绝。</li>
+<li>物理删除 Manager 是管理清理动作，不负责 Runtime Instance 清理。</li>
+<li>物理删除 Manager 只注销 Gitea 注册身份，不向 Manager 下发删除指令。</li>
+<li>Manager 记录被物理删除后，后续 ManagerService RPC 按 unregistered manager 返回 unauthenticated。</li>
+<li>Runtime cleanup 通过 codespace delete operation 实现，不能由删除 Manager 记录隐式触发。</li>
+<li>物理删除 Manager 前先清理引用它的 codespaces 和未完成 operations。</li>
+</ul>
+<p>重命名：</p>
+<ul>
+<li>ID 是权威关联。</li>
+<li>名称每次展示时解析。</li>
+<li><code>ssh_user</code> 创建后不随重命名变化。</li>
+<li>create/resume operation payload 使用当时当前名称重新生成 clone/web URL。</li>
+<li>显示缓存和 runtime 动态数据不持久化到数据库。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="creation-and-manager.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="creation-and-manager.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>
