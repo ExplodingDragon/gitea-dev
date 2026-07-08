@@ -164,7 +164,7 @@
 <tr><td>Codespace Gateway（Manager deployment 内组件）</td><td>用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发</td></tr>
 </tbody></table>
 </div>
-<p>Gitea 不参与运行时选型，也不操作 Incus/Docker 等运行后端。运行时专有配置和 Runtime Token 均由 Manager 管理。</p>
+<p>Gitea 管理生命周期和权限闭环，运行时选型和后端（Incus/Docker 等）由 Manager 独立管理。运行时专有配置和 Runtime Token 均由 Manager 维护。</p>
 <h2 id="架构"><a class="header" href="#架构">架构</a></h2>
 <pre class="mermaid">flowchart LR
     User[&quot;用户&lt;br/&gt;浏览器 / SSH 客户端&quot;]
@@ -264,13 +264,13 @@
 <li>Codespace 复用 Gitea 现有用户、组织、仓库、权限（<code>CanRead(unit.Code)</code> 统一入口）、access token（<code>models/auth/access_token.go</code>）、SSH key、登录限制、git、Pull Request 和 Actions task claim 模型。</li>
 <li>用户拥有 repository code-read 权限就可以创建 codespace。</li>
 <li>codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。</li>
-<li>Manager 不能用自己身份访问 repository 内容。</li>
+<li>Manager 使用 codespace 身份访问 repository，不直接使用自己身份。</li>
 <li>Runtime git 访问使用基于创建用户当前权限签发的 Gitea access token，只走 Git HTTP(S)。</li>
 <li>create、resume、stop、delete 必须幂等。</li>
 <li>同一 codespace 同一时刻只能有一个 active operation。</li>
 <li>codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。</li>
-<li>create 失败后不在同一个 codespace 对象上重新创建。失败后 Runtime、token 和日志可能已部分产生，不在同一对象上重建可避免旧状态与新初始化混淆。</li>
-<li>失败是终态，除 delete 外不能恢复。</li>
+<li>create 失败后在同一 codespace 对象上进入 <code>error</code>，由用户决定 delete 后重新创建。失败时 Runtime、token 和日志可能已部分产生，仅允许 delete 操作保证状态一致。</li>
+<li>失败为终态，通过 delete 退出。</li>
 <li>delete 成功后物理删除 codespace、operation 和日志。</li>
 <li>Manager 的并发容量由 Manager 自行控制并以 <code>capacity_available</code> 上报，Gitea 不维护运行容量计数。</li>
 </ul>

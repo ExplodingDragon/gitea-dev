@@ -162,8 +162,8 @@
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
 <tr><td><code>uuid</code></td><td>全局唯一标识</td><td></td></tr>
-<tr><td><code>user_id</code></td><td>创建者 user ID</td><td>允许悬空引用，表示该 codespace 的历史创建者；被物理删除后不改写、不重分配</td></tr>
-<tr><td><code>repo_id</code></td><td>代码来源 repository ID</td><td>允许历史引用，不表示删除检查归属；repository 被删除后显示 <code>source repository deleted</code></td></tr>
+<tr><td><code>user_id</code></td><td>创建者 user ID</td><td>保持初次创建者身份；允许悬空引用，物理删除后不改写</td></tr>
+<tr><td><code>repo_id</code></td><td>代码来源 repository ID</td><td>允许悬空引用，用于历史展示；repository 被删除后显示 <code>source repository deleted</code></td></tr>
 <tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td><td></td></tr>
 <tr><td><code>ref_name</code></td><td>ref 标识</td><td><code>branch</code> → 分支名（如 <code>main</code>）；<code>tag</code> → 标签名（如 <code>v1.0.0</code>）；<code>commit</code> → 完整 commit SHA；<code>pull</code> → Gitea 风格 PR ref 路径（如 <code>refs/pull/42/head</code>），PR 编号可从路径解析</td></tr>
 <tr><td><code>repo_tag</code></td><td>从 <code>.gitea/codespace.yaml</code> 解析的 tag</td><td>create 时确定，后续不随仓库文件变化</td></tr>
@@ -195,7 +195,7 @@
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
 <tr><td><code>name</code></td><td>名称</td><td></td></tr>
-<tr><td><code>admin_state</code></td><td><code>enabled</code> / <code>disabled</code></td><td>只表示管理态，不表示在线态</td></tr>
+<tr><td><code>admin_state</code></td><td><code>enabled</code> / <code>disabled</code></td><td>管理员控制的管理态：disabled Manager 只能执行已有任务的 stop/delete 和状态分歧上报；在线态由 <code>last_online_unix</code> 和 timeout 推导</td></tr>
 <tr><td><code>secret_hash</code></td><td>manager secret 哈希</td><td></td></tr>
 <tr><td><code>secret_salt</code></td><td>盐值</td><td></td></tr>
 <tr><td><code>tags_json</code></td><td>支持的 tags JSON</td><td>Manager 不按 owner/org/repo 分组</td></tr>
@@ -237,7 +237,7 @@
 <ul>
 <li>cache 只影响交互能力和页面展示，不影响主状态权威。</li>
 <li>主状态推进、权限闭环、删除闭环和 operation 超时闭环只依赖数据库。</li>
-<li>一次性 token 校验通过本机锁串行化，不依赖 cache 原生原子操作。</li>
+<li>一次性 token 校验通过本机锁串行化，使用 get → validate → delete 模式，cache 原生原子操作不是必需依赖。</li>
 <li>cache 内容都是短期、可失效或可由 Manager 重建的数据；丢失不影响 codespace 生命周期、权限、删除闭环或 operation 超时判断。</li>
 <li>数据库仍是主状态和权限闭环的唯一持久权威。</li>
 </ul>
@@ -285,21 +285,19 @@
 <li><code>endpoint_id</code> 由 Manager 上报并确保在同一 <code>codespace_id</code> 内唯一。</li>
 <li>不同 codespace 可以使用相同 <code>endpoint_id</code>。</li>
 <li><code>label</code> 只用于 UI 展示，可以重复，不是路由键。</li>
-<li><code>health</code> 可以作为 Endpoint 可选展示字段，不参与授权。</li>
+<li><code>health</code> 作为 Endpoint 可选展示字段，仅用于 UI 展示。</li>
 <li>Runtime Metadata 保存在 Gitea 本地 cache。</li>
 <li>key：<code>codespace:runtime-meta:{codespace_id}</code></li>
 <li>value：当前 <code>endpoints + internal_ssh + boot + resource_usage + last_reported_unix</code></li>
 <li>ttl：<code>MANAGER_OFFLINE_TIMEOUT * 2</code></li>
 <li>只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。</li>
-<li>Gitea 信任 Runtime Metadata cache 仅表示展示和 Endpoint existence check 信任 cache，不表示绕过 codespace 主状态校验。</li>
+<li>Gitea 信任 Runtime Metadata cache 仅表示 Endpoint existence check 和 UI 展示信任当前 cache 内容。</li>
 <li>Gitea 重启或本地 cache 丢失后，Runtime Metadata 由 Manager 重建。</li>
-<li>Manager 离线时，不允许新的 Endpoint 打开动作。</li>
-<li>Manager 离线时，不允许新的 SSH 接入。</li>
+<li>Manager 离线时，新的 open 和 SSH 需要 Manager online 才能执行授权校验。</li>
 <li>resource usage 是可选展示信息。</li>
 <li>缺失 resource usage 时显示 <code>unavailable</code>。</li>
 <li>Runtime Metadata 仅记录当前最新快照，cache miss 只影响交互与展示。</li>
-<li>Runtime Metadata 是动态观测数据，不是 lifecycle 事实。cache miss 只影响展示和交互入口，不推进或回滚主状态。</li>
-<li>主状态只能由 operation finalization 和 reconciliation 写入，避免运行时观测数据绕过状态机。</li>
+<li>Runtime Metadata 是动态观测数据，用于展示和交互入口。主状态由 operation finalization 和 reconciliation 写入，基于数据库状态推进。</li>
 </ul>
 <h2 id="日志存储"><a class="header" href="#日志存储">日志存储</a></h2>
 <p>Codespace <a href="glossary.html#operation">Operation</a> 日志存储在 DBFS（<code>models/dbfs/</code>，32KB 分块 + 乐观锁）。</p>
@@ -314,7 +312,7 @@
 <li>append-only，单文件连续追加</li>
 <li>每条存储日志都是已脱敏单行</li>
 <li>每行包含 timestamp 和 message</li>
-<li>message 内部不允许真实换行</li>
+<li>message 内部需要换行时，由日志渲染器按行号还原，存储层只接受单行字符串。</li>
 <li>按 <code>log_indexes</code> 提供的行号到 byte offset 映射进行 seek 读取</li>
 <li>delete 成功后删除 codespace 日志</li>
 <li><code>error</code> 日志保留到用户 delete 或 failed cleanup</li>

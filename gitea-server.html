@@ -176,7 +176,7 @@ POST /{owner}/{repo}/codespace
 <li>pull request 页面</li>
 <li>commit 页面</li>
 </ul>
-<p>这些入口只提交 git 上下文，不提交 runtime 参数、image、VM/container 类型、Endpoint、SSH 或 backend 选项。</p>
+<p>这些入口提交 git 上下文（<code>ref_type</code>、<code>ref_name</code>、<code>commit_sha</code>），由 Manager 自行决定 runtime 参数、image、VM/container 类型、Endpoint、SSH 和 backend。</p>
 <p>创建输入：</p>
 <div class="table-wrapper"><table><thead><tr><th>参数</th><th>说明</th></tr></thead><tbody>
 <tr><td><code>repo_id</code></td><td>仓库 ID</td></tr>
@@ -265,9 +265,7 @@ DELETE /codespace/{uuid}
 <p>适用于查看最小信息、日志、stop、delete：</p>
 <div class="table-wrapper"><table><thead><tr><th>角色</th><th>权限范围</th></tr></thead><tbody>
 <tr><td>创建用户本人</td><td>始终拥有，除非已被物理删除</td></tr>
-<tr><td>组织管理员</td><td>组织仓库下额外拥有（<code>IsOrganizationAdmin(ctx, orgID, userID)</code> 判定）</td></tr>
-<tr><td>普通协作者/repo 管理员</td><td>不获得他人 codespace 权限</td></tr>
-<tr><td>组织管理员限制</td><td>不能进入其他用户 workspace</td></tr>
+<tr><td>组织管理员</td><td>组织仓库下额外拥有（<code>IsOrganizationAdmin(ctx, orgID, userID)</code>）。无法进入其他用户 workspace</td></tr>
 </tbody></table>
 </div>
 <p>管理权限独立于 repo code-read 权限，创建用户失去 repo 访问后仍可行使管理权限。</p>
@@ -330,7 +328,7 @@ DELETE /codespace/{uuid}
 <pre><code class="language-text">x-codespace-manager-id: &lt;manager id&gt;
 x-codespace-manager-secret: &lt;manager secret&gt;
 </code></pre>
-<p>只有 <code>RegisterManager</code> 不使用 Manager header。它使用 registration token 认证。</p>
+<p><code>RegisterManager</code> 使用 registration token 认证，其余 RPC 使用 Manager header。</p>
 <p>完整 proto 定义和消息结构见 <a href="rpc-spec.html">RPC 接口定义</a>。</p>
 <h3 id="registermanager"><a class="header" href="#registermanager">RegisterManager</a></h3>
 <ul>
@@ -347,13 +345,9 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 </ul>
 <p>Declare 校验：</p>
 <ul>
-<li><code>gateway_url</code> 必须是 absolute <code>http://</code> 或 <code>https://</code> URL。</li>
-<li><code>gateway_url</code> 不允许 userinfo、query 或 fragment。</li>
+<li><code>gateway_url</code> 必须是 absolute <code>http://</code> 或 <code>https://</code> URL，不含 userinfo、query 或 fragment。</li>
 <li><code>gateway_url</code> path 允许为空或作为固定 base path；生成 open URL 时安全 join <code>/open</code>。</li>
-<li><code>gateway_ssh_addr</code> 固定格式为 <code>host:port</code>。</li>
-<li><code>gateway_ssh_addr</code> host 不允许为空。</li>
-<li><code>gateway_ssh_addr</code> port 必须是 1 到 65535。</li>
-<li><code>gateway_ssh_addr</code> 不接受 URL 格式。</li>
+<li><code>gateway_ssh_addr</code> 固定格式为 <code>host:port</code>，host 非空，port 范围 1-65535。</li>
 </ul>
 <p>SSH 是必选能力。不满足完整 SSH 要求的 Manager 无效。</p>
 <h3 id="fetchoperation"><a class="header" href="#fetchoperation">FetchOperation</a></h3>
@@ -365,7 +359,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>优先返回已绑定给当前 Manager 的 <code>stop|delete</code>。</li>
 <li><code>create</code> 只返回给支持 <code>repo_tag</code>、本次声明接受 <code>create</code> 且 <code>capacity_available &gt; 0</code> 的 enabled Manager。</li>
 <li><code>resume</code> 只返回给已绑定该 codespace、本次声明接受 <code>resume</code> 且 <code>capacity_available &gt; 0</code> 的 enabled Manager。</li>
-<li><code>capacity_available=0</code> 时不返回 <code>create|resume</code>。</li>
+<li><code>capacity_available &gt; 0</code> 时返回 <code>create|resume</code>。</li>
 <li>对返回的 operation 执行原子 claim。</li>
 </ul>
 <p><code>FetchOperation</code> request：</p>
@@ -390,13 +384,12 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>触发 Gitea 服务层同步执行 <a href="glossary.html#state-finalization">State Finalization</a>。</li>
 <li>校验 <code>codespace.operation_status == running &amp;&amp; codespace.manager_id == caller</code>。</li>
 <li>operation 已进入 <code>done|failed</code> 后终态不可再改变。</li>
-<li>重复提交相同终态可以幂等返回当前结果，但不重复执行 State Finalization。</li>
+<li>重复提交相同终态返回幂等结果，State Finalization 仅执行一次。</li>
 <li>lease 过期后拒绝 progress 和 lease update。</li>
 <li>终态 <code>done|failed</code> 不因 <code>deadline_unix</code> 已经过期自动拒绝。</li>
 <li>lease 过期但 reconciliation 尚未标记 failed 前，Manager 上报 <code>done|failed</code> 可以由 State Finalization 接受。</li>
-<li>reconciliation 已将 operation 置为 failed 后，late <code>done</code> 视为 stale，不改变主状态。</li>
-<li>operation 进入 <code>done|failed</code> 后，不允许继续 <code>UpdateOperation</code> 改变终态。</li>
-<li>operation 进入 <code>done|failed</code> 后，Runtime Metadata 不能继续作为该 operation 的输出写入。</li>
+<li>reconciliation 已将 operation 置为 failed 后，later <code>done</code> 视为 stale，operation_status 保持 failed。</li>
+<li>operation 进入 <code>done|failed</code> 后，<code>UpdateOperation</code> 和 Runtime Metadata 写入均已封闭。</li>
 </ul>
 <h3 id="updatelog"><a class="header" href="#updatelog">UpdateLog</a></h3>
 <ul>
@@ -418,10 +411,10 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li><code>queued|stopped|deleting|error</code> 拒绝写入 Runtime Metadata。</li>
 <li>stale 上报返回 stale，不写 cache，不改主状态。</li>
 <li>成功写入时刷新 cache TTL 为 <code>MANAGER_OFFLINE_TIMEOUT * 2</code>。</li>
-<li><code>stopping</code> 写入只用于展示 stop 过程中的运行信息，不允许 open/SSH。</li>
+<li><code>stopping</code> 状态下 Runtime Metadata 写入用于展示 stop 过程运行信息。open 和 SSH 仅在 <code>running</code> 状态可用。</li>
 <li>Manager 启动后为所有仍由自己持有且处于 <code>booting|running|stopping|resuming</code> 的 codespace 重建 Runtime Metadata cache。</li>
 <li>Manager 运行期间周期刷新 active codespace 的 Runtime Metadata cache，避免 Gitea 重启或本地 cache 丢失后长期失去交互能力。</li>
-<li>Gitea 信任 Runtime Metadata cache 仅表示展示和 Endpoint existence check 信任 cache，不表示绕过 codespace 主状态校验。</li>
+<li>Gitea 信任 Runtime Metadata cache 仅用于 Endpoint existence check 和 UI 展示。主状态校验基于数据库 <code>codespace.status</code>，与 cache 信任无关。</li>
 </ul>
 <h3 id="requestgiteatoken"><a class="header" href="#requestgiteatoken">RequestGiteaToken</a></h3>
 <ul>
@@ -435,8 +428,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 </ul>
 <h3 id="verifysshpublickey"><a class="header" href="#verifysshpublickey">VerifySSHPublicKey</a></h3>
 <ul>
-<li>Gateway 调用，做 Gitea 侧认证和授权判定。</li>
-<li>不返回长期凭据。</li>
+<li>Gateway 调用，Gitea 校验用户身份和访问权限后返回本次认证结果。</li>
 </ul>
 <p><code>VerifySSHPublicKeyRequest</code>：</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
@@ -466,7 +458,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>创建用户当前允许登录。</li>
 <li>repository access precondition 仍通过。</li>
 <li>绑定 Manager 当前在线且未被 disabled。</li>
-<li>请求中的 <code>public_key_fingerprint</code> 和 <code>public_key_algorithm</code> 仅用于日志诊断，可以为空，不参与认证判断。</li>
+<li>请求中的 <code>public_key_fingerprint</code> 和 <code>public_key_algorithm</code> 仅用于日志诊断和审计，授权判定依据为 <code>public_key_blob</code> 归属验证。</li>
 <li><code>public_key_blob</code> 解析失败返回 <code>invalid_credentials</code>。</li>
 <li><code>public_key_blob</code> 是认证的唯一依据，Gateway 仅在 <code>VerifySSHPublicKey</code> 中传递完整公钥。</li>
 </ul>
@@ -491,7 +483,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>Gitea 检测 <a href="glossary.html#state-divergence">State Divergence</a>，并可返回 <a href="glossary.html#manager-instruction">Manager Instruction</a> <code>cleanup_local_runtime</code>。</li>
 </ul>
 <p>所有 operation-bound RPC 都携带 <code>codespace_uuid</code>，Gitea 通过 <code>codespace.operation_status</code> 和 <code>codespace.manager_id</code> 完成校验。</p>
-<p><a href="glossary.html#stale-report">Stale Report</a> 不改变当前状态。</p>
+<p><a href="glossary.html#stale-report">Stale Report</a> 被识别后直接拒绝，codespace 主状态保持当前值。</p>
 <h3 id="operation-payload"><a class="header" href="#operation-payload">Operation Payload</a></h3>
 <p><code>FetchOperation</code> 返回给 Manager 的 operation payload 字段：</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>适用类型</th><th>说明</th></tr></thead><tbody>
@@ -518,10 +510,10 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>非 PR 场景下 <code>base_*</code> 与 <code>head_*</code> 可以为空。</li>
 <li>PR 场景下 <code>create|resume</code> payload 同时包含 base/head clone URL 与 web URL。</li>
 <li><code>stop|delete</code> payload 不包含 repository clone/web URL、base/head URL、ref、commit 或 pull 字段。</li>
-<li><code>delete</code> payload 不依赖 repository row 生成；repository DB 记录删除后，Manager 仍可领取并完成 cleanup。</li>
+<li><code>delete</code> payload 使用 <code>codespace_uuid</code> 生成，不依赖 repository row。repository DB 记录删除后，Manager 仍可领取并完成 cleanup。</li>
 <li>Manager 删除 Runtime 只依赖 <code>codespace_uuid</code> 的本地确定性映射。</li>
-<li>Gitea 不下发 <code>workspace_dir</code> 或 <code>manager_base_url</code>。</li>
-<li>Gitea 不下发 Runtime Instance ID、Runtime Instance name、镜像、资源、backend、mount、network 或 Endpoint upstream。</li>
+<li><code>workspace_dir</code> 由 Manager 本地决策和管理，<code>manager_base_url</code> 由 Manager 创建 Runtime 时注入。</li>
+<li>Runtime Instance ID、Runtime Instance name、镜像、资源、backend、mount、network 和 Endpoint upstream 均由 Manager 独立决定。</li>
 <li>Manager 使用 <code>codespace_uuid</code> 在本地生成或查找 Runtime Instance 的确定性映射。</li>
 <li>Manager 创建 Runtime 时自己决定并注入 <code>CODESPACE_WORKSPACE_DIR</code>、<code>CODESPACE_MANAGER_BASE_URL</code> 和 <code>CODESPACE_RUNTIME_TOKEN</code>。</li>
 <li><code>lease_deadline_unix</code> 是本次 claim/续租的截止时间，Manager 在截止前通过 <code>UpdateOperation</code> 续租或上报终态。</li>
@@ -540,11 +532,10 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <ul>
 <li>token 归属于 codespace 创建用户。</li>
 <li>所有 codespace token 统一签发 <code>write:repository</code>。</li>
-<li>这是 repository 类能力开关，不限定单仓库范围，也不提升创建用户原有 repository 权限。</li>
+<li>token scope 限定为 <code>write:repository</code>，访问范围以创建用户已有 repository 权限为上限。</li>
 <li><code>codespace.gitea_token_id</code> 指向当前 active access token。</li>
 <li><code>codespace.repo_id</code> 是唯一 repository binding。</li>
-<li>Runtime clone、fetch 和 push 只使用 Git HTTP(S) clone URL。</li>
-<li>Runtime 不使用 Gitea Git SSH clone URL。</li>
+<li>Runtime clone、fetch 和 push 使用 Git HTTP(S) clone URL。</li>
 <li>Git HTTP 认证链路识别 codespace-bound token。</li>
 <li>repository 访问只在现有支持 token/basic auth 的入口做 repo binding 校验。</li>
 <li>API v1 repository routes 在 <code>APIContext.TokenCanAccessRepo(repo)</code> 或同等公共入口追加 codespace-bound token 校验。</li>
@@ -552,32 +543,21 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>显式启用 <code>AllowBasic</code> 或 <code>AllowOAuth2</code> 的 repository HTTP 路径复用上述公共校验入口。</li>
 <li>上述入口在 scope 校验外，额外校验 <code>target_repo_id == codespace.repo_id</code>。</li>
 <li>codespace-bound token 只能访问 <code>codespace.repo_id</code>；访问其他 repository 时即使 token scope 正常允许，也拒绝。</li>
-<li>codespace token 不授予 <code>read:user</code>、<code>read:organization</code> 或其他非 repository scope。</li>
+<li>codespace token scope 限定为 <code>write:repository</code>。需要 <code>read:user</code> 或 <code>read:organization</code> 的信息由 Gitea 在 create/resume 时通过只读环境变量注入。</li>
 <li>Runtime 需要的 owner/org 展示信息由 Gitea 在 create/resume 时作为只读环境变量注入，不通过 codespace token 调用通用 user/org API。</li>
 <li>每次 create/resume 都替换 token。</li>
 <li>stop/delete/error/source repo 删除/user 删除时吊销 token。</li>
-<li>只有 <code>booting</code>、<code>running</code>、<code>resuming</code> 允许持有 active token；<code>stopped</code>、<code>deleting</code>、<code>error</code> 不允许申请或继续使用 token。</li>
+<li>同一 codespace 的 active token 对应 <code>booting</code>、<code>running</code>、<code>resuming</code> 状态。<code>stopped</code>、<code>deleting</code>、<code>error</code> 状态下 token 已吊销且不可申请。</li>
 <li>同一 codespace 只允许保留一个 active token。</li>
 <li>重复 <code>RequestGiteaToken</code> 时，Gitea 先吊销旧 token，再签发新 token，并更新 <code>codespace.gitea_token_id</code>。</li>
 </ul>
 <p>删除保护：</p>
 <ul>
-<li>被 <code>codespace.gitea_token_id</code> 引用的 access token 不允许手动删除。</li>
-<li>用户设置页和 API token 列表展示该 token 被 codespace 使用。</li>
-<li>这是对现有 access token 管理页的 codespace 扩展（增加占用状态展示）。</li>
-<li>UI/API 显示该 token 当前被哪个 codespace 占用。</li>
-<li>手动删除返回：
-<ul>
-<li>Web：提示先 stop/delete 对应 codespace。</li>
-<li>API：<code>409 Conflict</code>。</li>
-</ul>
-</li>
-<li>删除保护在 <code>DeleteAccessTokenByID</code> 或其统一服务入口执行，Web、API 和当前 token 删除都走同一判断。</li>
-<li>只有 codespace 生命周期服务可以吊销/删除该 token。</li>
+<li>被 <code>codespace.gitea_token_id</code> 引用的 access token 通过专用生命周期服务 <code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 吊销。Web 和 API 手动删除返回 <code>409 Conflict</code> 并提示先 stop/delete 对应 codespace。</li>
 <li>codespace 生命周期服务使用专用内部入口 <code>DeleteAccessTokenByIDForCodespaceLifecycle(ctx, tokenID, codespaceID)</code> 删除。</li>
 <li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 必须校验 <code>codespace.gitea_token_id == tokenID</code>。</li>
 <li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 在同一事务内清空或更新 <code>codespace.gitea_token_id</code>。</li>
-<li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 不能暴露给 Web/API handler 直接调用。</li>
+<li><code>DeleteAccessTokenByIDForCodespaceLifecycle</code> 为 codespace 生命周期服务内部入口，不与 Web/API handler 共享调用路径。</li>
 <li>reconciliation 负责清理 codespace 已不存在但 token 仍标记占用的异常状态。</li>
 </ul>
 <h3 id="gateway-open-token"><a class="header" href="#gateway-open-token">Gateway Open Token</a></h3>
@@ -587,7 +567,6 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>一次性使用</li>
 <li>opaque bearer token</li>
 <li>非 JWT</li>
-<li>不进入数据库</li>
 <li>以 token hash 写入 Gitea 本地 cache</li>
 <li>绑定 <code>user_id / codespace_uuid / endpoint_id / manager_id</code></li>
 </ul>
@@ -629,7 +608,7 @@ endpoint_id
 manager_id
 </code></pre>
 <p>Cache 丢失即 token 失效，用户重新从 Gitea 发起 open。</p>
-<p>Token 是一次性跳转凭据，写入 Gitea 本地 cache；cache 丢失只影响当次 open，不改变 codespace 生命周期状态。</p>
+<p>Token 是一次性跳转凭据，写入 Gitea 本地 cache；cache 丢失时本次 open 失效，用户重新从 Gitea 发起 open。codespace 生命周期状态不受 cache 影响。</p>
 <blockquote>
 <p><strong>TODO</strong>: Gitea 多副本部署时，Open Token 一次性单机锁的行为、Runtime Metadata cache 多副本重建触发机制尚未分析。</p>
 </blockquote>
@@ -676,7 +655,7 @@ SCHEDULE = @daily
 <p>说明：</p>
 <ul>
 <li><code>OPEN_TOKEN_EXPIRE</code> 也是 <a href="glossary.html#gateway-open-token">Gateway Open Token</a> 的 Gitea cache TTL。</li>
-<li>SSH 认证限流与退避属于 Gateway 配置，不属于 Gitea 配置。</li>
+<li>SSH 认证限流与退避由 Gateway 配置和管理。</li>
 <li><code>OPERATION_LEASE_TIMEOUT</code> 是 Manager claim/续租 <a href="glossary.html#operation">Operation</a> 的 lease 时长。</li>
 </ul>
 <p>Manager 本地配置由 Manager 自己管理，例如：</p>

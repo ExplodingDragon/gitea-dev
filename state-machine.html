@@ -207,7 +207,7 @@
 <p>规则：</p>
 <ul>
 <li><code>booting</code> 只能由 create 进入。</li>
-<li>resume 不进入 <code>booting</code>。</li>
+<li><code>boot</code> 是 create 的初始化状态，resume 使用 <code>resuming</code>。</li>
 <li><code>error</code> 不回到正常状态。</li>
 <li><code>error</code> 后 delete 会创建新的 delete operation，不视为 retry。</li>
 <li>open、SSH、resume、stop、delete、logs 是否可用，由主状态、repo 状态、用户状态、Manager 在线状态和 Runtime Metadata 共同决定。</li>
@@ -221,10 +221,10 @@
 <tr><td><code>failed</code></td><td>Manager 上报失败或 Gitea 判定超时失败，且 Gitea 已完成 State Finalization。</td></tr>
 </tbody></table>
 </div>
-<p>不使用 <code>leased</code>、<code>succeeded</code>、<code>cancelled</code>、<code>attempts</code>、<code>max_attempts</code>、<code>retry</code>。</p>
+<p>Operation status 限定为 <code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code>。</p>
 <h2 id="state-finalization"><a class="header" href="#state-finalization">State Finalization</a></h2>
 <p>Codespace 主状态只能由 Gitea State Finalization 写入。</p>
-<p><code>UpdateOperation</code> 只记录 operation 事实并触发 State Finalization。Manager 永远不能直接覆盖 codespace 主状态。</p>
+<p><code>UpdateOperation</code> 只记录 operation 事实并触发 State Finalization。Manager 上报进度和终态，Gitea State Finalization 写入主状态。</p>
 <p>State Finalization 在同一事务内执行：</p>
 <ol>
 <li>读取 codespace。</li>
@@ -281,12 +281,11 @@
 </ul>
 <p>规则：</p>
 <ul>
-<li>Gitea 是状态权威。</li>
-<li>Manager 观测事实不能恢复 Gitea 主状态。</li>
+<li>Gitea 是状态权威。Manager 上报的运行时观测数据用于展示和诊断，由 Gitea reconciliation 和 State Finalization 保持主状态一致。</li>
 <li>Gitea 当前为 <code>error</code> 而 Manager 报告 runtime 仍存在时，Gitea 记录 <a href="glossary.html#state-divergence">State Divergence</a> 并返回 <a href="glossary.html#manager-instruction">Manager Instruction</a> <code>cleanup_local_runtime</code>。</li>
 <li>Gitea 已物理删除 codespace 而 Manager 继续上报时，Gitea 返回 <code>NotFound + cleanup_local_runtime</code>。</li>
 <li>Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 <code>error</code> 并吊销 token。</li>
-<li>Gitea 认为 deleting 时，任何非 delete 上报都不能改变状态。</li>
+<li>Gitea 处于 deleting 时，只接受 delete 结果推进。</li>
 </ul>
 
                     </main>
