@@ -194,36 +194,37 @@
 </pre>
 <p>状态含义：</p>
 <div class="table-wrapper"><table><thead><tr><th>状态</th><th>含义</th></tr></thead><tbody>
-<tr><td><code>queued</code></td><td>请求和 operation 已创建，但尚未被 Manager 通过 <code>FetchOperation</code> 成功领取。</td></tr>
+<tr><td><code>queued</code></td><td>请求和 operation 已创建，正在等待 Manager 通过 <code>FetchOperation</code> 领取。</td></tr>
 <tr><td><code>booting</code></td><td>首次 create 正在构建环境并执行 <code>init.sh</code>。</td></tr>
 <tr><td><code>running</code></td><td>Runtime Instance 正在运行，可按条件 open/SSH。</td></tr>
 <tr><td><code>stopping</code></td><td>正在停止 Runtime Instance。</td></tr>
 <tr><td><code>stopped</code></td><td>Runtime Instance 已停止，可按条件 resume。</td></tr>
 <tr><td><code>resuming</code></td><td>正在恢复 stopped Runtime Instance。</td></tr>
 <tr><td><code>deleting</code></td><td>正在删除 Runtime Instance 和 Gitea 记录。</td></tr>
-<tr><td><code>error</code></td><td>生命周期失败终态，用户只能 delete。</td></tr>
+<tr><td><code>error</code></td><td>生命周期失败终态，用户可查看日志并执行 delete 完成清理。</td></tr>
 </tbody></table>
 </div>
 <p>规则：</p>
 <ul>
-<li><code>booting</code> 只能由 create 进入。</li>
-<li><code>boot</code> 是 create 的初始化状态，resume 使用 <code>resuming</code>。</li>
-<li><code>error</code> 不回到正常状态。</li>
-<li><code>error</code> 后 delete 会创建新的 delete operation，不视为 retry。</li>
+<li><code>booting</code> 表示首次 create 初始化。</li>
+<li>resume 使用 <code>resuming</code> 表示从已停止 Runtime 恢复。</li>
+<li><code>error</code> 通过 delete 退出生命周期。</li>
+<li><code>error</code> 后 delete 创建新的 delete operation，用于清理资源和记录。</li>
 <li>open、SSH、resume、stop、delete、logs 是否可用，由主状态、repo 状态、用户状态、Manager 在线状态和 Runtime Metadata 共同决定。</li>
 </ul>
+<p>create 和 resume 使用不同状态，是因为首次创建包含 clone、checkout、初始化脚本和内部 SSH 配置，而 resume 复用已有 Runtime 数据。分开表达可以让日志、超时和 UI 状态对用户更准确。<code>error</code> 通过 delete 退出，是为了保持失败现场和日志可见，让用户或管理员先看清失败原因，再清理 Runtime 和记录。</p>
 <h2 id="operation-状态"><a class="header" href="#operation-状态">Operation 状态</a></h2>
 <p>Operation status 统一为：</p>
 <div class="table-wrapper"><table><thead><tr><th>状态</th><th>含义</th></tr></thead><tbody>
-<tr><td><code>queued</code></td><td>operation 已创建，但尚未被任何 Manager 通过 <code>FetchOperation</code> 成功领取。</td></tr>
+<tr><td><code>queued</code></td><td>operation 已创建，正在等待 Manager 通过 <code>FetchOperation</code> 领取。</td></tr>
 <tr><td><code>running</code></td><td>已被 Manager claim，lease 有效或可续租。</td></tr>
 <tr><td><code>done</code></td><td>Manager 上报成功，且 Gitea 已完成 State Finalization。</td></tr>
 <tr><td><code>failed</code></td><td>Manager 上报失败或 Gitea 判定超时失败，且 Gitea 已完成 State Finalization。</td></tr>
 </tbody></table>
 </div>
-<p>Operation status 限定为 <code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code>。</p>
+<p>Operation status 使用 <code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code> 四个值。四值模型覆盖等待、执行、成功终态和失败终态，足以支持 Manager claim、lease、stale report 和 State Finalization，同时避免引入与主状态重复的中间状态。</p>
 <h2 id="state-finalization"><a class="header" href="#state-finalization">State Finalization</a></h2>
-<p>Codespace 主状态只能由 Gitea State Finalization 写入。</p>
+<p>Codespace 主状态由 Gitea State Finalization 写入。</p>
 <p><code>UpdateOperation</code> 只记录 operation 事实并触发 State Finalization。Manager 上报进度和终态，Gitea State Finalization 写入主状态。</p>
 <p>State Finalization 在同一事务内执行：</p>
 <ol>
@@ -237,13 +238,14 @@
 </ol>
 <p><code>operation_status</code> 含义：</p>
 <ul>
-<li><code>queued</code>：operation 已创建，尚未被 Manager 通过 <code>FetchOperation</code> 领取。</li>
+<li><code>queued</code>：operation 已创建，正在等待 Manager 通过 <code>FetchOperation</code> 领取。</li>
 <li><code>running</code>：Manager 已领取，表示有正在执行的操作。用于 stale detection、operation-bound RPC 匹配和并发保护。</li>
 <li><code>done|failed</code>：operation 已完成，<a href="glossary.html#state-finalization">State Finalization</a> 后主状态已推进。</li>
 <li>创建新的 stop、resume 或 delete 时，<code>operation_type</code> 和 <code>operation_status</code> 在同一行覆写。</li>
 <li>日志追加到同一 codespace 文件，不按 operation 切分。</li>
 <li>delete done 后物理删除 codespace 和日志。</li>
 </ul>
+<p>主状态由 Gitea Finalization 统一写入，是因为 Manager 只掌握运行侧事实，Gitea 才同时拥有用户权限、token 生命周期、repository 状态和数据库事务。把状态推进集中在 Gitea，可以让 token 吊销、日志封闭、状态消息和主状态变化在同一事务内完成。</p>
 <p>状态推进：</p>
 <div class="table-wrapper"><table><thead><tr><th>Operation 结果</th><th>状态变化</th></tr></thead><tbody>
 <tr><td>create done</td><td><code>booting</code> -&gt; <code>running</code></td></tr>
@@ -265,7 +267,7 @@
 <tr><td>delete timeout</td><td><code>deleting</code> -&gt; <code>error</code></td></tr>
 </tbody></table>
 </div>
-<p>进入 <code>stopping</code>、<code>deleting</code>、<code>error</code> 的同一事务里吊销 active Gitea Token。</p>
+<p>进入 <code>stopping</code>、<code>deleting</code>、<code>error</code> 的同一事务里吊销 active Gitea Token。这样可以让交互入口关闭和 token 失效同步生效，避免 Runtime 在停止、删除或失败后继续使用旧 token 访问 repository。</p>
 <h2 id="state-reconciliation"><a class="header" href="#state-reconciliation">State Reconciliation</a></h2>
 <p><code>reconcile_codespace_states</code> 周期运行。</p>
 <p>职责：</p>
@@ -287,6 +289,7 @@
 <li>Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 <code>error</code> 并吊销 token。</li>
 <li>Gitea 处于 deleting 时，只接受 delete 结果推进。</li>
 </ul>
+<p>Reconciliation 负责把超时、Manager 离线和 Runtime 分歧收敛到明确状态。这样设计可以让用户看到稳定的主状态，而不是直接暴露 Manager 重启、cache 丢失或运行侧残留实例等临时观测差异。</p>
 
                     </main>
 

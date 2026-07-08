@@ -163,7 +163,8 @@
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
 <tr><td><code>uuid</code></td><td>全局唯一标识</td><td></td></tr>
 <tr><td><code>user_id</code></td><td>创建者 user ID</td><td>保持初次创建者身份；允许悬空引用，物理删除后不改写</td></tr>
-<tr><td><code>repo_id</code></td><td>代码来源 repository ID</td><td>允许悬空引用，用于历史展示；repository 被删除后显示 <code>source repository deleted</code></td></tr>
+<tr><td><code>repo_id</code></td><td>代码来源 repository ID</td><td>repository 存在时用于权限与展示；repository 删除 pre-cleanup 时置空</td></tr>
+<tr><td><code>source_repository_state</code></td><td><code>available</code> / <code>deleted</code> / <code>unavailable</code></td><td>repository 删除时写入 <code>deleted</code>；repository 暂时不可解析但未确认删除时展示为 <code>unavailable</code></td></tr>
 <tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td><td></td></tr>
 <tr><td><code>ref_name</code></td><td>ref 标识</td><td><code>branch</code> → 分支名（如 <code>main</code>）；<code>tag</code> → 标签名（如 <code>v1.0.0</code>）；<code>commit</code> → 完整 commit SHA；<code>pull</code> → Gitea 风格 PR ref 路径（如 <code>refs/pull/42/head</code>），PR 编号可从路径解析</td></tr>
 <tr><td><code>repo_tag</code></td><td>从 <code>.gitea/codespace.yaml</code> 解析的 tag</td><td>create 时确定，后续不随仓库文件变化</td></tr>
@@ -173,6 +174,8 @@
 <tr><td><code>operation_type</code></td><td><code>create</code> / <code>resume</code> / <code>stop</code> / <code>delete</code></td><td>当前 operation 类型</td></tr>
 <tr><td><code>operation_status</code></td><td><code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code></td><td><code>running</code> 表示有正在执行的操作；stale detection、RPC 匹配和并发保护都以此为准</td></tr>
 <tr><td><code>operation_deadline_unix</code></td><td>lease 截止时间戳</td><td></td></tr>
+<tr><td><code>operation_recovery_deadline_unix</code></td><td>维护恢复截止时间戳</td><td>Gitea/Manager 重启或 Manager offline 后进入恢复窗口时写入；用于区分日常维护恢复和真实失败</td></tr>
+<tr><td><code>operation_last_recovering_unix</code></td><td>最近恢复观测时间戳</td><td>Manager 上报 recovering 或恢复 operation 时更新</td></tr>
 <tr><td><code>operation_finished_unix</code></td><td>完成时间戳</td><td></td></tr>
 <tr><td><code>operation_status_message</code></td><td>状态消息</td><td></td></tr>
 <tr><td><code>gitea_token_id</code></td><td>当前有效 Gitea access token ID</td><td>为空表示当前没有有效 token</td></tr>
@@ -180,26 +183,30 @@
 <tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
 <tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
 <tr><td><code>stopped_unix</code></td><td>最近停止时间戳</td><td></td></tr>
-<tr><td><code>status_message</code></td><td>状态消息</td><td>最长 1024 字符，超长截断，禁止控制字符；UI 按普通文本 escape 后展示</td></tr>
+<tr><td><code>status_message</code></td><td>状态消息</td><td>最长 1024 字符，超长截断；输入清理控制字符，UI 按普通文本 escape 后展示</td></tr>
 <tr><td><code>log_filename</code></td><td>日志文件名</td><td></td></tr>
 <tr><td><code>log_line_count</code></td><td>日志行数</td><td></td></tr>
 <tr><td><code>log_size</code></td><td>日志大小</td><td></td></tr>
 <tr><td><code>log_indexes</code></td><td>行号到 byte offset 索引</td><td>LONGBLOB，varint 编码的 <code>[]int64</code>，用于按行 seek</td></tr>
-<tr><td><code>log_in_storage</code></td><td>日志在 DBFS 还是对象存储</td><td><code>false</code> 表示日志仍在 DBFS</td></tr>
+<tr><td><code>log_storage</code></td><td>日志存储位置</td><td>第一版固定为 <code>dbfs</code>；后续归档到对象存储时再扩展为 <code>object</code></td></tr>
 <tr><td><code>log_expired</code></td><td>日志是否过期</td><td>列表页和非日志详情区只读取 <code>log_line_count / log_size / log_expired</code>；只有日志面板需要读取 DBFS 日志内容</td></tr>
 </tbody></table>
 </div>
 <p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
-<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
+<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。repository 删除后 <code>repo_id</code> 置空，<code>status_message</code> 表达 <code>source repository deleted</code>。这样设计是因为 codespace 的生命周期清理依赖 <code>codespace.uuid</code> 和 <code>manager_id</code>，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库，反而会让权限和展示逻辑多一层不可解析状态。</p>
+<p>endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
 <tr><td><code>name</code></td><td>名称</td><td></td></tr>
-<tr><td><code>admin_state</code></td><td><code>enabled</code> / <code>disabled</code></td><td>管理员控制的管理态：disabled Manager 只能执行已有任务的 stop/delete 和状态分歧上报；在线态由 <code>last_online_unix</code> 和 timeout 推导</td></tr>
+<tr><td><code>admin_state</code></td><td><code>enabled</code> / <code>disabled</code></td><td>管理员控制的管理态：disabled Manager 保留已有任务的 stop/delete 和状态分歧上报能力；在线态由 <code>last_online_unix</code> 和 timeout 推导</td></tr>
 <tr><td><code>secret_hash</code></td><td>manager secret 哈希</td><td></td></tr>
 <tr><td><code>secret_salt</code></td><td>盐值</td><td></td></tr>
 <tr><td><code>tags_json</code></td><td>支持的 tags JSON</td><td>Manager 不按 owner/org/repo 分组</td></tr>
+<tr><td><code>runtime_state</code></td><td><code>online</code> / <code>recovering</code> / <code>offline</code></td><td>Manager 维护恢复运行态；不等同于 codespace 主状态</td></tr>
 <tr><td><code>last_online_unix</code></td><td>最近在线时间戳</td><td></td></tr>
+<tr><td><code>last_recovering_unix</code></td><td>最近进入 recovering 时间戳</td><td>Manager 启动恢复、Runtime scan 或 metadata rebuild 开始时更新</td></tr>
+<tr><td><code>last_recovered_unix</code></td><td>最近恢复完成时间戳</td><td>Manager 完成本地 Runtime scan 和 Runtime Metadata 重建后更新</td></tr>
 <tr><td><code>created_by</code></td><td>创建者 user ID</td><td></td></tr>
 <tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
 <tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
@@ -222,7 +229,7 @@
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
 <tr><td>codespace</td><td><code>uuid</code>（唯一）</td></tr>
 <tr><td>codespace</td><td><code>(user_id, status)</code></td></tr>
-<tr><td>codespace</td><td><code>(repo_id, status)</code></td></tr>
+<tr><td>codespace</td><td><code>(repo_id, status)</code>，仅覆盖 repository 存在的记录</td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status, repo_tag)</code></td></tr>
 </tbody></table>
@@ -302,22 +309,24 @@
 <h2 id="日志存储"><a class="header" href="#日志存储">日志存储</a></h2>
 <p>Codespace <a href="glossary.html#operation">Operation</a> 日志存储在 DBFS（<code>models/dbfs/</code>，32KB 分块 + 乐观锁）。</p>
 <p>路径：</p>
-<pre><code class="language-text">codespace_log/
-  {manager_id}/
-    {codespace_uuid}/
-      log
+<pre><code class="language-text">codespace_log/{codespace_uuid}.log
 </code></pre>
 <p>规则：</p>
 <ul>
-<li>append-only，单文件连续追加</li>
-<li>每条存储日志都是已脱敏单行</li>
-<li>每行包含 timestamp 和 message</li>
+<li>Manager 通过 byte offset 追加，单文件连续写入。</li>
+<li>offset 等于当前大小时追加。</li>
+<li>offset 小于当前大小时，只允许幂等重放同一段内容。</li>
+<li>offset 大于当前大小时返回 offset gap 分类，保持日志文件连续。</li>
+<li>每条存储日志都是已脱敏单行。</li>
+<li>每行包含 timestamp 和 message。</li>
 <li>message 内部需要换行时，由日志渲染器按行号还原，存储层只接受单行字符串。</li>
-<li>按 <code>log_indexes</code> 提供的行号到 byte offset 映射进行 seek 读取</li>
-<li>delete 成功后删除 codespace 日志</li>
-<li><code>error</code> 日志保留到用户 delete 或 failed cleanup</li>
+<li>按 <code>log_indexes</code> 提供的行号到 byte offset 映射进行 seek 读取。</li>
+<li><code>GET /codespace/{uuid}/logs</code> 使用 byte offset 分页读取，返回 <code>offset / next_offset / eof / lines / truncated</code>。</li>
+<li>delete 成功后删除 codespace 日志。</li>
+<li><code>error</code> 日志保留到用户 delete 或 <code>FAILED_RETENTION_DAYS</code> 清理。</li>
+<li>第一版不归档对象存储，<code>log_storage</code> 固定为 <code>dbfs</code>。</li>
 </ul>
-<p>日志存储在 DBFS 单文件中，<code>codespace</code> 行保存当前日志元数据。<code>operation_status == running</code> 时允许追加日志。</p>
+<p>日志存储在 DBFS 单文件中，<code>codespace</code> 行保存当前日志元数据。<code>operation_status == running</code> 时允许追加日志。DBFS 支持 seek/read/write，适合运行中日志追加和页面轮询；第一版不引入对象存储归档，可以避免日志 transfer 状态影响生命周期状态机。</p>
 
                     </main>
 

@@ -165,19 +165,19 @@ services/codespace/
 models/codespace/
 modules/codespace/
 </code></pre>
-<p>Web handler 与 ManagerService RPC handler 不应混在同一个文件。</p>
+<p>Web handler 与 ManagerService RPC handler 分别放在 Web 与 API/Connect 入口下。这样组织代码可以让页面交互、Manager RPC 鉴权和服务层状态推进保持清晰边界，后续测试也能分别覆盖用户请求和 Manager 请求。</p>
 <p>Runtime HTTP API 由 Manager 实现，路由与 Gitea route 分离。</p>
-<h2 id="实现约束"><a class="header" href="#实现约束">实现约束</a></h2>
+<h2 id="迁移目标"><a class="header" href="#迁移目标">迁移目标</a></h2>
 <p>本文档是最终设计基线。</p>
+<p>实现以本文档描述的 Gitea 内置 codespace 模型为准：</p>
 <ul>
-<li>不兼容旧 codespace prototype route、proto name、table 或 runtime option form。</li>
-<li>删除旧 codespace port table 行为。</li>
-<li>删除前端 runtime 选型输入。</li>
-<li>删除 <code>/codespace/{uuid}/create</code>、<code>retry</code>、<code>cancel</code>。</li>
-<li>删除旧 <code>initializing</code> 状态。</li>
-<li>删除旧 task 术语。</li>
-<li>删除所有 quota 设计和实现。</li>
-<li>复用 Gitea 现有 permission、token、SSH key、setting、cron、routing、DBFS 和测试组织方式。</li>
+<li>路由、proto name、table 和 runtime option form 使用本文档定义的新命名。统一命名可以让 Web、RPC、DB 和文档保持一一对应，减少 prototype 遗留概念进入正式实现。</li>
+<li>Runtime 选型由 Manager 本地配置和 repository tag 匹配决定。Gitea UI 保持为创建、打开和管理入口，用户不在前端选择具体 backend，这样可以让运行侧能力由管理员集中维护。</li>
+<li>生命周期入口使用 <code>create / open / resume / stop / delete</code>。这些动作覆盖用户需要的完整生命周期，并与状态机中的 operation 类型保持一致。</li>
+<li>主状态使用 <code>queued / booting / running / stopping / stopped / resuming / deleting / error</code>。<code>booting</code> 表达首次创建初始化，<code>resuming</code> 表达停止后恢复，两者分开可以让 UI、日志和超时策略更准确。</li>
+<li>异步生命周期统一称为 operation。使用同一术语可以复用 claim、lease、finalization 和 reconciliation 逻辑，避免 task、job 等 CI/CD 术语与 codespace 生命周期混淆。</li>
+<li>容量控制由 Manager 通过 <code>capacity_total / capacity_available</code> 上报。Gitea 保存最近容量快照用于 UI、诊断和 FetchOperation 准入，真实资源占用由 Manager 控制，因为只有 Manager 能看到本地 Runtime 队列、backend 限制和启动中实例。</li>
+<li>Gitea 侧复用现有 permission、token、SSH key、setting、cron、routing、DBFS 和测试组织方式。复用现有基础能力可以减少新的安全边界和重复实现，让 codespace 行为与 Gitea 现有访问模型一致。</li>
 </ul>
 <p>实现完成后的最低验证：</p>
 <pre><code class="language-bash">cd gitea
@@ -185,18 +185,24 @@ go test ./...
 make fmt
 make lint-backend
 </code></pre>
-<h2 id="已知设计缺口"><a class="header" href="#已知设计缺口">已知设计缺口</a></h2>
-<p>各模块的设计缺口已在对应文档中以 <code>&gt; **TODO**</code> 标记，汇总如下：</p>
+<h2 id="测试组织"><a class="header" href="#测试组织">测试组织</a></h2>
+<p>测试按层组织：</p>
 <ul>
-<li><a href="manager-gateway.html">Manager 与 Gateway - Manager 设计</a>：worker pool 模型、重启恢复策略</li>
-<li><a href="manager-gateway.html">Manager 与 Gateway - Gateway 设计</a>：Endpoint 反向代理实现、session 生命周期</li>
-<li><a href="manager-gateway.html">Manager 与 Gateway - SSH 接入</a>：认证限流与退避配置</li>
-<li><a href="manager-gateway.html">Manager 与 Gateway - 日志与脱敏</a>：Gateway access log</li>
-<li><a href="gitea-server.html">Gitea 服务端 - Token 管理</a>：多副本 cache 一致性</li>
+<li><code>models/codespace</code>：状态字段、索引、查询、token binding 反查。</li>
+<li><code>services/codespace</code>：权限判定、State Finalization、repository delete pre-cleanup、repo-bound token、日志 offset。</li>
+<li><code>routers/api/codespace</code>：ManagerService RPC auth、FetchOperation claim、UpdateOperation 幂等。</li>
+<li><code>routers/web/codespace</code>：create/open/stop/resume/delete 页面行为。</li>
+<li><code>integration</code>：create -&gt; claim -&gt; log -&gt; done -&gt; open token -&gt; delete 全链路。</li>
 </ul>
-<blockquote>
-<p><strong>TODO</strong>: codespace 模块的单元测试/集成测试组织、ManagerService RPC mock 方式、State Finalization 事务测试方案尚未定义。</p>
-</blockquote>
+<p>测试辅助：</p>
+<ul>
+<li>ManagerService 使用 fake Manager identity。</li>
+<li>Runtime Metadata 使用 cache fake。</li>
+<li>Git repo/ref 解析复用 Gitea 现有 repository test fixture。</li>
+<li>DBFS 日志使用测试 DB。</li>
+<li>State Finalization 覆盖并发和重复终态。</li>
+</ul>
+<p>这样设计的原因是 codespace 的主要风险集中在权限、状态事务、token 生命周期和异步 claim。服务层测试覆盖核心规则，路由测试覆盖 Web/RPC 输入输出，集成测试覆盖跨层事务边界。Manager backend 不进入 Gitea 服务层测试，可以避免运行侧实现细节影响 Gitea 状态权威测试。</p>
 
                     </main>
 
