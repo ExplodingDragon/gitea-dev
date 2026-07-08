@@ -44,22 +44,24 @@ stateDiagram-v2
 
 | 状态 | 含义 |
 | --- | --- |
-| `queued` | 请求和 operation 已创建，但尚未被 Manager 通过 `FetchOperation` 成功领取。 |
+| `queued` | 请求和 operation 已创建，正在等待 Manager 通过 `FetchOperation` 领取。 |
 | `booting` | 首次 create 正在构建环境并执行 `init.sh`。 |
 | `running` | Runtime Instance 正在运行，可按条件 open/SSH。 |
 | `stopping` | 正在停止 Runtime Instance。 |
 | `stopped` | Runtime Instance 已停止，可按条件 resume。 |
 | `resuming` | 正在恢复 stopped Runtime Instance。 |
 | `deleting` | 正在删除 Runtime Instance 和 Gitea 记录。 |
-| `error` | 生命周期失败终态，用户只能 delete。 |
+| `error` | 生命周期失败终态，用户可查看日志并执行 delete 完成清理。 |
 
 规则：
 
-- `booting` 只能由 create 进入。
-- `boot` 是 create 的初始化状态，resume 使用 `resuming`。
-- `error` 不回到正常状态。
-- `error` 后 delete 会创建新的 delete operation，不视为 retry。
+- `booting` 表示首次 create 初始化。
+- resume 使用 `resuming` 表示从已停止 Runtime 恢复。
+- `error` 通过 delete 退出生命周期。
+- `error` 后 delete 创建新的 delete operation，用于清理资源和记录。
 - open、SSH、resume、stop、delete、logs 是否可用，由主状态、repo 状态、用户状态、Manager 在线状态和 Runtime Metadata 共同决定。
+
+create 和 resume 使用不同状态，是因为首次创建包含 clone、checkout、初始化脚本和内部 SSH 配置，而 resume 复用已有 Runtime 数据。分开表达可以让日志、超时和 UI 状态对用户更准确。`error` 通过 delete 退出，是为了保持失败现场和日志可见，让用户或管理员先看清失败原因，再清理 Runtime 和记录。
 
 ## Operation 状态
 
@@ -67,16 +69,16 @@ Operation status 统一为：
 
 | 状态 | 含义 |
 | --- | --- |
-| `queued` | operation 已创建，但尚未被任何 Manager 通过 `FetchOperation` 成功领取。 |
+| `queued` | operation 已创建，正在等待 Manager 通过 `FetchOperation` 领取。 |
 | `running` | 已被 Manager claim，lease 有效或可续租。 |
 | `done` | Manager 上报成功，且 Gitea 已完成 State Finalization。 |
 | `failed` | Manager 上报失败或 Gitea 判定超时失败，且 Gitea 已完成 State Finalization。 |
 
-Operation status 限定为 `queued` / `running` / `done` / `failed`。
+Operation status 使用 `queued` / `running` / `done` / `failed` 四个值。四值模型覆盖等待、执行、成功终态和失败终态，足以支持 Manager claim、lease、stale report 和 State Finalization，同时避免引入与主状态重复的中间状态。
 
 ## State Finalization
 
-Codespace 主状态只能由 Gitea State Finalization 写入。
+Codespace 主状态由 Gitea State Finalization 写入。
 
 `UpdateOperation` 只记录 operation 事实并触发 State Finalization。Manager 上报进度和终态，Gitea State Finalization 写入主状态。
 
@@ -92,12 +94,14 @@ State Finalization 在同一事务内执行：
 
 `operation_status` 含义：
 
-- `queued`：operation 已创建，尚未被 Manager 通过 `FetchOperation` 领取。
+- `queued`：operation 已创建，正在等待 Manager 通过 `FetchOperation` 领取。
 - `running`：Manager 已领取，表示有正在执行的操作。用于 stale detection、operation-bound RPC 匹配和并发保护。
 - `done|failed`：operation 已完成，[State Finalization](glossary.md#state-finalization) 后主状态已推进。
 - 创建新的 stop、resume 或 delete 时，`operation_type` 和 `operation_status` 在同一行覆写。
 - 日志追加到同一 codespace 文件，不按 operation 切分。
 - delete done 后物理删除 codespace 和日志。
+
+主状态由 Gitea Finalization 统一写入，是因为 Manager 只掌握运行侧事实，Gitea 才同时拥有用户权限、token 生命周期、repository 状态和数据库事务。把状态推进集中在 Gitea，可以让 token 吊销、日志封闭、状态消息和主状态变化在同一事务内完成。
 
 状态推进：
 
@@ -122,7 +126,7 @@ State Finalization 在同一事务内执行：
 | stop timeout | `stopping` -> `error` |
 | delete timeout | `deleting` -> `error` |
 
-进入 `stopping`、`deleting`、`error` 的同一事务里吊销 active Gitea Token。
+进入 `stopping`、`deleting`、`error` 的同一事务里吊销 active Gitea Token。这样可以让交互入口关闭和 token 失效同步生效，避免 Runtime 在停止、删除或失败后继续使用旧 token 访问 repository。
 
 ## State Reconciliation
 
@@ -146,3 +150,5 @@ State Finalization 在同一事务内执行：
 - Gitea 已物理删除 codespace 而 Manager 继续上报时，Gitea 返回 `NotFound + cleanup_local_runtime`。
 - Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 `error` 并吊销 token。
 - Gitea 处于 deleting 时，只接受 delete 结果推进。
+
+Reconciliation 负责把超时、Manager 离线和 Runtime 分歧收敛到明确状态。这样设计可以让用户看到稳定的主状态，而不是直接暴露 Manager 重启、cache 丢失或运行侧残留实例等临时观测差异。

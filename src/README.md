@@ -6,7 +6,7 @@ Codespace 是 Gitea 内置的远程开发环境入口。
 
 | 主体 | 职责 |
 | --- | --- |
-| Gitea | repository、ref 与 commit 校验；用户身份与权限（复用 `CanRead(unit.Code)` 统一入口）；codespace 生命周期状态；Codespace Manager 注册与认证（参考 Actions runner 注册模式）；Gitea access token 签发、绑定、删除保护与吊销；Gateway Open Token 签发与校验；SSH 认证判定；operation 日志归档（基于 DBFS） |
+| Gitea | repository、ref 与 commit 校验；用户身份与权限（复用 `CanRead(unit.Code)` 统一入口）；codespace 生命周期状态；Codespace Manager 注册与认证（参考 Actions runner 注册模式）；Gitea access token 签发、绑定、删除保护与吊销；Gateway Open Token 签发与校验；SSH 认证判定；operation 日志存储与读取（基于 DBFS） |
 | Codespace Manager | Runtime Instance 创建、恢复、停止、删除；Runtime Instance 类型、镜像、资源配置；Runtime Token 生成与校验；Runtime HTTP API；Runtime Metadata 上报；Endpoint upstream 解析与代理 |
 | Codespace Gateway（Manager deployment 内组件） | 用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发 |
 
@@ -115,10 +115,12 @@ sequenceDiagram
 
 - Gitea 只负责授权、状态、日志、token 绑定和跳转入口。
 - Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.Code)` 统一入口）、access token（`models/auth/access_token.go`）、SSH key、登录限制、git、Pull Request 和 Actions task claim 模型。
+- create、open、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一权限判定入口。统一入口让 Web、RPC 和 Gateway 对同一用户状态、repository 状态与 Manager 状态得到一致结论，避免 handler 各自拼接权限条件。
 - 用户拥有 repository code-read 权限就可以创建 codespace。
 - codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。
 - Manager 使用 codespace 身份访问 repository，不直接使用自己身份。
 - Runtime git 访问使用基于创建用户当前权限签发的 Gitea access token，只走 Git HTTP(S)。
+- codespace-bound token 继续使用 Gitea access token 和 `write:repository` scope，并通过 repo binding 判定限制到创建时绑定的 repository。这样保留 Gitea 现有 token 体系，同时补足通用 scope 不能表达单仓库边界的问题。
 - create、resume、stop、delete 必须幂等。
 - 同一 codespace 同一时刻只能有一个 active operation。
 - codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。
@@ -126,3 +128,5 @@ sequenceDiagram
 - 失败为终态，通过 delete 退出。
 - delete 成功后物理删除 codespace、operation 和日志。
 - Manager 的并发容量由 Manager 自行控制并以 `capacity_available` 上报，Gitea 不维护运行容量计数。
+- repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中吊销 token、置空 repository 关联字段并保留来源已删除状态。这样用户能明确看到来源仓库已删除，Runtime 清理仍通过 `codespace.uuid` 和已绑定 Manager 完成，不依赖已经不存在的 repository row。
+- codespace 日志第一版存储在 DBFS，使用 byte offset 追加和读取。DBFS 已适合运行中日志 seek/read/write，先不引入对象存储归档可以减少日志 transfer 状态对生命周期状态机的影响。

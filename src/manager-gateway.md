@@ -30,7 +30,7 @@ registration token 设计：
 - 数据库只保存明文 `token`、`owner_id`、`is_active`。明文 token 使用唯一索引，查找方式与 `action_runner_token` 一致。
 - 创建或重置 registration token 时，旧的 registration token 置为 inactive。
 - `RegisterManager` 使用 registration token 时校验 `is_active=true`。
-- 重置 registration token 只影响尚未使用的注册凭据，不影响任何现有 Manager 的 manager secret。
+- 重置 registration token 只影响未使用的注册凭据，现有 Manager 的 manager secret 继续按自身生命周期管理。
 
 ### Manager 规则
 
@@ -55,16 +55,19 @@ Declare 声明：
 
 Manager 主动 pull operation；满载时不拉取 create/resume，queued operation 自然等待。Gitea 看不到 Manager 本地 Runtime 队列、资源占用和启动中任务，不是真实容量权威，只保存最近容量快照用于 UI、诊断和本次 `FetchOperation` 准入检查。
 
-> **TODO**: Manager worker pool 模型、并发控制、任务调度策略、以及 `codespace_uuid` 到本地 Runtime Instance 的确定性映射规则尚未定义。
+待决策项：Manager worker pool、并发控制、任务调度策略、以及 `codespace_uuid` 到本地 Runtime Instance 的确定性映射规则需要单独成章。该决策会影响 Manager 本地资源隔离、operation 幂等恢复和 delete cleanup 的可预测性，因此在实现 backend driver 前确定。
 
-> **TODO**: Manager 重启恢复策略：graceful shutdown 和重启后的 operation recovery、lease 恢复、正在运行的 Runtime Instance 重新发现等机制尚未定义。
+待决策项：Manager 重启恢复策略需要覆盖 graceful shutdown、operation recovery、lease 恢复和 Runtime Instance 重新发现。该决策会影响 Gitea reconciliation 如何区分慢任务、Manager 重启和本地 Runtime 遗留实例，因此在实现长期运行 Manager 前确定。
 
 ### Manager 禁用与删除
 
-- 常规管理操作支持禁用。物理删除前需确认无未删除 codespace 引用该 Manager。
+常规管理操作使用 disabled 状态停用 Manager。disabled 保留已绑定清理能力，停止新的交互和新的运行实例：
+
 - disabled Manager 可以调用 `DeclareManager`、领取已绑定的 `stop|delete`、`UpdateOperation`、`UpdateLog`（仅限已领取的 `stop|delete`）、`ReportInstances`。
-- disabled Manager 拒绝 `FetchOperation(create|resume)`、`ReportRuntimeMetadata`、`RequestGiteaToken`、`ValidateOpenToken` 和 `VerifySSHPublicKey`。
-- 仍有未删除 codespace 引用的 Manager 必须先清理其所有 codespace 后才能物理删除。
+- disabled Manager 的 create/resume、Runtime Metadata 写入、Gitea Token 申请、Open Token 校验和 SSH 公钥校验返回 disabled 分类。
+- 物理删除 Manager 记录前，管理流程先确认没有未删除 codespace 和 active operation 引用该 Manager。
+
+这样设计的原因是 disabled 是运维止血动作，需要快速阻止新的 workspace 和新的用户会话；同时保留 stop/delete/report 能力，可以让已绑定 Runtime 继续完成清理，避免禁用动作把资源留在运行侧。
 
 ### Manager Secret
 
@@ -79,7 +82,7 @@ Manager 主动 pull operation；满载时不拉取 create/resume，queued operat
 - registration token 和 manager secret 是两个不同生命周期的凭据。
 - registration token 只用于 `gitea-codespace register` 调用 `RegisterManager`。
 - manager secret 只用于已注册 Manager 调用后续 ManagerService RPC。
-- 重置 registration token 只影响尚未使用的注册凭据，不影响任何现有 Manager 的 manager secret。
+- 重置 registration token 只影响未使用的注册凭据，现有 Manager 的 manager secret 继续按自身生命周期管理。
 - 已注册 Manager 的 manager secret 继续有效，除非管理员显式重置该 Manager 的 manager secret、禁用 Manager，或物理删除 Manager 记录。
 - manager secret 明文只在 `RegisterManager` 成功或管理员显式重置该 Manager secret 时展示一次。
 - Manager secret reset 是针对单个 Manager 的管理动作。
@@ -212,7 +215,7 @@ Runtime Instance 只需要获取初始化信息和声明可打开入口。生命
 - `POST /endpoints/{endpoint_id}` 创建 Endpoint，已存在返回 conflict。
 - `PUT /endpoints/{endpoint_id}` 更新 Endpoint，不存在返回 404。
 - `DELETE /endpoints/{endpoint_id}` 删除 Endpoint；不存在返回 204。
-- `endpoint_id` 必须匹配 `[A-Za-z0-9_-]+`。
+- `endpoint_id` 使用 `[A-Za-z0-9_-]+`。
 - `workspace` 是默认 Web IDE 保留 ID。
 - 删除 `workspace` 允许；UI 默认 Open 会退回 codespace 详情页。
 
@@ -234,6 +237,8 @@ Endpoint API 规则：
 - `health` 可选字段，上报后仅用于 UI 展示。
 - 每次 Endpoint create/update/delete 后，Manager 重新生成当前 Runtime Metadata 快照并调用 `ReportRuntimeMetadata`。
 
+Endpoint 使用 `endpoint_id` 做路由键，使用 `label` 做展示文本。这样设计可以让授权、路由和展示分离：Gitea 只需要确认 Endpoint 是否存在，Gateway 负责解析内部 upstream，UI 文案变化不会影响已有 open 链路。
+
 ## Gateway 设计
 
 Gateway 通过 Manager 身份调用 Gitea [ManagerService RPC](rpc-spec.md) 完成 Open Token 校验和 SSH 认证。
@@ -250,17 +255,19 @@ endpoint_id=<endpoint_id>
 
 规则：
 
-- `workspace` 是唯一保留 Endpoint ID，表示默认 Web IDE。
-- SSH 不是 Endpoint。
+- `workspace` 是保留 Endpoint ID，表示默认 Web IDE。
+- SSH 使用独立接入面。
 - 预览端口、服务入口和 IDE 入口都通过 Endpoint 打开。
 - open 输入仅接受 `endpoint_id`，由 Gitea 根据 Runtime Metadata 校验 Endpoint 存在并生成 Open Token。Gateway 侧自行判断 tunnel 目标。
 
 Endpoint label 规则：
 
 - 长度 1 到 64（trim 后）。
-- 禁止控制字符、`<` 和 `>`。
+- label 使用普通可展示文本，控制字符、`<` 和 `>` 由输入校验过滤。
 - 仅用于 UI 展示，不受查找、路由、授权、默认选择或日志身份影响。
 - UI 按普通文本 escape 后展示。
+
+label 只承担展示职责，因此输入校验关注 UI 可读性和 HTML 展示安全。路由和授权使用 `endpoint_id`，可以避免用户修改 label 后影响 Gateway 转发或审计关联。
 
 默认 open：
 
@@ -273,21 +280,21 @@ open 成功响应：
 302 Location: {manager.gateway_url}/open?open_token={token}
 ```
 
-- `open_token` 作为一次性授权凭据，由 Gateway 消费后不再传递到 Runtime Instance。
+- `open_token` 作为一次性授权凭据，由 Gateway 消费并在本地建立 session，不传递到 Runtime Instance。
 - Gateway access log 不记录完整 token。
 
-> **TODO**: Gateway Endpoint 反向代理实现细节（HTTP reverse proxy / WebSocket upgrade / TCP tunnel）、TLS 处理、路径重写、header 注入等尚未定义。
+待决策项：Gateway Endpoint 反向代理实现需要确定 HTTP reverse proxy、WebSocket upgrade、TCP tunnel、TLS 处理、路径重写和 header 注入策略。该决策会影响用户访问体验、审计字段和 Runtime upstream 安全边界，因此在实现 Gateway proxy 前单独成章。
 
 ### Gateway Session 管理
 
 - Gateway 维护 `codespace_uuid -> live sessions` 的本地索引。
 - Gateway 和 Manager 是同一 deployment 内的一体化组件。
 - Manager 执行 stop/delete 前，先通知本地 Gateway 关闭该 `codespace_uuid` 的 HTTP/WebSocket/IDE 会话。
-- Manager disabled 后，本地 Gateway 拒绝新 open，并关闭该 Manager 负责的 live sessions。
-- repo access lost、user access lost 后，新的 open 由 Gitea `ValidateOpenToken` 拒绝。
+- Manager disabled 后，本地 Gateway 对新 open 返回 manager disabled 分类，并关闭该 Manager 负责的 live sessions。
+- repo access lost、user access lost 后，新的 open 由 Gitea `ValidateOpenToken` 返回对应失败分类。
 - 已建立 session 在下一次 Manager operation、Gateway 周期校验或 Runtime 断开时关闭。Gateway 会话管理依赖本地 Manager 事件通知，Gitea 不对 Gateway 下发主动指令。
 
-> **TODO**: Gateway session 超时时间、空闲断开、最大 session 数、健康检查、断线重连策略尚未定义。
+待决策项：Gateway session 需要确定超时时间、空闲断开、最大 session 数、健康检查和断线重连策略。该决策会影响资源占用、长连接体验和 disabled/user access lost 后的收敛速度，因此在 Gateway proxy 实现前确定。
 
 ## SSH 接入
 
@@ -297,11 +304,13 @@ SSH 是 codespace 自身稳定接入面，不是 Endpoint。
 
 用户通过 `ssh cs-{codespace_id}@gateway_host` 连接。Gateway 从连接串解析 `codespace_id`，直接查表获取 codespace，然后调用 `VerifySSHPublicKey` 完成公钥认证。用户身份通过公钥匹配确定，创建者用户名由 Gitea 侧从 `user_id` 获取。
 
-规则：
+SSH 可用性：
 
-- 只有 `running` 允许 SSH。
-- `queued|booting|stopping|stopped|resuming|deleting|error` 均拒绝 SSH。
-- SSH 不自动唤醒 stopped codespace。
+- `running` 状态提供 SSH。
+- `queued|booting|stopping|stopped|resuming|deleting|error` 返回状态不可用分类。
+- stopped codespace 通过显式 resume 恢复后再提供 SSH。
+
+这样设计的原因是 SSH 是长连接交互面，只有 running 状态能保证 internal SSH metadata、Manager/Gateway 转发和 repository access 判定同时成立。stopped 自动唤醒会把认证尝试变成生命周期操作，容易让普通 SSH 客户端重试触发意外资源启动。
 
 ### SSH 中转模型
 
@@ -359,11 +368,11 @@ SSH session 规则：
 
 - Gateway 维护 `codespace_uuid -> live SSH sessions` 的本地索引。
 - Manager 执行 stop/delete 前，先通知本地 Gateway 关闭该 `codespace_uuid` 的 SSH sessions。
-- Manager disabled 后，本地 Gateway 拒绝新 SSH，并关闭该 Manager 负责的 live SSH sessions。
-- repo access lost、user access lost 后，新的 SSH auth 由 Gitea `VerifySSHPublicKey` 拒绝。
+- Manager disabled 后，本地 Gateway 对新 SSH 返回 manager disabled 分类，并关闭该 Manager 负责的 live SSH sessions。
+- repo access lost、user access lost 后，新的 SSH auth 由 Gitea `VerifySSHPublicKey` 返回对应失败分类。
 - 已建立 SSH session 在下一次 Manager operation、Gateway 周期校验或 Runtime 断开时关闭。Gateway 会话管理依赖本地 Manager 事件通知，Gitea 不对 Gateway 下发主动指令。
 
-> **TODO**: Gateway SSH 认证限流与退避的具体配置项尚未定义。
+待决策项：Gateway SSH 认证限流与退避需要确定 source IP、`codespace_uuid`、公钥 fingerprint 和失败分类的计数维度。该决策会影响暴力破解防护和误伤范围，因此在 SSH server 实现前明确配置项。
 
 ### 内部 SSH
 
@@ -377,20 +386,22 @@ SSH session 规则：
 - 用户公钥不在 Runtime Instance 内部校验。
 - 内部 SSH metadata 不在普通 UI/API 输出中暴露。
 
+内部 SSH 使用 Gateway 固定密钥，是为了把用户认证放在 Gitea/Gateway 边界完成，Runtime Instance 只信任 Manager deployment 内部通道。这样 Runtime 不需要保存用户 SSH key，也能在用户权限变化后由 Gitea 实时返回 SSH 认证失败分类。
+
 ## 日志与脱敏
 
 ### 日志来源
 
 - Gitea 保存一套 codespace 上报日志。
-- Manager 本地日志用于 Manager/Gateway 排障。以下事件仅写本地日志：
+- Manager 本地日志用于 Manager/Gateway 排障。
 - `UpdateLog` 是唯一上报入口，始终追加到当前 codespace 日志文件。
 - create/resume/stop/delete lifecycle operation 执行期间的 boot、init、git、Endpoint 初始化、stop、resume、delete 阶段日志写入 codespace 日志。
-- operation 进入 `done|failed` 后，Manager 不再持有该 operation 的执行上下文，不能继续追加日志。
+- operation 进入 `done|failed` 后，日志文件进入封闭状态，由 Gitea 页面读取已保存的生命周期证据。
 - running 期间 open token 连接成功、SSH 连接成功、session 正常关闭、Endpoint 后续变化和用户可见运行异常记录在 Manager/Gateway 本地日志。
 - running 期间连接成功通过 `last_active_unix` 记录用户活跃时间；详细连接事件写 Manager/Gateway 本地日志。
 - open token 校验失败、SSH 公钥失败、限流、扫描、爆破、Gateway proxy debug、backend driver debug、heartbeat、空 pull、health poll 明细和内部 retry 细节只写 Manager/Gateway 本地日志。
 
-codespace 日志是生命周期操作的执行证据，单文件连续追加。`operation_status == running` 时允许追加，进入 `done|failed` 后封闭。
+codespace 日志是生命周期操作的执行证据，单文件连续追加。`operation_status == running` 时允许追加，进入 `done|failed` 后封闭。连接级事件保留在 Manager/Gateway 本地日志，是因为这些事件数量大、包含网络诊断细节，放入 Gitea codespace 日志会干扰用户阅读生命周期过程。
 
 ### 脱敏
 
@@ -406,9 +417,11 @@ codespace 日志是生命周期操作的执行证据，单文件连续追加。`
 - Manager 持有 Runtime Token 明文，负责精确脱敏。Gitea 执行防御性清理（控制字符过滤、单行长度限制、常见 URL token/Authorization header 模式替换）。安全边界定义如下：前端隐藏和 Gitea 防御性清理均属于展示层保护，不能作为 Runtime Token 泄漏的安全兜底。
 - 下载日志和 UI 日志使用同一份脱敏内容。
 - 错误摘要必须在 operation 进入 `done|failed` 前上传。
-- operation 进入 `done|failed` 后，不允许继续追加日志。
+- operation 进入 `done|failed` 后，Gitea 日志进入封闭状态。
 - stop/resume/delete 覆盖 `operation_type` 和 `operation_status` 后，日志继续追加到同一文件。
 - 只有 `operation_status == running` 时才能追加 Gitea 日志。
+
+脱敏责任放在 Manager，是因为 Manager 创建 Runtime、注入 token，并最早看到 init 输出。Gitea 的防御性清理用于降低展示风险，但不能替代 Manager 对已知敏感值的精确 mask；这样边界清晰，日志泄漏时也能定位责任组件。
 
 ### 日志命令
 
@@ -427,4 +440,4 @@ codespace 日志是生命周期操作的执行证据，单文件连续追加。`
 
 Codespace 日志 UI 复用 Actions console 解析和渲染能力，与 Actions 共享同一套日志渲染器。
 
-> **TODO**: Gateway access log 格式、脱敏规则、保留策略尚未定义。
+待决策项：Gateway access log 需要确定字段格式、脱敏规则和保留策略。该决策会影响运维审计、用户隐私和日志容量，因此在 Gateway 对外入口实现前完成。
