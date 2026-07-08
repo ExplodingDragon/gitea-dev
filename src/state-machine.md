@@ -1,6 +1,6 @@
-# 生命周期与状态机
+# 状态与生命周期
 
-## 生命周期状态
+## 主状态
 
 用户可见状态与存储主状态使用单轴状态图：
 
@@ -64,15 +64,6 @@ stateDiagram-v2
 ## Operation 状态
 
 Operation status 统一为：
-
-```text
-queued
-running
-done
-failed
-```
-
-含义：
 
 | 状态 | 含义 |
 | --- | --- |
@@ -158,63 +149,3 @@ State Finalization 在同一事务内执行：
 - Gitea 已物理删除 codespace 而 Manager 继续上报时，Gitea 返回 `NotFound + cleanup_local_runtime`。
 - Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 `error` 并吊销 token。
 - Gitea 认为 deleting 时，任何非 delete 上报都不能改变状态。
-
-## 删除与外部状态变化
-
-Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时：
-
-- 不允许 create。
-- 不允许 resume。
-- 不允许新的 open。
-- 不允许新的 SSH。
-- 仍按 Administrative Permission 允许 logs、stop、delete。
-
-Repository 删除：
-
-- repository 删除不会因为 Manager 分组被阻止；不存在 repository 级 Manager。
-- repository 删除确认 UI 提示会清理或影响的 codespace 数量。
-- repository 删除成功页或确认摘要展示受影响的 codespace 数量。
-- repository 删除在 `repo_service.DeleteRepository` / `DeleteRepositoryDirectly` 删除 DB repository 记录前执行 codespace pre-cleanup。
-- 对引用该 repository 的关联 codespace，repository 删除事务内：
-  - 吊销 Gitea Token。
-  - 不允许 open/SSH/resume。
-  - 写入 `status_message=source repository deleted; cleanup required`。
-  - codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 `deleting`。
-  - codespace 从未绑定 Manager 或 Manager 记录不存在时进入 `error`。
-- disabled Manager 也允许领取已绑定给自己的 delete operation。
-- Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 `deleting`，等待 Manager 回来领取。
-- delete timeout 后进入 `error`。
-- repository 删除事务创建的 delete operation 不依赖 repository row 生成 payload。
-- repository DB 记录删除后，Manager 仍能通过 `codespace_uuid + generation` 领取 delete operation 并完成 Runtime cleanup。
-- source repository 删除后，相关 codespace 列表和详情页显示 `source repository deleted`。
-- repository 删除不发送站点通知。
-
-Owner/user/org 删除：
-
-- owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。
-- 删除该 owner 下 repository 时按 repository 删除规则处理。
-- Manager 和 registration secret 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration secret。
-- owner/org 删除不向 Manager 下发 delete RPC，不依赖 Manager 在线。
-- 某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。
-- 创建用户删除后吊销 token，并不允许 open/SSH/resume。
-- 组织管理员可清理组织仓库下的相关 codespace。
-
-Manager 删除：
-
-- 普通管理操作只允许禁用 Manager。
-- 物理删除 Manager 记录前确认没有未删除 codespace 引用该 Manager。
-- 物理删除 Manager 记录前确认没有 active operation 绑定该 Manager。
-- 禁用 Manager 与 codespace 生命周期状态更新不在同一事务里批量改写；后续 open/SSH/resume/claim 根据 Manager disabled 状态实时拒绝。
-- 物理删除 Manager 是管理清理动作，不负责 Runtime Instance 清理。
-- 物理删除 Manager 只注销 Gitea 注册身份，不向 Manager 下发删除指令。
-- Manager 记录被物理删除后，后续 ManagerService RPC 按 unregistered manager 返回 unauthenticated。
-- Runtime cleanup 通过 codespace delete operation 实现，不能由删除 Manager 记录隐式触发。
-- 物理删除 Manager 前先清理引用它的 codespaces 和未完成 operations。
-
-重命名：
-
-- ID 是权威关联。
-- 名称每次展示时解析。
-- `ssh_user` 创建后不随重命名变化。
-- create/resume operation payload 使用当时当前名称重新生成 clone/web URL。
-- 显示缓存和 runtime 动态数据不持久化到数据库。

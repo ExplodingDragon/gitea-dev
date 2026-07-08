@@ -8,7 +8,7 @@ Codespace 是 Gitea 内置的远程开发环境入口。
 | --- | --- |
 | Gitea | repository、ref 与 commit 校验；用户身份与权限（复用 `CanRead(unit.Code)` 统一入口）；codespace 生命周期状态；Codespace Manager 注册与认证（参考 Actions runner 注册模式）；Gitea access token 签发、绑定、删除保护与吊销；Gateway Open Token 签发与校验；SSH 认证判定；operation 日志归档（基于 DBFS） |
 | Codespace Manager | Runtime Instance 创建、恢复、停止、删除；Runtime Instance 类型、镜像、资源配置；Runtime Token 生成与校验；Runtime HTTP API；Runtime Metadata 上报；Endpoint upstream 解析与代理 |
-| Codespace Gateway（Manager deployment 内组件，不单独注册 Gitea 身份） | 用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发 |
+| Codespace Gateway（Manager deployment 内组件） | 用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发 |
 
 Gitea 不参与运行时选型，也不操作 Incus/Docker 等运行后端。运行时专有配置和 Runtime Token 均由 Manager 管理。
 
@@ -55,14 +55,13 @@ flowchart LR
 架构约束：
 
 **部署边界**
-- Codespace 跟随 Gitea 当前部署模型；Gitea 不提供集群模式。
+- Codespace 部署模型为 Gitea 单实例。
 - Gitea 与 Manager 之间只通过 ManagerService RPC 通信。
 - Manager 是运行侧唯一的 Gitea 注册身份。
-- Gateway 属于 Manager deployment，不单独注册 Gitea 身份。
+- Gateway 是 Manager deployment 内部组件，通过 Manager 身份调用 Gitea。
 
 **数据边界**
 - Gitea 只保存状态、权限、token 绑定和日志元数据。
-- Gitea 不保存 Endpoint upstream。
 - Incus、Docker、镜像、资源规格、网络等均为 Manager 内部实现。
 - Runtime HTTP API 只在 Manager 私有网络内开放。
 
@@ -122,9 +121,8 @@ sequenceDiagram
 - Runtime git 访问使用基于创建用户当前权限签发的 Gitea access token，只走 Git HTTP(S)。
 - create、resume、stop、delete 必须幂等。
 - 同一 codespace 同一时刻只能有一个 active operation。
-- codespace 不新增通用 notifier、通用 rate limiter 或通用 repo-scoped token。
-- 不存在 retry operation。
-- create 失败后不在同一个 codespace 对象上重建。create 失败后 Runtime、token、日志和 generation 可能已部分产生，不在同一对象上 retry 可避免旧状态与新初始化混淆。
+- codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。
+- create 失败后不在同一个 codespace 对象上重新创建。失败后 Runtime、token、日志和 generation 可能已部分产生，不在同一对象上重建可避免旧状态与新初始化混淆。
 - 失败是终态，除 delete 外不能恢复。
 - delete 成功后物理删除 codespace、operation 和日志。
-- codespace 不设计 quota。Manager 的真实并发容量由 Manager 自己控制，Gitea 不维护运行容量计数。容量管理是 Manager 本地资源管理问题。
+- Manager 的并发容量由 Manager 自行控制并以 `capacity_available` 上报，Gitea 不维护运行容量计数。
