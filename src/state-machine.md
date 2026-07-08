@@ -56,7 +56,7 @@ stateDiagram-v2
 规则：
 
 - `booting` 只能由 create 进入。
-- resume 不进入 `booting`。
+- `boot` 是 create 的初始化状态，resume 使用 `resuming`。
 - `error` 不回到正常状态。
 - `error` 后 delete 会创建新的 delete operation，不视为 retry。
 - open、SSH、resume、stop、delete、logs 是否可用，由主状态、repo 状态、用户状态、Manager 在线状态和 Runtime Metadata 共同决定。
@@ -72,13 +72,13 @@ Operation status 统一为：
 | `done` | Manager 上报成功，且 Gitea 已完成 State Finalization。 |
 | `failed` | Manager 上报失败或 Gitea 判定超时失败，且 Gitea 已完成 State Finalization。 |
 
-不使用 `leased`、`succeeded`、`cancelled`、`attempts`、`max_attempts`、`retry`。
+Operation status 限定为 `queued` / `running` / `done` / `failed`。
 
 ## State Finalization
 
 Codespace 主状态只能由 Gitea State Finalization 写入。
 
-`UpdateOperation` 只记录 operation 事实并触发 State Finalization。Manager 永远不能直接覆盖 codespace 主状态。
+`UpdateOperation` 只记录 operation 事实并触发 State Finalization。Manager 上报进度和终态，Gitea State Finalization 写入主状态。
 
 State Finalization 在同一事务内执行：
 
@@ -141,9 +141,8 @@ State Finalization 在同一事务内执行：
 
 规则：
 
-- Gitea 是状态权威。
-- Manager 观测事实不能恢复 Gitea 主状态。
+- Gitea 是状态权威。Manager 上报的运行时观测数据用于展示和诊断，由 Gitea reconciliation 和 State Finalization 保持主状态一致。
 - Gitea 当前为 `error` 而 Manager 报告 runtime 仍存在时，Gitea 记录 [State Divergence](glossary.md#state-divergence) 并返回 [Manager Instruction](glossary.md#manager-instruction) `cleanup_local_runtime`。
 - Gitea 已物理删除 codespace 而 Manager 继续上报时，Gitea 返回 `NotFound + cleanup_local_runtime`。
 - Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 `error` 并吊销 token。
-- Gitea 认为 deleting 时，任何非 delete 上报都不能改变状态。
+- Gitea 处于 deleting 时，只接受 delete 结果推进。

@@ -18,7 +18,7 @@ Gitea 校验步骤：
 2. 校验 repository 状态。
 3. 打开 git repository 并确认非空。
 4. 解析并锁定最终 commit SHA。
-5. 拒绝不存在的 ref 和不可解析的 commit。
+5. 校验目标 ref/commit 存在且可解析。
 6. PR 入口属于 base repository 页面。
 
 Pull Request 规则：
@@ -53,23 +53,22 @@ tag: default
 - `ref_type=pull`：读取 PR base branch。
 - `ref_type=tag`：读取 repository default branch。
 - `ref_type=commit`：读取 repository default branch。
-- 文件不存在等价于 `tag=default`。
+- 文件缺失等价于 `tag=default`。
 - 空仓库在读取配置前已被拒绝。
 - YAML 非法时 create 失败。
 - 未知字段忽略，create 日志中提示当前只识别 `tag`。
 - `tag` 必须匹配 `[A-Za-z0-9_-]+`。
 - `tag` 解析后 lower-case。
-- `tag` 只影响 create 的 Manager tag matching。
-- `tag` 不影响 stop/resume/delete。
+- `tag` 确定 create 时的 Manager tag matching。stop、resume、delete 按已绑定的 `manager_id` 执行，不看 tag。
 - 实际 checkout commit 仍按用户选择的 branch/tag/commit/PR 锁定 SHA。
-- `.gitea/codespace.yaml` 只用于选择 Manager tag，不决定实际 checkout 内容。
+- `.gitea/codespace.yaml` 中的 `tag` 字段用于选择 Manager。实际 checkout 以用户选择的 branch/tag/commit/PR 确定的 `commit_sha` 为准。
 - tag/commit 场景读取 default branch，避免任意历史 commit 改变 Manager 选择。
 - PR 场景使用 base branch，让目标仓库维护者控制运行侧选择；实际代码仍按用户选择的 ref 锁定到具体 commit SHA。
 
 ### Manager 匹配
 
 - create 记录固定 `repo_tag`。
-- disabled Manager 不参与 tag 匹配。
+- enabled Manager 参与 tag 匹配。
 - 没有 enabled Manager 支持 `repo_tag` 时，create 直接失败。
 - create 创建时不绑定具体 Manager。
 - 具体 `manager_id` 只在某个 Manager 通过 `FetchOperation` 成功领取 create [Operation](glossary.md#operation) 时写入。
@@ -154,7 +153,7 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为唯一初始
 - delete 后 `CODESPACE_NAME` 不复用。
 - Runtime Instance name 由 Manager 用 `codespace_uuid` 本地生成，`CODESPACE_NAME` 作为补充标识。
 - Runtime Instance name 仍由 Manager 用 `codespace_uuid` 本地生成。
-- `CODESPACE_WORKSPACE_DIR`、`CODESPACE_MANAGER_BASE_URL` 和 `CODESPACE_RUNTIME_TOKEN` 由 Manager 创建 Runtime 时注入，不来自 Gitea Operation Payload。
+- `CODESPACE_WORKSPACE_DIR`、`CODESPACE_MANAGER_BASE_URL` 和 `CODESPACE_RUNTIME_TOKEN` 由 Manager 创建 Runtime 时注入。
 
 Boot 完成条件：
 
@@ -182,13 +181,7 @@ report-endpoints
 
 ### Repository 删除
 
-Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时：
-
-- 不允许 create。
-- 不允许 resume。
-- 不允许新的 open。
-- 不允许新的 SSH。
-- 仍按 Administrative Permission 允许 logs、stop、delete。
+Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，进入以下受限模式：create、resume、open、SSH 均不可用；logs、stop、delete 仍按 Administrative Permission 可用。
 
 Repository 删除：
 
@@ -196,8 +189,7 @@ Repository 删除：
 - repository 删除成功页或确认摘要展示受影响的 codespace 数量。
 - repository 删除在 `repo_service.DeleteRepository` / `DeleteRepositoryDirectly` 删除 DB repository 记录前执行 codespace pre-cleanup。
 - 对引用该 repository 的关联 codespace，repository 删除事务内：
-  - 吊销 Gitea Token。
-  - 不允许 open/SSH/resume。
+  - 吊销 Gitea Token，open/SSH/resume 不可用。
   - 写入 `status_message=source repository deleted; cleanup required`。
   - codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 `deleting`。
   - codespace 从未绑定 Manager 或 Manager 记录不存在时进入 `error`。
@@ -213,10 +205,10 @@ Repository 删除：
 
 - owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。
 - 删除该 owner 下 repository 时按 repository 删除规则处理。
-- Manager 和 registration token 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration token。
-- owner/org 删除不向 Manager 下发 delete RPC，不依赖 Manager 在线。
+- Manager 和 registration token 的归属与管理独立于 owner 或 organization。owner/org 删除操作不级联删除 Manager 或 registration token。
+- owner/org 删除触发 repository 删除流程，codespace 由 repository 删除规则处理对应的生命周期。
 - 某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。
-- 创建用户删除后吊销 token，并不允许 open/SSH/resume。
+- 创建用户删除后 token 被吊销，open/SSH/resume 不可用。
 - 组织管理员可清理组织仓库下的相关 codespace。
 
 ### Manager 删除

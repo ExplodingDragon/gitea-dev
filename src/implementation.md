@@ -15,7 +15,7 @@ modules/codespace/
 
 Web handler 与 ManagerService RPC handler 不应混在同一个文件。
 
-Runtime HTTP API 属于 Manager，不属于 Gitea route。
+Runtime HTTP API 由 Manager 实现，路由与 Gitea route 分离。
 
 ## 实现约束
 
