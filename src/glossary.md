@@ -48,6 +48,10 @@ Gitea 为打开 Endpoint 签发的一次性短期 opaque token。
 ## Gitea Token
 Gitea 签发给 Runtime Instance 做 git 访问的 access token。
 
+<span id="registration-token"></span>
+## Registration Token
+管理员创建的明文凭据，存储在 `codespace_manager_token` 表。Manager 通过 `RegisterManager` 注册并获得 manager secret。设计与 `action_runner_token` 一致（明文存储、唯一索引查找）。
+
 <span id="runtime-token"></span>
 ## Runtime Token
 Manager 签发给 Runtime Instance 调用 Runtime HTTP API 的 token。
@@ -78,7 +82,7 @@ Gitea 后台任务处理 operation 超时、stale report、状态分歧和清理
 
 <span id="stale-report"></span>
 ## Stale Report
-Manager 上报的 operation_id 或 codespace_uuid 已不匹配当前 codespace 状态的过期上报。
+Manager 上报的 codespace_uuid 或 operation_status 已不匹配当前 codespace 状态的过期上报。
 
 <span id="state-divergence"></span>
 ## State Divergence

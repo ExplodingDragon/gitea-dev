@@ -9,9 +9,8 @@ Create 支持：
 | 参数 | 说明 |
 | --- | --- |
 | `ref_type` | `branch` / `tag` / `commit` / `pull` |
-| `ref_name` | ref 名称 |
+| `ref_name` | ref 标识：`branch` → 分支名；`tag` → 标签名；`commit` → 完整 commit SHA；`pull` → PR ref 路径（如 `refs/pull/42/head`） |
 | `commit_sha` | 指定 commit SHA |
-| `pull_id` | PR ID |
 
 Gitea 校验步骤：
 
@@ -20,7 +19,7 @@ Gitea 校验步骤：
 3. 打开 git repository 并确认非空。
 4. 解析并锁定最终 commit SHA。
 5. 拒绝不存在的 ref 和不可解析的 commit。
-6. PR 创建记录 `pull_id`。
+6. PR 入口属于 base repository 页面。
 
 Pull Request 规则：
 
@@ -80,10 +79,10 @@ tag: default
 
 Create operation claim：
 
-- claim 前：`codespace.manager_id=0`，`operation.manager_id=0`。
-- `FetchOperation` 原子 claim operation。
-- claim 同时写入 `codespace.manager_id`、`operation.manager_id`，并将 codespace 从 `queued` 推进到 `booting`。
-- claim 条件包含 caller Manager enabled、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`manager_id=0`、当前 status 和 active operation。
+- claim 前：`codespace.manager_id=0`，`codespace.operation_status=queued`。
+- `FetchOperation` 原子 claim。
+- claim 同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_deadline_unix`，并将 codespace 从 `queued` 推进到 `booting`。
+- claim 条件包含 caller Manager enabled、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=queued`。
 - 本次 `FetchOperation` 的 `capacity_available` 必须大于 0。
 - Gitea 不在 claim、`done|failed` 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
 - claim 成功后，operation 归属不可被后续 `DeclareManager` 覆盖。
@@ -131,7 +130,6 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为唯一初始
 | `GITEA_REF_TYPE` | ref 类型（branch/tag/commit/pull） |
 | `GITEA_REF_NAME` | ref 名称 |
 | `GITEA_COMMIT_SHA` | 锁定的 commit SHA |
-| `GITEA_PULL_ID` | PR ID（非 PR 场景为空） |
 | `GITEA_TOKEN` | Gitea access token，用于 git 操作 |
 | `CODESPACE_UUID` | codespace UUID |
 | `CODESPACE_NAME` | 派生名称，格式 `cs-{short_uuid}` |
@@ -215,7 +213,7 @@ Repository 删除：
 
 - owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。
 - 删除该 owner 下 repository 时按 repository 删除规则处理。
-- Manager 和 registration secret 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration secret。
+- Manager 和 registration token 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration token。
 - owner/org 删除不向 Manager 下发 delete RPC，不依赖 Manager 在线。
 - 某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。
 - 创建用户删除后吊销 token，并不允许 open/SSH/resume。

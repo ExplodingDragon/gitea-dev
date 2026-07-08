@@ -11,7 +11,7 @@ package codespace.v1;
 
 // ManagerService is implemented by Gitea and called by Codespace Manager.
 service ManagerService {
-  // RegisterManager exchanges a one-time registration secret for a Manager identity.
+  // RegisterManager exchanges a one-time registration token for a Manager identity.
   rpc RegisterManager(RegisterManagerRequest) returns (RegisterManagerResponse);
 
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
@@ -45,8 +45,8 @@ service ManagerService {
 // --- RegisterManager ---
 
 message RegisterManagerRequest {
-  // The one-time registration secret issued by the Gitea admin.
-  string registration_secret = 1;
+  // The one-time registration token issued by the Gitea admin.
+  string registration_token = 1;
 }
 
 message RegisterManagerResponse {
@@ -83,7 +83,6 @@ message FetchOperationResponse {
 }
 
 message OperationPayload {
-  int64 operation_id = 1;
   string operation_type = 2; // create | resume | stop | delete
   string codespace_uuid = 3;
   int64 lease_deadline_unix = 4;
@@ -100,14 +99,12 @@ message OperationPayload {
   string ref_type = 18;
   string ref_name = 19;
   string commit_sha = 20;
-  int64 pull_id = 21;
 }
 
 // --- UpdateOperation ---
 
 message UpdateOperationRequest {
-  int64 operation_id = 1;
-  string codespace_uuid = 2;
+  string codespace_uuid = 1;
 
   // Optional: renew the lease.
   oneof result {
@@ -137,12 +134,11 @@ message UpdateOperationResponse {
 // --- UpdateLog ---
 
 message UpdateLogRequest {
-  int64 operation_id = 1;
-  string codespace_uuid = 2;
+  string codespace_uuid = 1;
   // Byte offset within the log file.
-  int64 offset = 3;
+  int64 offset = 2;
   // Pre-sanitized log lines, each as a single-line string.
-  repeated string lines = 4;
+  repeated string lines = 3;
 }
 
 message UpdateLogResponse {}
@@ -163,10 +159,9 @@ message ReportRuntimeMetadataResponse {
 // --- RequestGiteaToken ---
 
 message RequestGiteaTokenRequest {
-  int64 operation_id = 1;
-  string codespace_uuid = 2;
+  string codespace_uuid = 1;
   // Must be "create" or "resume".
-  string operation_type = 3;
+  string operation_type = 2;
 }
 
 message RequestGiteaTokenResponse {
@@ -245,7 +240,7 @@ x-codespace-manager-id: <manager id>
 x-codespace-manager-secret: <manager secret>
 ```
 
-`RegisterManager` 使用一次性 registration secret 认证，secret 通过 request body 传递。
+`RegisterManager` 使用 registration token 认证，token 通过 request body 传递。
 
 ## 传输
 

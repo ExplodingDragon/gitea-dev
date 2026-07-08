@@ -82,24 +82,22 @@ Codespace 主状态只能由 Gitea State Finalization 写入。
 
 State Finalization 在同一事务内执行：
 
-1. 读取 codespace 和 operation。
-2. 校验 `active_operation_id`。
-3. 校验 `active_operation_id` 匹配。
-4. 校验当前状态转移合法。
-5. 应用 operation 终态结果。
-6. 更新 codespace 主状态。
-7. 更新 token 状态。
-8. 写入 `stopped_unix`、`status_message`、`gitea_token_id` 等主状态字段。
-9. 清空 `active_operation_id`。
+1. 读取 codespace。
+2. 校验 `operation_status == running`。
+3. 校验当前状态转移合法。
+4. 写入 `operation_status = done|failed` 和 `operation_finished_unix`。
+5. 更新 codespace 主状态。
+6. 更新 token 状态。
+7. 写入 `stopped_unix`、`status_message`、`gitea_token_id` 等主状态字段。
 
-`active_operation_id` 含义：
+`operation_status` 含义：
 
-- `active_operation_id` 只表示当前未完成 lifecycle [Operation](glossary.md#operation)。
-- lifecycle [Operation](glossary.md#operation) 处于 `queued|running` 时，`active_operation_id` 指向该 operation。
-- lifecycle [Operation](glossary.md#operation) 进入 `done|failed` 并完成 [State Finalization](glossary.md#state-finalization) 后，`active_operation_id` 清空。
-- 创建新的 stop、resume 或 delete operation 时，`active_operation_id` 写入新 operation。
-- 日志展示通过历史 operation 记录查询，不依赖 `active_operation_id` 保留。
-- delete done 后物理删除 codespace、[Operation](glossary.md#operation) 和日志。
+- `queued`：operation 已创建，尚未被 Manager 通过 `FetchOperation` 领取。
+- `running`：Manager 已领取，表示有正在执行的操作。用于 stale detection、operation-bound RPC 匹配和并发保护。
+- `done|failed`：operation 已完成，[State Finalization](glossary.md#state-finalization) 后主状态已推进。
+- 创建新的 stop、resume 或 delete 时，`operation_type` 和 `operation_status` 在同一行覆写。
+- 日志追加到同一 codespace 文件，不按 operation 切分。
+- delete done 后物理删除 codespace 和日志。
 
 状态推进：
 
@@ -128,14 +126,14 @@ State Finalization 在同一事务内执行：
 
 ## State Reconciliation
 
-`reconcile_codespace_operations` 周期运行。
+`reconcile_codespace_states` 周期运行。
 
 职责：
 
 - 检查中间态。
-- 检查 active [Operation](glossary.md#operation) deadline。
+- 检查 `operation_deadline_unix` 超时。
 - 检查 Manager offline timeout。
-- 将超时 [Operation](glossary.md#operation) 标记为 failed。
+- 将超时 operation 标记为 failed。
 - 通过 [State Finalization](glossary.md#state-finalization) 进入 `error`。
 - 吊销失效 Gitea Token。
 - 写入 `status_message`。
