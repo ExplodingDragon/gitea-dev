@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>生命周期与状态机 - Gitea Codespace 设计文档</title>
+        <title>状态与生命周期 - Gitea Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,8 +155,8 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="生命周期与状态机"><a class="header" href="#生命周期与状态机">生命周期与状态机</a></h1>
-<h2 id="生命周期状态"><a class="header" href="#生命周期状态">生命周期状态</a></h2>
+                        <h1 id="状态与生命周期"><a class="header" href="#状态与生命周期">状态与生命周期</a></h1>
+<h2 id="主状态"><a class="header" href="#主状态">主状态</a></h2>
 <p>用户可见状态与存储主状态使用单轴状态图：</p>
 <pre class="mermaid">stateDiagram-v2
     direction LR
@@ -214,12 +214,6 @@
 </ul>
 <h2 id="operation-状态"><a class="header" href="#operation-状态">Operation 状态</a></h2>
 <p>Operation status 统一为：</p>
-<pre><code class="language-text">queued
-running
-done
-failed
-</code></pre>
-<p>含义：</p>
 <div class="table-wrapper"><table><thead><tr><th>状态</th><th>含义</th></tr></thead><tbody>
 <tr><td><code>queued</code></td><td>operation 已创建，但尚未被任何 Manager 通过 <code>FetchOperation</code> 成功领取。</td></tr>
 <tr><td><code>running</code></td><td>已被 Manager claim，lease 有效或可续租。</td></tr>
@@ -296,78 +290,16 @@ failed
 <li>Manager 声称 runtime 不存在而 Gitea 认为 running 时，Gitea 进入 <code>error</code> 并吊销 token。</li>
 <li>Gitea 认为 deleting 时，任何非 delete 上报都不能改变状态。</li>
 </ul>
-<h2 id="删除与外部状态变化"><a class="header" href="#删除与外部状态变化">删除与外部状态变化</a></h2>
-<p>Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时：</p>
-<ul>
-<li>不允许 create。</li>
-<li>不允许 resume。</li>
-<li>不允许新的 open。</li>
-<li>不允许新的 SSH。</li>
-<li>仍按 Administrative Permission 允许 logs、stop、delete。</li>
-</ul>
-<p>Repository 删除：</p>
-<ul>
-<li>repository 删除不会因为 Manager 分组被阻止；不存在 repository 级 Manager。</li>
-<li>repository 删除确认 UI 提示会清理或影响的 codespace 数量。</li>
-<li>repository 删除成功页或确认摘要展示受影响的 codespace 数量。</li>
-<li>repository 删除在 <code>repo_service.DeleteRepository</code> / <code>DeleteRepositoryDirectly</code> 删除 DB repository 记录前执行 codespace pre-cleanup。</li>
-<li>对引用该 repository 的关联 codespace，repository 删除事务内：
-<ul>
-<li>吊销 Gitea Token。</li>
-<li>不允许 open/SSH/resume。</li>
-<li>写入 <code>status_message=source repository deleted; cleanup required</code>。</li>
-<li>codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 <code>deleting</code>。</li>
-<li>codespace 从未绑定 Manager 或 Manager 记录不存在时进入 <code>error</code>。</li>
-</ul>
-</li>
-<li>disabled Manager 也允许领取已绑定给自己的 delete operation。</li>
-<li>Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 <code>deleting</code>，等待 Manager 回来领取。</li>
-<li>delete timeout 后进入 <code>error</code>。</li>
-<li>repository 删除事务创建的 delete operation 不依赖 repository row 生成 payload。</li>
-<li>repository DB 记录删除后，Manager 仍能通过 <code>codespace_uuid + generation</code> 领取 delete operation 并完成 Runtime cleanup。</li>
-<li>source repository 删除后，相关 codespace 列表和详情页显示 <code>source repository deleted</code>。</li>
-<li>repository 删除不发送站点通知。</li>
-</ul>
-<p>Owner/user/org 删除：</p>
-<ul>
-<li>owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。</li>
-<li>删除该 owner 下 repository 时按 repository 删除规则处理。</li>
-<li>Manager 和 registration secret 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration secret。</li>
-<li>owner/org 删除不向 Manager 下发 delete RPC，不依赖 Manager 在线。</li>
-<li>某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。</li>
-<li>创建用户删除后吊销 token，并不允许 open/SSH/resume。</li>
-<li>组织管理员可清理组织仓库下的相关 codespace。</li>
-</ul>
-<p>Manager 删除：</p>
-<ul>
-<li>普通管理操作只允许禁用 Manager。</li>
-<li>物理删除 Manager 记录前确认没有未删除 codespace 引用该 Manager。</li>
-<li>物理删除 Manager 记录前确认没有 active operation 绑定该 Manager。</li>
-<li>禁用 Manager 与 codespace 生命周期状态更新不在同一事务里批量改写；后续 open/SSH/resume/claim 根据 Manager disabled 状态实时拒绝。</li>
-<li>物理删除 Manager 是管理清理动作，不负责 Runtime Instance 清理。</li>
-<li>物理删除 Manager 只注销 Gitea 注册身份，不向 Manager 下发删除指令。</li>
-<li>Manager 记录被物理删除后，后续 ManagerService RPC 按 unregistered manager 返回 unauthenticated。</li>
-<li>Runtime cleanup 通过 codespace delete operation 实现，不能由删除 Manager 记录隐式触发。</li>
-<li>物理删除 Manager 前先清理引用它的 codespaces 和未完成 operations。</li>
-</ul>
-<p>重命名：</p>
-<ul>
-<li>ID 是权威关联。</li>
-<li>名称每次展示时解析。</li>
-<li><code>ssh_user</code> 创建后不随重命名变化。</li>
-<li>create/resume operation payload 使用当时当前名称重新生成 clone/web URL。</li>
-<li>显示缓存和 runtime 动态数据不持久化到数据库。</li>
-</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="data-model.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="creation-and-manager.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="lifecycle-flows.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -377,11 +309,11 @@ failed
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="data-model.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="creation-and-manager.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="lifecycle-flows.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

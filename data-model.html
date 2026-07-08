@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>数据模型与运维 - Gitea Codespace 设计文档</title>
+        <title>数据模型 - Gitea Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,16 +155,9 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="数据模型与运维"><a class="header" href="#数据模型与运维">数据模型与运维</a></h1>
-<h2 id="数据模型"><a class="header" href="#数据模型">数据模型</a></h2>
-<p>数据表：</p>
-<ul>
-<li><code>codespace_manager_registration_secret</code></li>
-<li><code>codespace_manager</code></li>
-<li><code>codespace</code></li>
-<li><code>codespace_operation</code></li>
-</ul>
-<p>不为 Endpoint、port、Runtime Token、Git token、Gateway Open Token、quota、运行容量计数或 Manager binding 建独立表。</p>
+                        <h1 id="数据模型"><a class="header" href="#数据模型">数据模型</a></h1>
+<h2 id="数据表"><a class="header" href="#数据表">数据表</a></h2>
+<p>Endpoint、port、Runtime Token、Git token、Gateway Open Token、quota、运行容量计数、Manager binding 等运行时数据，在已有表字段或本地 cache 中存储。</p>
 <h3 id="codespace_manager_registration_secret"><a class="header" href="#codespace_manager_registration_secret">codespace_manager_registration_secret</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
@@ -225,17 +218,7 @@
 <tr><td><code>status_message</code></td><td>状态消息</td><td>最长 1024 字符，超长截断，禁止控制字符；UI 按普通文本 escape 后展示</td></tr>
 </tbody></table>
 </div>
-<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。endpoint、boot、resource usage、internal SSH 和 last_reported 不持久化到 <code>codespace</code>，只保存在本地 cache。</p>
-<p>索引：</p>
-<div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
-<tr><td>codespace</td><td><code>uuid</code>（唯一）</td></tr>
-<tr><td>codespace</td><td><code>(user_id, status)</code></td></tr>
-<tr><td>codespace</td><td><code>(repo_id, status)</code></td></tr>
-<tr><td>codespace</td><td><code>(manager_id, status)</code></td></tr>
-<tr><td>codespace</td><td><code>(manager_id, status, repo_tag)</code></td></tr>
-<tr><td>codespace</td><td><code>(ssh_user)</code>（唯一）</td></tr>
-</tbody></table>
-</div>
+<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
 <h3 id="codespace_operation"><a class="header" href="#codespace_operation">codespace_operation</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
@@ -256,8 +239,14 @@
 <tr><td><code>log_expired</code></td><td>日志是否过期</td><td>列表页和非日志详情区只读取 <code>log_line_count / log_size / last_log_unix / log_expired</code>；只有日志面板需要读取 DBFS 日志内容</td></tr>
 </tbody></table>
 </div>
-<p>索引：</p>
+<h2 id="索引"><a class="header" href="#索引">索引</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
+<tr><td>codespace</td><td><code>uuid</code>（唯一）</td></tr>
+<tr><td>codespace</td><td><code>(user_id, status)</code></td></tr>
+<tr><td>codespace</td><td><code>(repo_id, status)</code></td></tr>
+<tr><td>codespace</td><td><code>(manager_id, status)</code></td></tr>
+<tr><td>codespace</td><td><code>(manager_id, status, repo_tag)</code></td></tr>
+<tr><td>codespace</td><td><code>(ssh_user)</code>（唯一）</td></tr>
 <tr><td>codespace_operation</td><td><code>uuid</code>（唯一）</td></tr>
 <tr><td>codespace_operation</td><td><code>(manager_id, status, type)</code></td></tr>
 <tr><td>codespace_operation</td><td><code>(codespace_id, generation)</code></td></tr>
@@ -277,7 +266,67 @@
 <li>cache 内容都是短期、可失效或可由 Manager 重建的数据；丢失不影响 codespace 生命周期、权限、删除闭环或 operation 超时判断。</li>
 <li>数据库仍是主状态和权限闭环的唯一持久权威。</li>
 </ul>
-<h2 id="日志"><a class="header" href="#日志">日志</a></h2>
+<h2 id="runtime-metadata-结构"><a class="header" href="#runtime-metadata-结构">Runtime Metadata 结构</a></h2>
+<p><code>ReportRuntimeMetadata</code> 只写当前 Runtime Metadata 快照。允许的结构：</p>
+<pre><code class="language-json">{
+  "runtime": {
+    "internal_ssh": {
+      "host": "10.0.0.12",
+      "port": 2222,
+      "user": "coder",
+      "auth_mode": "publickey",
+      "host_key_fingerprint": "SHA256:..."
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint_id": "workspace",
+      "label": "Workspace"
+    },
+    {
+      "endpoint_id": "app-3000",
+      "label": "App 3000"
+    }
+  ],
+  "boot": {
+    "stage": "run-init-script",
+    "message": "running init script",
+    "started_unix": 0,
+    "last_update_unix": 0
+  },
+  "resource_usage": {
+    "cpu": "unavailable",
+    "memory": "unavailable",
+    "disk": "unavailable",
+    "network": "unavailable"
+  },
+  "last_reported_unix": 0
+}
+</code></pre>
+<p>规则：</p>
+<ul>
+<li><code>endpoints</code> 以 JSON 数组存储在 Runtime Metadata cache 中。</li>
+<li><code>internal_ssh</code> 不在普通 UI/API 输出中暴露。</li>
+<li><code>endpoint_id</code> 由 Manager 上报并确保在同一 <code>codespace_uuid + generation</code> 内唯一。</li>
+<li>不同 codespace 或不同 generation 可以使用相同 <code>endpoint_id</code>。</li>
+<li><code>label</code> 只用于 UI 展示，可以重复，不是路由键。</li>
+<li><code>health</code> 可以作为 Endpoint 可选展示字段，不参与授权。</li>
+<li>Runtime Metadata 保存在 Gitea 本地 cache。</li>
+<li>key：<code>codespace:runtime-meta:{codespace_uuid}:{generation}</code></li>
+<li>value：当前 generation 的 <code>endpoints + internal_ssh + boot + resource_usage + last_reported_unix</code></li>
+<li>ttl：<code>MANAGER_OFFLINE_TIMEOUT * 2</code></li>
+<li>只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。</li>
+<li>Gitea 信任 Runtime Metadata cache 仅表示展示和 Endpoint existence check 信任 cache，不表示绕过 codespace 主状态校验。</li>
+<li>Gitea 重启或本地 cache 丢失后，Runtime Metadata 由 Manager 重建。</li>
+<li>Manager 离线时，不允许新的 Endpoint 打开动作。</li>
+<li>Manager 离线时，不允许新的 SSH 接入。</li>
+<li>resource usage 是可选展示信息。</li>
+<li>缺失 resource usage 时显示 <code>unavailable</code>。</li>
+<li>Runtime Metadata 仅记录当前最新快照，cache miss 只影响交互与展示。</li>
+<li>Runtime Metadata 是动态观测数据，不是 lifecycle 事实。cache miss 只影响展示和交互入口，不推进或回滚主状态。</li>
+<li>主状态只能由 operation finalization 和 reconciliation 写入，避免运行时观测数据绕过状态机。</li>
+</ul>
+<h2 id="日志存储"><a class="header" href="#日志存储">日志存储</a></h2>
 <p>Codespace <a href="glossary.html#operation">Operation</a> 日志存储在 DBFS（<code>models/dbfs/</code>，32KB 分块 + 乐观锁）。</p>
 <p>路径：</p>
 <pre><code class="language-text">codespace_log/
@@ -296,174 +345,24 @@
 <li><code>error</code> 日志保留到用户 delete 或 failed cleanup</li>
 </ul>
 <p>日志文件以 <code>operation_uuid</code> 命名，因为 Gitea 只保存 lifecycle operation 执行期日志。日志元数据归属 <code>codespace_operation</code>，running 期间没有未完成 operation 时不追加 Gitea operation log。</p>
-<p>日志命令：</p>
-<ul>
-<li><code>::group::title</code></li>
-<li><code>::endgroup::</code></li>
-<li><code>##[group]title</code></li>
-<li><code>##[endgroup]</code></li>
-<li><code>::error::message</code></li>
-<li><code>::warning::message</code></li>
-<li><code>::notice::message</code></li>
-<li><code>::debug::message</code></li>
-<li><code>##[command]command</code></li>
-<li><code>[command]command</code></li>
-</ul>
-<p>Codespace 日志 UI 复用 Actions console 解析和渲染能力，不复制一套解析逻辑。</p>
-<p>日志来源：</p>
-<ul>
-<li>Gitea 只保存一套 codespace operation 上报日志，不引入 runtime log、connection log 或 audit log 等多套日志。</li>
-<li>Manager 本地日志只用于 Manager/Gateway 排障，不上报 Gitea。</li>
-<li><code>UpdateLog</code> 是唯一上报入口，始终绑定当前 <code>operation_uuid</code>。</li>
-<li>create/resume/stop/delete lifecycle operation 执行期间的 boot、init、git、Endpoint 初始化、stop、resume、delete 阶段日志写入对应 operation log。</li>
-<li>operation 进入 <code>done|failed</code> 后，Manager 不再拥有该 operation 的执行上下文，不能继续通过该 <code>operation_uuid</code> 写日志。</li>
-<li>running 期间 open token 连接成功、SSH 连接成功、session 正常关闭、Endpoint 后续变化和用户可见运行异常不写入 Gitea operation log。</li>
-<li>running 期间连接成功通过 <code>last_active_unix</code> 记录用户活跃时间；详细连接事件写 Manager/Gateway 本地日志。</li>
-<li>open token 校验失败、SSH 密码/TOTP/公钥失败、限流、扫描、爆破、Gateway proxy debug、backend driver debug、heartbeat、空 pull、health poll 明细和内部 retry 细节只写 Manager/Gateway 本地日志。</li>
-</ul>
-<p>设计决策：</p>
-<ul>
-<li>operation log 是生命周期操作的执行证据，在 operation 完成前封闭，避免终态之后继续改变该 operation 的可见输出。</li>
-<li>running 期间没有未完成 lifecycle operation；为连接事件引入空 <code>operation_uuid</code>、长期 runtime operation 或第二套 Gitea 日志都会扩大状态模型。</li>
-<li>Gitea 对运行期连接只需要保存授权结果影响到的权威状态（如 <code>last_active_unix</code>）；排障细节属于 Manager/Gateway 本地日志。</li>
-</ul>
-<p>脱敏：</p>
-<ul>
-<li>Manager 是精确脱敏第一责任方。</li>
-<li>Manager 在 <code>UpdateLog</code> 前脱敏 <code>GITEA_TOKEN</code>、<code>CODESPACE_RUNTIME_TOKEN</code>、URL userinfo、URL query token、Authorization header、git credential helper 输出和常见 bearer/basic token 形式。</li>
-<li>Manager 维护 operation-local mask set。</li>
-<li>operation-local mask set 包含注入给 <code>init.sh</code> 的所有敏感值。</li>
-<li><code>::add-mask::value</code> 消费后，<code>value</code> 加入 operation-local mask set，后续日志中出现的 <code>value</code> 替换为 <code>***</code>。</li>
-<li><code>::add-mask::value</code> 由 Manager 消费，不写入 Gitea 日志。</li>
-<li>Manager 重启后继续处理同一 operation 时，重新加载或重建该 operation 的必要 mask set。</li>
-<li>如果 Manager 无法确认脱敏安全，停止上传该 operation 的原始日志，并将 operation 标记为 failed 或上传明确错误摘要。</li>
-<li>Gitea 入库前只做防御性清理，例如控制字符过滤、单行长度限制、URL userinfo 和 Authorization header 模式替换。</li>
-<li>Gitea 不持有 Runtime Token 明文，不能精确脱敏 Runtime Token。</li>
-<li>Gitea 通用防御性清理不是 Runtime Token 泄漏的安全兜底。</li>
-<li>前端隐藏不属于安全边界。</li>
-<li>下载日志和 UI 日志使用同一份脱敏内容。</li>
-<li>错误摘要必须在 operation 进入 <code>done|failed</code> 前上传。</li>
-<li>operation 进入 <code>done|failed</code> 后，不允许继续追加日志。</li>
-<li>stop/resume/delete 创建新 operation 后，后续 operation 日志写入新的 <code>active_operation_id</code>。</li>
-<li>没有 <code>active_operation_id</code> 时，不存在 Gitea operation 日志追加入口。</li>
-</ul>
 <p>operation 日志元数据：</p>
-<pre><code class="language-text">log_filename
-log_line_count
-log_size
-last_log_unix
-log_expired
-</code></pre>
-<h2 id="cron-jobs"><a class="header" href="#cron-jobs">Cron Jobs</a></h2>
-<pre><code class="language-text">reconcile_codespace_operations
-cleanup_failed_codespaces
-cleanup_codespace_logs
-</code></pre>
-<p><code>reconcile_codespace_operations</code>：</p>
-<ul>
-<li>默认每分钟运行。</li>
-<li>处理中间态超时、Manager offline timeout、stale operation、token 吊销和状态分歧。</li>
-</ul>
-<p><code>cleanup_failed_codespaces</code>：</p>
-<ul>
-<li>默认每天运行。</li>
-<li>清理长期保留的 <code>error</code> 记录和日志。</li>
-<li>清理过期或已消费且超过保留期的 registration secret。</li>
-</ul>
-<p><code>cleanup_codespace_logs</code>：</p>
-<ul>
-<li>默认每天运行。</li>
-<li>清理已完成 operation 的过期日志。</li>
-</ul>
-<h2 id="配置"><a class="header" href="#配置">配置</a></h2>
-<p>Gitea：</p>
-<pre><code class="language-ini">[codespace]
-ENABLED = true
-CONTROL_PLANE_TIMEOUT = 30s
-MANAGER_OFFLINE_TIMEOUT = 120s
-OPERATION_LEASE_TIMEOUT = 300s
-QUEUE_TIMEOUT = 5m
-BOOT_TIMEOUT = 30m
-RESUME_TIMEOUT = 15m
-STOP_TIMEOUT = 10m
-DELETE_TIMEOUT = 15m
-OPEN_TOKEN_EXPIRE = 60s
-SSH_PASSWORD_AUTH_ALLOWED = true
-LOG_MAX_LINE_SIZE = 64KiB
-LOG_RETENTION_DAYS = 365
-FAILED_RETENTION_DAYS = 365
-REGISTRATION_SECRET_EXPIRE = 24h
-
-[cron.reconcile_codespace_operations]
-ENABLED = true
-RUN_AT_START = true
-SCHEDULE = @every 1m
-
-[cron.cleanup_failed_codespaces]
-ENABLED = true
-RUN_AT_START = false
-SCHEDULE = @daily
-
-[cron.cleanup_codespace_logs]
-ENABLED = true
-RUN_AT_START = false
-SCHEDULE = @daily
-</code></pre>
-<p>说明：</p>
-<ul>
-<li><code>OPEN_TOKEN_EXPIRE</code> 也是 <a href="glossary.html#gateway-open-token">Gateway Open Token</a> 的 Gitea cache TTL。</li>
-<li><code>SSH_PASSWORD_AUTH_ALLOWED</code> 是新建 codespace 的默认内部策略值，可由 Gitea 服务层按站点策略进一步收紧。</li>
-<li>SSH 认证限流与退避属于 Gateway 配置，不属于 Gitea 配置。</li>
-<li><code>OPERATION_LEASE_TIMEOUT</code> 是 <a href="glossary.html#manager-matching">Manager Claim</a>/续租 <a href="glossary.html#operation">Operation</a> 的 lease 时长。</li>
-<li><code>REGISTRATION_SECRET_EXPIRE</code> 是 registration secret 的有效期。</li>
-<li>registration secret 清理不新增独立 cron，由 <code>cleanup_failed_codespaces</code> 处理。</li>
-</ul>
-<p>不存在 <code>[codespace.quota]</code> 配置。</p>
-<p>Manager 本地配置由 Manager 自己管理，例如：</p>
-<pre><code class="language-text">/etc/gitea-codespace/manager.yaml
-/etc/gitea-codespace/manager.json
-</code></pre>
-<p>Manager 本地配置保存 tag 到 backend 的映射，以及 Incus/Docker 配置、镜像、资源、网络、挂载、bootstrap、DinD 策略。</p>
-<p>Repository 配置固定为 <code>.gitea/codespace.yaml</code>，与 Manager 本地配置不是同一个文件。</p>
-<h2 id="代码组织"><a class="header" href="#代码组织">代码组织</a></h2>
-<p>Gitea 侧代码按以下方向拆分：</p>
-<pre><code class="language-text">routers/api/codespace/manager.go
-routers/web/codespace/repo.go
-routers/web/codespace/user.go
-services/codespace/
-models/codespace/
-modules/codespace/
-</code></pre>
-<p>Web handler 与 ManagerService RPC handler 不应混在同一个文件。</p>
-<p>Runtime HTTP API 属于 Manager，不属于 Gitea route。</p>
-<h2 id="实现约束"><a class="header" href="#实现约束">实现约束</a></h2>
-<p>本文档是最终设计基线。</p>
-<ul>
-<li>不兼容旧 codespace prototype route、proto name、table 或 runtime option form。</li>
-<li>删除旧 codespace port table 行为。</li>
-<li>删除前端 runtime 选型输入。</li>
-<li>删除 <code>/codespace/{uuid}/create</code>、<code>retry</code>、<code>cancel</code>。</li>
-<li>删除旧 <code>initializing</code> 状态。</li>
-<li>删除旧 task 术语。</li>
-<li>删除所有 quota 设计和实现。</li>
-<li>复用 Gitea 现有 permission、token、SSH key、TOTP、setting、cron、routing、DBFS 和测试组织方式。</li>
-</ul>
-<p>实现完成后的最低验证：</p>
-<pre><code class="language-bash">cd gitea
-go test ./...
-make fmt
-make lint-backend
-</code></pre>
-
+<div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>log_filename</code></td><td>日志文件名</td></tr>
+<tr><td><code>log_line_count</code></td><td>日志行数</td></tr>
+<tr><td><code>log_size</code></td><td>日志大小</td></tr>
+<tr><td><code>last_log_unix</code></td><td>最近日志时间戳</td></tr>
+<tr><td><code>log_expired</code></td><td>日志是否过期</td></tr>
+</tbody></table>
+</div>
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="runtime-and-tokens.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="glossary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="state-machine.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -473,11 +372,11 @@ make lint-backend
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="runtime-and-tokens.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="glossary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="state-machine.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

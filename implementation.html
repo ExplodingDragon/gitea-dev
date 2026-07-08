@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>总览 - Gitea Codespace 设计文档</title>
+        <title>实施 - Gitea Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,132 +155,58 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="gitea-codespace-最终设计"><a class="header" href="#gitea-codespace-最终设计">Gitea Codespace 最终设计</a></h1>
-<h2 id="目标"><a class="header" href="#目标">目标</a></h2>
-<p>Codespace 是 Gitea 内置的远程开发环境入口。</p>
-<div class="table-wrapper"><table><thead><tr><th>主体</th><th>职责</th></tr></thead><tbody>
-<tr><td>Gitea</td><td>repository、ref 与 commit 校验；用户身份与权限（复用 <code>CanRead(unit.Code)</code> 统一入口）；codespace 生命周期状态；Codespace Manager 注册与认证（参考 Actions runner 注册模式）；Gitea access token 签发、绑定、删除保护与吊销；Gateway Open Token 签发与校验；SSH 认证判定；operation 日志归档（基于 DBFS）</td></tr>
-<tr><td>Codespace Manager</td><td>Runtime Instance 创建、恢复、停止、删除；Runtime Instance 类型、镜像、资源配置；Runtime Token 生成与校验；Runtime HTTP API；Runtime Metadata 上报；Endpoint upstream 解析与代理</td></tr>
-<tr><td>Codespace Gateway（Manager deployment 内组件）</td><td>用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发</td></tr>
-</tbody></table>
-</div>
-<p>Gitea 不参与运行时选型，也不操作 Incus/Docker 等运行后端。运行时专有配置和 Runtime Token 均由 Manager 管理。</p>
-<h2 id="架构"><a class="header" href="#架构">架构</a></h2>
-<pre class="mermaid">flowchart LR
-    User[&quot;User&lt;br/&gt;Browser / SSH client&quot;]
-
-    subgraph Gitea[&quot;Gitea&quot;]
-        Web[&quot;Web UI / Web routes&quot;]
-        ManagerRPC[&quot;ManagerService&lt;br/&gt;Connect over HTTP&quot;]
-        Service[&quot;Codespace service&lt;br/&gt;state / permission / token / logs&quot;]
-        Cron[&quot;Codespace cron jobs&quot;]
-        DB[(&quot;Database&lt;br/&gt;codespace tables&quot;)]
-        DBFS[(&quot;DBFS&lt;br/&gt;codespace logs&quot;)]
-    end
-
-    subgraph ManagerDeployment[&quot;Codespace Manager deployment&quot;]
-        Manager[&quot;Codespace Manager&lt;br/&gt;worker / scheduler / Runtime HTTP API&quot;]
-        Gateway[&quot;Codespace Gateway&lt;br/&gt;Endpoint / SSH ingress&quot;]
-    end
-
-    Runtime[&quot;Runtime Instance&lt;br/&gt;init.sh / sshd / services&quot;]
-
-    User --&gt;|&quot;create / open / stop / resume / delete&quot;| Web
-    User --&gt;|&quot;Endpoint / SSH&quot;| Gateway
-
-    Web --&gt; Service
-    Service --&gt; DB
-    Service --&gt; DBFS
-    Cron --&gt; Service
-
-    Manager --&gt;|&quot;ManagerService RPC&quot;| ManagerRPC
-    ManagerRPC --&gt; Service
-
-    Runtime --&gt;|&quot;Runtime HTTP API&lt;br/&gt;CODESPACE_RUNTIME_TOKEN&quot;| Manager
-    Manager --&gt;|&quot;create / resume / stop / delete&quot;| Runtime
-
-    Gateway --&gt;|&quot;Open token / SSH auth&lt;br/&gt;via Manager identity&quot;| ManagerRPC
-    Gateway --&gt;|&quot;Endpoint proxy / SSH channel&quot;| Runtime
-</pre>
-<p>架构约束：</p>
-<p><strong>部署边界</strong></p>
+                        <h1 id="实施"><a class="header" href="#实施">实施</a></h1>
+<h2 id="代码组织"><a class="header" href="#代码组织">代码组织</a></h2>
+<p>Gitea 侧代码按以下方向拆分：</p>
+<pre><code class="language-text">routers/api/codespace/manager.go
+routers/web/codespace/repo.go
+routers/web/codespace/user.go
+services/codespace/
+models/codespace/
+modules/codespace/
+</code></pre>
+<p>Web handler 与 ManagerService RPC handler 不应混在同一个文件。</p>
+<p>Runtime HTTP API 属于 Manager，不属于 Gitea route。</p>
+<h2 id="实现约束"><a class="header" href="#实现约束">实现约束</a></h2>
+<p>本文档是最终设计基线。</p>
 <ul>
-<li>Codespace 部署模型为 Gitea 单实例。</li>
-<li>Gitea 与 Manager 之间只通过 ManagerService RPC 通信。</li>
-<li>Manager 是运行侧唯一的 Gitea 注册身份。</li>
-<li>Gateway 是 Manager deployment 内部组件，通过 Manager 身份调用 Gitea。</li>
+<li>不兼容旧 codespace prototype route、proto name、table 或 runtime option form。</li>
+<li>删除旧 codespace port table 行为。</li>
+<li>删除前端 runtime 选型输入。</li>
+<li>删除 <code>/codespace/{uuid}/create</code>、<code>retry</code>、<code>cancel</code>。</li>
+<li>删除旧 <code>initializing</code> 状态。</li>
+<li>删除旧 task 术语。</li>
+<li>删除所有 quota 设计和实现。</li>
+<li>复用 Gitea 现有 permission、token、SSH key、TOTP、setting、cron、routing、DBFS 和测试组织方式。</li>
 </ul>
-<p><strong>数据边界</strong></p>
+<p>实现完成后的最低验证：</p>
+<pre><code class="language-bash">cd gitea
+go test ./...
+make fmt
+make lint-backend
+</code></pre>
+<h2 id="已知设计缺口"><a class="header" href="#已知设计缺口">已知设计缺口</a></h2>
+<p>各模块的设计缺口已在对应文档中以 <code>&gt; **TODO**</code> 标记，汇总如下：</p>
 <ul>
-<li>Gitea 只保存状态、权限、token 绑定和日志元数据。</li>
-<li>Incus、Docker、镜像、资源规格、网络等均为 Manager 内部实现。</li>
-<li>Runtime HTTP API 只在 Manager 私有网络内开放。</li>
+<li><a href="manager-gateway.html">Manager 与 Gateway - Manager 设计</a>：worker pool 模型、重启恢复策略</li>
+<li><a href="manager-gateway.html">Manager 与 Gateway - Gateway 设计</a>：Endpoint 反向代理实现、session 生命周期</li>
+<li><a href="manager-gateway.html">Manager 与 Gateway - SSH 接入</a>：认证限流与退避配置</li>
+<li><a href="manager-gateway.html">Manager 与 Gateway - 日志与脱敏</a>：Gateway access log</li>
+<li><a href="gitea-server.html">Gitea 服务端 - Token 管理</a>：多副本 cache 一致性</li>
 </ul>
-<p><strong>流量边界</strong></p>
-<ul>
-<li>用户 Endpoint / SSH 流量不经过 Gitea，直接到 Gateway。</li>
-<li>Gateway 用户流量仅在鉴权时回到 Gitea。</li>
-<li>Runtime Instance 可访问 Gitea 标准 Git HTTP 和 repository web URL，但不直接调用 codespace 专用内部接口。</li>
-</ul>
-<p><strong>Runtime 边界</strong></p>
-<ul>
-<li>Runtime Instance 只通过 Runtime HTTP API 调用 Manager。</li>
-<li>Endpoint upstream 只由 Gateway 和 Manager 解析。</li>
-</ul>
-<p>用户 Endpoint、WebSocket 和 SSH channel 是长连接流量，不适合让 Gitea Web 进程代理。Manager/Gateway 与 Runtime Instance 在同一部署内，能直接解析 upstream 和内部 SSH 连接，Gitea 保持为短路径鉴权与状态权威。</p>
-<p>核心通信流程：</p>
-<pre class="mermaid">sequenceDiagram
-    autonumber
-    actor User
-    participant Gitea
-    participant Manager as Codespace Manager
-    participant Gateway as Codespace Gateway
-    participant Runtime as Runtime Instance
-
-    User-&gt;&gt;Gitea: POST /{owner}/{repo}/codespace
-    Gitea-&gt;&gt;Gitea: validate repo / ref / permission
-    Gitea-&gt;&gt;Gitea: create codespace + create operation
-    Manager-&gt;&gt;Gitea: FetchOperation
-    Gitea--&gt;&gt;Manager: create operation payload
-    Manager-&gt;&gt;Gitea: RequestGiteaToken
-    Manager-&gt;&gt;Runtime: create runtime + inject init env
-    Runtime-&gt;&gt;Manager: Runtime HTTP API boot / endpoints
-    Manager-&gt;&gt;Gitea: UpdateLog / ReportRuntimeMetadata / UpdateOperation done
-    Gitea--&gt;&gt;User: GET /codespace/{uuid}
-
-    User-&gt;&gt;Gitea: POST /codespace/{uuid}/open endpoint_id
-    Gitea-&gt;&gt;Gitea: validate state / permission / Endpoint metadata
-    Gitea--&gt;&gt;User: 302 Gateway URL with open_token
-    User-&gt;&gt;Gateway: open Endpoint
-    Gateway-&gt;&gt;Gitea: ValidateOpenToken via Manager identity
-    Gitea--&gt;&gt;Gateway: allowed
-    Gateway-&gt;&gt;Runtime: proxy to resolved upstream
-</pre>
-<h2 id="术语"><a class="header" href="#术语">术语</a></h2>
-<p>参见<a href="glossary.html">术语页</a> 获取完整术语表和命名规则。</p>
-<h2 id="核心原则"><a class="header" href="#核心原则">核心原则</a></h2>
-<ul>
-<li>Gitea 只负责授权、状态、日志、token 绑定和跳转入口。</li>
-<li>Codespace 复用 Gitea 现有用户、组织、仓库、权限（<code>CanRead(unit.Code)</code> 统一入口）、access token（<code>models/auth/access_token.go</code>）、SSH key、TOTP、登录限制、git、Pull Request 和 Actions task claim 模型。</li>
-<li>用户拥有 repository code-read 权限就可以创建 codespace。</li>
-<li>codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。</li>
-<li>Manager 不能用自己身份访问 repository 内容。</li>
-<li>Runtime git 访问使用基于创建用户当前权限签发的 Gitea access token，只走 Git HTTP(S)。</li>
-<li>create、resume、stop、delete 必须幂等。</li>
-<li>同一 codespace 同一时刻只能有一个 active operation。</li>
-<li>codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。</li>
-<li>create 失败后不在同一个 codespace 对象上重新创建。失败后 Runtime、token、日志和 generation 可能已部分产生，不在同一对象上重建可避免旧状态与新初始化混淆。</li>
-<li>失败是终态，除 delete 外不能恢复。</li>
-<li>delete 成功后物理删除 codespace、operation 和日志。</li>
-<li>Manager 的并发容量由 Manager 自行控制并以 <code>capacity_available</code> 上报，Gitea 不维护运行容量计数。</li>
-</ul>
+<blockquote>
+<p><strong>TODO</strong>: codespace 模块的单元测试/集成测试组织、ManagerService RPC mock 方式、State Finalization 事务测试方案尚未定义。</p>
+</blockquote>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="rpc-spec.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="data-model.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="glossary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -290,8 +216,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="rpc-spec.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="data-model.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="glossary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
