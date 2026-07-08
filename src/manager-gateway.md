@@ -55,9 +55,28 @@ Declare 声明：
 
 Manager 主动 pull operation；满载时不拉取 create/resume，queued operation 自然等待。Gitea 看不到 Manager 本地 Runtime 队列、资源占用和启动中任务，不是真实容量权威，只保存最近容量快照用于 UI、诊断和本次 `FetchOperation` 准入检查。
 
-待决策项：Manager worker pool、并发控制、任务调度策略、以及 `codespace_uuid` 到本地 Runtime Instance 的确定性映射规则需要单独成章。该决策会影响 Manager 本地资源隔离、operation 幂等恢复和 delete cleanup 的可预测性，因此在实现 backend driver 前确定。
+### Manager Worker Pool 与 Runtime 映射
 
-待决策项：Manager 重启恢复策略需要覆盖 graceful shutdown、operation recovery、lease 恢复和 Runtime Instance 重新发现。该决策会影响 Gitea reconciliation 如何区分慢任务、Manager 重启和本地 Runtime 遗留实例，因此在实现长期运行 Manager 前确定。
+Manager 本地维护 operation worker pool。worker pool 执行已 claim 的 operation；是否继续从 Gitea claim create/resume 由 Manager 通过 `capacity_available` 表达。
+
+规则：
+
+- `FetchOperation` 单次最多 claim 一个 operation。
+- create/resume 使用容量槽位。
+- stop/delete 使用独立 cleanup 队列，不占 create/resume 容量。
+- operation 调度优先级为 `delete > stop > resume > create`。
+- `capacity_available` 根据本地 worker 空闲数、backend 资源状态、正在启动/恢复的 Runtime 数量计算。
+- Runtime Instance name 使用 `codespace_uuid` 确定性派生：
+
+```text
+cs-{codespace_uuid_short}
+```
+
+`codespace_uuid_short` 取 UUID 去掉 `-` 后前 20 位。
+
+这样设计的原因是 Gitea 只知道 operation 和 Manager 上报的容量快照，Manager 才知道本地 CPU、内存、backend 队列和 Runtime 启动状态。stop/delete 独立于 create/resume 容量，可以保证资源回收在 Manager 满载时仍然推进。Runtime name 由 `codespace_uuid` 派生，可以让 create、resume、delete 和本地清理都找到同一个实例，保证运行侧操作具备幂等基础。
+
+Manager 重启恢复策略见 [维护与重启恢复](maintenance-recovery.md)。该设计把 Manager 重启视为日常维护事件，先恢复本地 Runtime 观测和 Runtime Metadata，再恢复 create/resume claim，避免维护重启直接造成 codespace 失败。
 
 ### Manager 禁用与删除
 
@@ -283,7 +302,36 @@ open 成功响应：
 - `open_token` 作为一次性授权凭据，由 Gateway 消费并在本地建立 session，不传递到 Runtime Instance。
 - Gateway access log 不记录完整 token。
 
-待决策项：Gateway Endpoint 反向代理实现需要确定 HTTP reverse proxy、WebSocket upgrade、TCP tunnel、TLS 处理、路径重写和 header 注入策略。该决策会影响用户访问体验、审计字段和 Runtime upstream 安全边界，因此在实现 Gateway proxy 前单独成章。
+Gateway Endpoint 反向代理：
+
+- Gateway 实现 HTTP reverse proxy。
+- 支持 WebSocket upgrade。
+- 第一版 Endpoint 不提供任意 TCP tunnel；SSH 使用独立接入面。
+- TLS 在 Gateway 入口终止，Gateway 到 Runtime 使用 Manager 私有网络 HTTP。
+- Open Token 消费后建立 Gateway session cookie。
+- Gateway 根据 session 绑定 `user_id / codespace_uuid / endpoint_id / manager_id`。
+- Gateway 转发时将 `/cs/{codespace_uuid}/e/{endpoint_id}/` 前缀从 upstream path 中移除。
+- Gateway 向 Runtime 注入转发上下文 header：
+
+```text
+X-Gitea-Codespace-UUID
+X-Gitea-Codespace-Endpoint-ID
+X-Gitea-Codespace-User-ID
+X-Forwarded-For
+X-Forwarded-Proto
+X-Forwarded-Host
+```
+
+- Gateway 不向 Runtime 传递 `open_token`、Gitea access token、Manager Secret 或 Runtime Token。
+
+Endpoint URL 形态：
+
+```text
+https://gateway.example.com/open?open_token=...
+https://gateway.example.com/cs/{codespace_uuid}/e/{endpoint_id}/...
+```
+
+这样设计的原因是 HTTP/WebSocket 覆盖 Web IDE 和端口预览主场景。第一版不提供任意 TCP tunnel，可以减少鉴权、审计和资源占用复杂度。Gateway 统一终止 TLS，可以集中管理证书、access log 和 session。Open Token 只用于换取 Gateway session，避免一次性 bearer token 泄漏到 Runtime 或后续浏览器请求中。
 
 ### Gateway Session 管理
 
@@ -294,7 +342,27 @@ open 成功响应：
 - repo access lost、user access lost 后，新的 open 由 Gitea `ValidateOpenToken` 返回对应失败分类。
 - 已建立 session 在下一次 Manager operation、Gateway 周期校验或 Runtime 断开时关闭。Gateway 会话管理依赖本地 Manager 事件通知，Gitea 不对 Gateway 下发主动指令。
 
-待决策项：Gateway session 需要确定超时时间、空闲断开、最大 session 数、健康检查和断线重连策略。该决策会影响资源占用、长连接体验和 disabled/user access lost 后的收敛速度，因此在 Gateway proxy 实现前确定。
+Gateway session 默认配置：
+
+```ini
+GATEWAY_SESSION_TTL = 8h
+GATEWAY_SESSION_IDLE_TIMEOUT = 30m
+GATEWAY_SESSION_REVALIDATE_INTERVAL = 5m
+GATEWAY_MAX_SESSIONS_PER_CODESPACE = 32
+GATEWAY_MAX_SESSIONS_PER_USER = 128
+```
+
+规则：
+
+- session 绑定 `user_id / codespace_uuid / endpoint_id / manager_id`。
+- 每次 HTTP 请求刷新 idle time。
+- WebSocket 长连接每 `GATEWAY_SESSION_REVALIDATE_INTERVAL` 重新校验 session 条件。
+- Manager stop/delete 前通知 Gateway 关闭该 codespace 的所有 Endpoint sessions。
+- Manager disabled 时关闭该 Manager 负责的 sessions。
+- repo/user access lost 后，新 session 由 Gitea 返回对应失败分类；已建立 session 在下一次周期 revalidate 时关闭。
+- Runtime upstream 断开时 session 保留，下一次请求重新连接，直到 TTL 或 idle timeout 到期。
+
+这样设计的原因是 TTL 限制长期遗留 session，idle timeout 控制资源占用，周期 revalidate 让权限变化可以收敛，同时避免每个请求都回 Gitea。stop/delete/disabled 是明确管理事件，由 Manager/Gateway 本地事件立即关闭连接。
 
 ## SSH 接入
 
@@ -372,7 +440,35 @@ SSH session 规则：
 - repo access lost、user access lost 后，新的 SSH auth 由 Gitea `VerifySSHPublicKey` 返回对应失败分类。
 - 已建立 SSH session 在下一次 Manager operation、Gateway 周期校验或 Runtime 断开时关闭。Gateway 会话管理依赖本地 Manager 事件通知，Gitea 不对 Gateway 下发主动指令。
 
-待决策项：Gateway SSH 认证限流与退避需要确定 source IP、`codespace_uuid`、公钥 fingerprint 和失败分类的计数维度。该决策会影响暴力破解防护和误伤范围，因此在 SSH server 实现前明确配置项。
+Gateway 本地执行 SSH 认证限流与退避。
+
+计数维度：
+
+- `source_ip`
+- `codespace_uuid`
+- `source_ip + codespace_uuid`
+- `public_key_fingerprint`
+
+默认配置：
+
+```ini
+SSH_AUTH_MAX_ATTEMPTS_PER_IP_PER_MINUTE = 30
+SSH_AUTH_MAX_ATTEMPTS_PER_CODESPACE_PER_MINUTE = 20
+SSH_AUTH_MAX_ATTEMPTS_PER_IP_CODESPACE_PER_MINUTE = 10
+SSH_AUTH_BACKOFF_BASE = 1s
+SSH_AUTH_BACKOFF_MAX = 30s
+SSH_AUTH_FAILURE_WINDOW = 10m
+```
+
+失败分类处理：
+
+- `invalid_credentials` 计入退避。
+- `codespace_not_found` 计入退避。
+- `codespace_not_running` 轻量计数。
+- `login_restricted`、`repo_access_lost`、`manager_mismatch` 计数并写审计日志。
+- `internal_error` 不计入暴力破解退避。
+
+这样设计的原因是 SSH 暴力破解通常同时体现为来源 IP、目标 codespace 和公钥维度异常。多维度计数可以减少单一 IP 维度的误伤，也能降低攻击者轮换 key 或目标 codespace 的绕过空间。Gateway 离 SSH 连接最近，适合做快速退避；Gitea 返回失败分类，Gateway 据此区分攻击、状态不可用和内部故障。
 
 ### 内部 SSH
 
@@ -440,4 +536,46 @@ codespace 日志是生命周期操作的执行证据，单文件连续追加。`
 
 Codespace 日志 UI 复用 Actions console 解析和渲染能力，与 Actions 共享同一套日志渲染器。
 
-待决策项：Gateway access log 需要确定字段格式、脱敏规则和保留策略。该决策会影响运维审计、用户隐私和日志容量，因此在 Gateway 对外入口实现前完成。
+### Gateway Access Log
+
+Gateway access log 使用结构化 JSON line。
+
+字段：
+
+```json
+{
+  "time": "...",
+  "request_id": "...",
+  "kind": "endpoint|ssh",
+  "manager_id": 1,
+  "codespace_uuid": "...",
+  "endpoint_id": "...",
+  "user_id": 1,
+  "source_ip": "...",
+  "method": "GET",
+  "path_template": "/cs/{uuid}/e/{endpoint_id}/...",
+  "status": 200,
+  "duration_ms": 12,
+  "bytes_in": 0,
+  "bytes_out": 0,
+  "failure_category": "",
+  "session_id_hash": "...",
+  "user_agent_hash": "..."
+}
+```
+
+脱敏规则：
+
+- 记录 path template，不记录 query string。
+- 记录 session ID hash，不记录 session cookie 原文。
+- 记录 user agent hash，不记录完整 user agent。
+- 记录失败分类，不记录 `open_token`、Authorization header、cookie 原文、Gitea access token、Manager Secret 或 Runtime Token。
+
+保留策略：
+
+```ini
+GATEWAY_ACCESS_LOG_RETENTION_DAYS = 30
+GATEWAY_ACCESS_LOG_MAX_SIZE = 1GiB
+```
+
+这样设计的原因是 Gateway access log 面向运维审计和故障定位，不是用户生命周期日志。JSON line 便于接入 Loki/ELK 等日志系统。记录模板、hash 和失败分类可以满足排障需求，同时降低 token、cookie、query 参数和用户隐私泄漏风险。

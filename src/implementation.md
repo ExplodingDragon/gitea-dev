@@ -40,14 +40,22 @@ make fmt
 make lint-backend
 ```
 
-## 待决策项
+## 测试组织
 
-以下内容进入实现前需要完成设计决策。列出这些项的目的是明确它们影响的实现范围，避免开发时临时决定跨模块行为。
+测试按层组织：
 
-- [Manager 与 Gateway - Manager 设计](manager-gateway.md)：worker pool 模型、重启恢复策略
-- [Manager 与 Gateway - Gateway 设计](manager-gateway.md)：Endpoint 反向代理实现、session 生命周期
-- [Manager 与 Gateway - SSH 接入](manager-gateway.md)：认证限流与退避配置
-- [Manager 与 Gateway - 日志与脱敏](manager-gateway.md)：Gateway access log
-- [Gitea 服务端 - Token 管理](gitea-server.md)：多副本 cache 一致性
+- `models/codespace`：状态字段、索引、查询、token binding 反查。
+- `services/codespace`：权限判定、State Finalization、repository delete pre-cleanup、repo-bound token、日志 offset。
+- `routers/api/codespace`：ManagerService RPC auth、FetchOperation claim、UpdateOperation 幂等。
+- `routers/web/codespace`：create/open/stop/resume/delete 页面行为。
+- `integration`：create -> claim -> log -> done -> open token -> delete 全链路。
 
-测试设计需要覆盖 codespace 服务层权限判定、ManagerService RPC mock、State Finalization 事务、repository 删除 pre-cleanup、repo-bound token 判定和日志 offset 追加。测试组织单独成章后再进入实现，可以保证状态机、权限和 token 边界在实现阶段有稳定验证方式。
+测试辅助：
+
+- ManagerService 使用 fake Manager identity。
+- Runtime Metadata 使用 cache fake。
+- Git repo/ref 解析复用 Gitea 现有 repository test fixture。
+- DBFS 日志使用测试 DB。
+- State Finalization 覆盖并发和重复终态。
+
+这样设计的原因是 codespace 的主要风险集中在权限、状态事务、token 生命周期和异步 claim。服务层测试覆盖核心规则，路由测试覆盖 Web/RPC 输入输出，集成测试覆盖跨层事务边界。Manager backend 不进入 Gitea 服务层测试，可以避免运行侧实现细节影响 Gitea 状态权威测试。

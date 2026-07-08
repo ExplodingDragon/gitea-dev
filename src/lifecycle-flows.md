@@ -174,7 +174,7 @@ Boot 完成条件：
 - 至少一版 Runtime Metadata 被 Gitea 接受。
 - 若存在 Web IDE，对应 Endpoint 已上报。
 
-推荐 boot stage：
+boot stage 固定为以下顺序：
 
 ```text
 prepare-runtime

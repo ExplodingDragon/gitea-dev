@@ -246,7 +246,10 @@ x-codespace-manager-secret: <manager secret>
 - 更新 Manager 版本、gateway 地址、tags 和诊断 metadata。
 - 更新 `last_online_unix`。
 - `DeclareManager` 同时作为 heartbeat。
-- Manager 周期调用 `DeclareManager`；心跳间隔严格小于 `MANAGER_OFFLINE_TIMEOUT`，建议不超过其三分之一。
+- Manager 周期调用 `DeclareManager`；心跳间隔小于 `MANAGER_OFFLINE_TIMEOUT / 3`。
+- Manager 重启恢复期间通过 `DeclareManager` 上报 `manager_runtime_state=recovering`，恢复完成后上报 `manager_runtime_state=online`。
+
+心跳间隔小于 offline timeout 三分之一，是为了让一次短暂网络抖动或单次 heartbeat 延迟不会直接触发 offline，同时让 Gitea 能在数个心跳周期内发现真实离线。`recovering` 运行态让 Gitea 区分“Manager 正在维护恢复”和“Manager 完全不可达”，从而保留已有 codespace 主状态并暂停新的 create/resume claim。
 
 Declare 校验：
 
@@ -598,8 +601,6 @@ Cache 丢失即 token 失效，用户重新从 Gitea 发起 open。
 
 Token 是一次性跳转凭据，写入 Gitea 本地 cache；cache 丢失时本次 open 失效，用户重新从 Gitea 发起 open。codespace 生命周期状态不受 cache 影响。
 
-待决策项：Gitea 多副本部署需要单独确定 Open Token 一次性消费和 Runtime Metadata cache 重建策略。该决策会影响 token 是否需要共享 cache、消费锁是否跨实例、以及 Manager 在 Gitea 节点切换后如何恢复 Endpoint metadata，因此在支持多副本部署前完成。
-
 ## Cron 任务
 
 | 任务 | 默认调度 | 职责 |
@@ -619,6 +620,11 @@ Gitea：
 ENABLED = true
 CONTROL_PLANE_TIMEOUT = 30s
 MANAGER_OFFLINE_TIMEOUT = 120s
+MANAGER_RESTART_GRACE = 10m
+GITEA_RESTART_RECOVERY_GRACE = 5m
+OPERATION_RECOVERY_GRACE = 15m
+DELETE_RECOVERY_GRACE = 30m
+RUNTIME_METADATA_REBUILD_GRACE = 5m
 OPERATION_LEASE_TIMEOUT = 300s
 QUEUE_TIMEOUT = 5m
 BOOT_TIMEOUT = 30m
@@ -654,6 +660,11 @@ SCHEDULE = @daily
 - `OPEN_TOKEN_EXPIRE` 也是 [Gateway Open Token](glossary.md#gateway-open-token) 的 Gitea cache TTL。
 - SSH 认证限流与退避由 Gateway 配置和管理。
 - `OPERATION_LEASE_TIMEOUT` 是 Manager claim/续租 [Operation](glossary.md#operation) 的 lease 时长。
+- `GITEA_RESTART_RECOVERY_GRACE` 用于 Gitea 重启后的本地 cache 重建窗口。这个窗口内 Runtime Metadata cache miss 只影响交互提示，不作为 Runtime 失败证据。
+- `MANAGER_RESTART_GRACE` 用于 Manager 从 offline/recovering 回到 online 的维护恢复窗口。这个窗口内 Gitea 保持 codespace 主状态，由 Manager 重新发现本地 Runtime。
+- `OPERATION_RECOVERY_GRACE` 用于 operation deadline 之后的恢复观察窗口。Manager 在该窗口内重新 online 并给出恢复证据时，Gitea 接受原 operation 继续或完成。
+- `DELETE_RECOVERY_GRACE` 单独长于普通 operation 恢复窗口，因为 delete 的目标是资源清理；等待原 Manager 回来完成幂等清理，比快速进入 `error` 更能减少遗留 Runtime。
+- `RUNTIME_METADATA_REBUILD_GRACE` 用于 Runtime Metadata cache 丢失后的重建窗口。Endpoint 和 SSH 展示依赖 metadata，codespace 主状态不依赖 metadata cache。
 - `CODESPACE_REPO_CONFIG_MAX_SIZE` 限制 `.gitea/codespace.yaml` 读取大小，避免配置读取变成大 blob 解析路径。
 - `LOG_READ_MAX_BYTES` 限制单次日志读取响应大小，便于页面轮询和 API 客户端稳定分页。
 - `LOG_MAX_SIZE` 限制单个 codespace 日志总量，避免异常 init 或脚本持续输出导致 DBFS 无限增长。
