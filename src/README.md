@@ -16,23 +16,23 @@ Gitea 不参与运行时选型，也不操作 Incus/Docker 等运行后端。运
 
 ```mermaid
 flowchart LR
-    User["User<br/>Browser / SSH client"]
+    User["用户<br/>浏览器 / SSH 客户端"]
 
     subgraph Gitea["Gitea"]
-        Web["Web UI / Web routes"]
-        ManagerRPC["ManagerService<br/>Connect over HTTP"]
-        Service["Codespace service<br/>state / permission / token / logs"]
-        Cron["Codespace cron jobs"]
-        DB[("Database<br/>codespace tables")]
-        DBFS[("DBFS<br/>codespace logs")]
+        Web["Web UI / Web 路由"]
+        ManagerRPC["ManagerService<br/>Connect RPC over HTTP"]
+        Service["Codespace 服务<br/>状态 / 权限 / Token / 日志"]
+        Cron["Codespace 定时任务"]
+        DB[("数据库<br/>codespace 表")]
+        DBFS[("DBFS<br/>codespace 日志")]
     end
 
-    subgraph ManagerDeployment["Codespace Manager deployment"]
+    subgraph ManagerDeployment["Codespace Manager 部署"]
         Manager["Codespace Manager<br/>worker / scheduler / Runtime HTTP API"]
-        Gateway["Codespace Gateway<br/>Endpoint / SSH ingress"]
+        Gateway["Codespace Gateway<br/>Endpoint / SSH 入口"]
     end
 
-    Runtime["Runtime Instance<br/>init.sh / sshd / services"]
+    Runtime["Runtime Instance<br/>init.sh / sshd / 服务"]
 
     User -->|"create / open / stop / resume / delete"| Web
     User -->|"Endpoint / SSH"| Gateway
@@ -48,8 +48,8 @@ flowchart LR
     Runtime -->|"Runtime HTTP API<br/>CODESPACE_RUNTIME_TOKEN"| Manager
     Manager -->|"create / resume / stop / delete"| Runtime
 
-    Gateway -->|"Open token / SSH auth<br/>via Manager identity"| ManagerRPC
-    Gateway -->|"Endpoint proxy / SSH channel"| Runtime
+    Gateway -->|"Open Token / SSH 认证<br/>通过 Manager 身份"| ManagerRPC
+    Gateway -->|"Endpoint 代理 / SSH 通道"| Runtime
 ```
 
 架构约束：
@@ -81,30 +81,30 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User
+    actor User as 用户
     participant Gitea
     participant Manager as Codespace Manager
     participant Gateway as Codespace Gateway
     participant Runtime as Runtime Instance
 
     User->>Gitea: POST /{owner}/{repo}/codespace
-    Gitea->>Gitea: validate repo / ref / permission
-    Gitea->>Gitea: create codespace + create operation
+    Gitea->>Gitea: 校验仓库 / ref / 权限
+    Gitea->>Gitea: 创建 codespace + 创建 operation
     Manager->>Gitea: FetchOperation
-    Gitea-->>Manager: create operation payload
+    Gitea-->>Manager: 返回 create operation 数据
     Manager->>Gitea: RequestGiteaToken
-    Manager->>Runtime: create runtime + inject init env
+    Manager->>Runtime: 创建 Runtime + 注入初始化环境变量
     Runtime->>Manager: Runtime HTTP API boot / endpoints
     Manager->>Gitea: UpdateLog / ReportRuntimeMetadata / UpdateOperation done
     Gitea-->>User: GET /codespace/{uuid}
 
     User->>Gitea: POST /codespace/{uuid}/open endpoint_id
-    Gitea->>Gitea: validate state / permission / Endpoint metadata
-    Gitea-->>User: 302 Gateway URL with open_token
-    User->>Gateway: open Endpoint
-    Gateway->>Gitea: ValidateOpenToken via Manager identity
-    Gitea-->>Gateway: allowed
-    Gateway->>Runtime: proxy to resolved upstream
+    Gitea->>Gitea: 校验状态 / 权限 / Endpoint 元数据
+    Gitea-->>User: 302 Gateway URL 携带 open_token
+    User->>Gateway: 打开 Endpoint
+    Gateway->>Gitea: ValidateOpenToken 通过 Manager 身份
+    Gitea-->>Gateway: 允许
+    Gateway->>Runtime: 代理到解析后的 upstream
 ```
 
 ## 术语
@@ -114,7 +114,7 @@ sequenceDiagram
 ## 核心原则
 
 - Gitea 只负责授权、状态、日志、token 绑定和跳转入口。
-- Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.Code)` 统一入口）、access token（`models/auth/access_token.go`）、SSH key、TOTP、登录限制、git、Pull Request 和 Actions task claim 模型。
+- Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.Code)` 统一入口）、access token（`models/auth/access_token.go`）、SSH key、登录限制、git、Pull Request 和 Actions task claim 模型。
 - 用户拥有 repository code-read 权限就可以创建 codespace。
 - codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。
 - Manager 不能用自己身份访问 repository 内容。
@@ -122,7 +122,7 @@ sequenceDiagram
 - create、resume、stop、delete 必须幂等。
 - 同一 codespace 同一时刻只能有一个 active operation。
 - codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。
-- create 失败后不在同一个 codespace 对象上重新创建。失败后 Runtime、token、日志和 generation 可能已部分产生，不在同一对象上重建可避免旧状态与新初始化混淆。
+- create 失败后不在同一个 codespace 对象上重新创建。失败后 Runtime、token 和日志可能已部分产生，不在同一对象上重建可避免旧状态与新初始化混淆。
 - 失败是终态，除 delete 外不能恢复。
 - delete 成功后物理删除 codespace、operation 和日志。
 - Manager 的并发容量由 Manager 自行控制并以 `capacity_available` 上报，Gitea 不维护运行容量计数。

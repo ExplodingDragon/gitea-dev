@@ -14,7 +14,7 @@ service ManagerService {
   // RegisterManager exchanges a one-time registration secret for a Manager identity.
   rpc RegisterManager(RegisterManagerRequest) returns (RegisterManagerResponse);
 
-  // DeclareManager updates Manager metadata, capacity, tags, and serves as heartbeat.
+  // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
   rpc DeclareManager(DeclareManagerRequest) returns (DeclareManagerResponse);
 
   // FetchOperation pulls an operation that the Manager can claim and execute.
@@ -35,9 +35,6 @@ service ManagerService {
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
   rpc ValidateOpenToken(ValidateOpenTokenRequest) returns (ValidateOpenTokenResponse);
 
-  // VerifySSHPassword authenticates an SSH session via password (+ optional TOTP).
-  rpc VerifySSHPassword(VerifySSHPasswordRequest) returns (VerifySSHPasswordResponse);
-
   // VerifySSHPublicKey authenticates an SSH session via public key.
   rpc VerifySSHPublicKey(VerifySSHPublicKeyRequest) returns (VerifySSHPublicKeyResponse);
 
@@ -54,7 +51,7 @@ message RegisterManagerRequest {
 
 message RegisterManagerResponse {
   // The Manager identity, assigned once and never reused.
-  string manager_uuid = 1;
+  int64 manager_id = 1;
   // The Manager secret, returned only once in this response. Store locally.
   string manager_secret = 2;
 }
@@ -64,12 +61,9 @@ message RegisterManagerResponse {
 message DeclareManagerRequest {
   string gateway_url = 1;
   string gateway_ssh_addr = 2;
-  string gateway_internal_ssh_public_key = 3;
-  repeated string tags = 4;
-  int32 capacity_total = 5;
-  int32 capacity_available = 6;
+  repeated string tags = 3;
   // Optional diagnostic metadata.
-  map<string, string> meta = 7;
+  map<string, string> meta = 4;
 }
 
 message DeclareManagerResponse {}
@@ -89,12 +83,10 @@ message FetchOperationResponse {
 }
 
 message OperationPayload {
-  string operation_uuid = 1;
+  int64 operation_id = 1;
   string operation_type = 2; // create | resume | stop | delete
   string codespace_uuid = 3;
-  int64 generation = 4;
-  string ssh_user = 5;
-  int64 lease_deadline_unix = 6;
+  int64 lease_deadline_unix = 4;
 
   // Fields present only for create/resume.
   string repo_clone_url = 10;
@@ -114,9 +106,8 @@ message OperationPayload {
 // --- UpdateOperation ---
 
 message UpdateOperationRequest {
-  string operation_uuid = 1;
+  int64 operation_id = 1;
   string codespace_uuid = 2;
-  int64 generation = 3;
 
   // Optional: renew the lease.
   oneof result {
@@ -146,13 +137,12 @@ message UpdateOperationResponse {
 // --- UpdateLog ---
 
 message UpdateLogRequest {
-  string operation_uuid = 1;
+  int64 operation_id = 1;
   string codespace_uuid = 2;
-  int64 generation = 3;
   // Byte offset within the log file.
-  int64 offset = 4;
+  int64 offset = 3;
   // Pre-sanitized log lines, each as a single-line string.
-  repeated string lines = 5;
+  repeated string lines = 4;
 }
 
 message UpdateLogResponse {}
@@ -161,9 +151,8 @@ message UpdateLogResponse {}
 
 message ReportRuntimeMetadataRequest {
   string codespace_uuid = 1;
-  int64 generation = 2;
   // JSON payload matching the Runtime Metadata schema.
-  string metadata_json = 3;
+  string metadata_json = 2;
 }
 
 message ReportRuntimeMetadataResponse {
@@ -174,11 +163,10 @@ message ReportRuntimeMetadataResponse {
 // --- RequestGiteaToken ---
 
 message RequestGiteaTokenRequest {
-  string operation_uuid = 1;
+  int64 operation_id = 1;
   string codespace_uuid = 2;
-  int64 generation = 3;
   // Must be "create" or "resume".
-  string operation_type = 4;
+  string operation_type = 3;
 }
 
 message RequestGiteaTokenResponse {
@@ -196,37 +184,17 @@ message ValidateOpenTokenResponse {
   bool allowed = 1;
   int64 user_id = 2;
   string codespace_uuid = 3;
-  int64 generation = 4;
-  string endpoint_id = 5;
-  string manager_uuid = 6;
+  string endpoint_id = 4;
+  int64 manager_id = 5;
   // Only present when allowed=false.
-  string failure_reason = 7;
-}
-
-// --- VerifySSHPassword ---
-
-message VerifySSHPasswordRequest {
-  string ssh_user = 1;
-  // Plaintext password, may include ":totp=XXXXXX" suffix.
-  string password = 2;
-  string source_ip = 3;
-  string user_agent_or_client_version = 4;
-  string gateway_session_id = 5;
-}
-
-message VerifySSHPasswordResponse {
-  bool allowed = 1;
-  int64 user_id = 2;
-  string codespace_uuid = 3;
-  int64 generation = 4;
-  string failure_category = 5;
-  bool failure_retryable = 6;
+  string failure_reason = 6;
 }
 
 // --- VerifySSHPublicKey ---
 
 message VerifySSHPublicKeyRequest {
-  string ssh_user = 1;
+  // codespace_uuid parsed from SSH connection string (cs-{id} prefix).
+  string codespace_uuid = 1;
   string public_key_blob = 2;
   // Optional, for diagnostics only.
   string public_key_fingerprint = 3;
@@ -241,9 +209,8 @@ message VerifySSHPublicKeyResponse {
   bool allowed = 1;
   int64 user_id = 2;
   string codespace_uuid = 3;
-  int64 generation = 4;
-  string failure_category = 5;
-  bool failure_retryable = 6;
+  string failure_category = 4;
+  bool failure_retryable = 5;
 }
 
 // --- ReportInstances ---
@@ -255,7 +222,6 @@ message ReportInstancesRequest {
 
 message RuntimeInstanceRef {
   string codespace_uuid = 1;
-  int64 generation = 2;
 }
 
 message ReportInstancesResponse {
@@ -265,9 +231,8 @@ message ReportInstancesResponse {
 
 message InstanceInstruction {
   string codespace_uuid = 1;
-  int64 generation = 2;
   // e.g. "cleanup_local_runtime".
-  string manager_instruction = 3;
+  string manager_instruction = 2;
 }
 ```
 
@@ -276,7 +241,7 @@ message InstanceInstruction {
 所有 RPC（除 `RegisterManager` 外）使用以下 HTTP header 认证：
 
 ```text
-x-codespace-manager-uuid: <manager uuid>
+x-codespace-manager-id: <manager id>
 x-codespace-manager-secret: <manager secret>
 ```
 

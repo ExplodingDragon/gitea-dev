@@ -83,7 +83,7 @@ Create operation claim：
 - claim 前：`codespace.manager_id=0`，`operation.manager_id=0`。
 - `FetchOperation` 原子 claim operation。
 - claim 同时写入 `codespace.manager_id`、`operation.manager_id`，并将 codespace 从 `queued` 推进到 `booting`。
-- claim 条件包含 caller Manager enabled、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`manager_id=0`、当前 status、active operation 和 generation。
+- claim 条件包含 caller Manager enabled、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`manager_id=0`、当前 status 和 active operation。
 - 本次 `FetchOperation` 的 `capacity_available` 必须大于 0。
 - Gitea 不在 claim、`done|failed` 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
 - claim 成功后，operation 归属不可被后续 `DeclareManager` 覆盖。
@@ -138,7 +138,6 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为唯一初始
 | `CODESPACE_OWNER_NAME` | codespace 创建者名称 |
 | `CODESPACE_REPO_NAME` | 仓库名称 |
 | `CODESPACE_WORKSPACE_DIR` | 工作目录路径（由 Manager 注入） |
-| `CODESPACE_SSH_USER` | SSH 用户名 |
 | `CODESPACE_MANAGER_BASE_URL` | Runtime HTTP API 基础 URL（由 Manager 注入） |
 | `CODESPACE_RUNTIME_TOKEN` | Runtime Token（由 Manager 注入） |
 | `CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY` | Gateway 内部 SSH 公钥 |
@@ -155,8 +154,8 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为唯一初始
 - `CODESPACE_NAME` 生成规则固定为 `cs-{short_uuid}`，其中 `short_uuid` 取 `codespace.uuid` 前 12 位。
 - UI 展示名称使用同一派生规则。
 - delete 后 `CODESPACE_NAME` 不复用。
-- Runtime Instance name 由 Manager 用 `codespace_uuid + generation` 本地生成，`CODESPACE_NAME` 作为补充标识。
-- Runtime Instance name 仍由 Manager 用 `codespace_uuid + generation` 本地生成。
+- Runtime Instance name 由 Manager 用 `codespace_uuid` 本地生成，`CODESPACE_NAME` 作为补充标识。
+- Runtime Instance name 仍由 Manager 用 `codespace_uuid` 本地生成。
 - `CODESPACE_WORKSPACE_DIR`、`CODESPACE_MANAGER_BASE_URL` 和 `CODESPACE_RUNTIME_TOKEN` 由 Manager 创建 Runtime 时注入，不来自 Gitea Operation Payload。
 
 Boot 完成条件：
@@ -208,7 +207,7 @@ Repository 删除：
 - Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 `deleting`，等待 Manager 回来领取。
 - delete timeout 后进入 `error`。
 - repository 删除事务创建的 delete operation 不依赖 repository row 生成 payload。
-- repository DB 记录删除后，Manager 仍能通过 `codespace_uuid + generation` 领取 delete operation 并完成 Runtime cleanup。
+- repository DB 记录删除后，Manager 仍能通过 `codespace_uuid` 领取 delete operation 并完成 Runtime cleanup。
 - source repository 删除后，相关 codespace 列表和详情页显示 `source repository deleted`。
 - repository 删除不发送站点通知。
 
@@ -238,6 +237,5 @@ Repository 删除：
 
 - ID 是权威关联。
 - 名称每次展示时解析。
-- `ssh_user` 创建后不随重命名变化。
 - create/resume operation payload 使用当时当前名称重新生成 clone/web URL。
 - 显示缓存和 runtime 动态数据按需从 cache 或 Manager 获取，每次展示时计算。

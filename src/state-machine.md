@@ -8,14 +8,14 @@
 stateDiagram-v2
     direction LR
 
-    queued: queued
-    booting: booting
-    running: running
-    stopping: stopping
-    stopped: stopped
-    resuming: resuming
-    deleting: deleting
-    error: error
+    queued: 排队中 (queued)
+    booting: 启动中 (booting)
+    running: 运行中 (running)
+    stopping: 停止中 (stopping)
+    stopped: 已停止 (stopped)
+    resuming: 恢复中 (resuming)
+    deleting: 删除中 (deleting)
+    error: 错误 (error)
 
     [*] --> queued
     queued --> booting
@@ -58,7 +58,7 @@ stateDiagram-v2
 - `booting` 只能由 create 进入。
 - resume 不进入 `booting`。
 - `error` 不回到正常状态。
-- `error` 后 delete 会创建新的 delete operation 并递增 generation，不视为 retry。
+- `error` 后 delete 会创建新的 delete operation，不视为 retry。
 - open、SSH、resume、stop、delete、logs 是否可用，由主状态、repo 状态、用户状态、Manager 在线状态和 Runtime Metadata 共同决定。
 
 ## Operation 状态
@@ -84,7 +84,7 @@ State Finalization 在同一事务内执行：
 
 1. 读取 codespace 和 operation。
 2. 校验 `active_operation_id`。
-3. 校验 `generation`。
+3. 校验 `active_operation_id` 匹配。
 4. 校验当前状态转移合法。
 5. 应用 operation 终态结果。
 6. 更新 codespace 主状态。

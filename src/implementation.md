@@ -28,7 +28,7 @@ Runtime HTTP API 属于 Manager，不属于 Gitea route。
 - 删除旧 `initializing` 状态。
 - 删除旧 task 术语。
 - 删除所有 quota 设计和实现。
-- 复用 Gitea 现有 permission、token、SSH key、TOTP、setting、cron、routing、DBFS 和测试组织方式。
+- 复用 Gitea 现有 permission、token、SSH key、setting、cron、routing、DBFS 和测试组织方式。
 
 实现完成后的最低验证：
 

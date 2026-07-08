@@ -78,7 +78,7 @@ Gitea 后台任务处理 operation 超时、stale report、状态分歧和清理
 
 <span id="stale-report"></span>
 ## Stale Report
-Manager 上报的 operation_uuid、codespace_uuid 或 generation 已不匹配当前 codespace 状态的过期上报。
+Manager 上报的 operation_id 或 codespace_uuid 已不匹配当前 codespace 状态的过期上报。
 
 <span id="state-divergence"></span>
 ## State Divergence
@@ -93,6 +93,6 @@ Gitea 返回给 Manager 的调和指令，例如 cleanup_local_runtime。
 - codespace 创建者字段统一为 `user_id`。
 - repository owner 仍为 `repository.owner_id -> user.id`。
 - Endpoint 字段统一为 `endpoint_id`。
-- Endpoint 唯一性范围是单个 `codespace_uuid + generation`。
+- Endpoint 唯一性范围是单个 `codespace_uuid`。
 - Endpoint 不是端口模型。
 - 动态运行时数据统一称为 Runtime Metadata。
