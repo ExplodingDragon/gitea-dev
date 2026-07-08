@@ -161,9 +161,8 @@
 <p>Create 支持：</p>
 <div class="table-wrapper"><table><thead><tr><th>参数</th><th>说明</th></tr></thead><tbody>
 <tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td></tr>
-<tr><td><code>ref_name</code></td><td>ref 名称</td></tr>
+<tr><td><code>ref_name</code></td><td>ref 标识：<code>branch</code> → 分支名；<code>tag</code> → 标签名；<code>commit</code> → 完整 commit SHA；<code>pull</code> → PR ref 路径（如 <code>refs/pull/42/head</code>）</td></tr>
 <tr><td><code>commit_sha</code></td><td>指定 commit SHA</td></tr>
-<tr><td><code>pull_id</code></td><td>PR ID</td></tr>
 </tbody></table>
 </div>
 <p>Gitea 校验步骤：</p>
@@ -173,7 +172,7 @@
 <li>打开 git repository 并确认非空。</li>
 <li>解析并锁定最终 commit SHA。</li>
 <li>拒绝不存在的 ref 和不可解析的 commit。</li>
-<li>PR 创建记录 <code>pull_id</code>。</li>
+<li>PR 入口属于 base repository 页面。</li>
 </ol>
 <p>Pull Request 规则：</p>
 <ul>
@@ -225,10 +224,10 @@
 <p>使用统一 Manager 池，repository 只需要通过 tag 描述运行侧能力需求。Manager 不按 owner/org/repo scope 分组，避免 repository、owner/org 删除流程与 Manager 生命周期互相耦合。</p>
 <p>Create operation claim：</p>
 <ul>
-<li>claim 前：<code>codespace.manager_id=0</code>，<code>operation.manager_id=0</code>。</li>
-<li><code>FetchOperation</code> 原子 claim operation。</li>
-<li>claim 同时写入 <code>codespace.manager_id</code>、<code>operation.manager_id</code>，并将 codespace 从 <code>queued</code> 推进到 <code>booting</code>。</li>
-<li>claim 条件包含 caller Manager enabled、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>manager_id=0</code>、当前 status 和 active operation。</li>
+<li>claim 前：<code>codespace.manager_id=0</code>，<code>codespace.operation_status=queued</code>。</li>
+<li><code>FetchOperation</code> 原子 claim。</li>
+<li>claim 同时写入 <code>codespace.manager_id</code>、<code>codespace.operation_status=running</code>、<code>codespace.operation_deadline_unix</code>，并将 codespace 从 <code>queued</code> 推进到 <code>booting</code>。</li>
+<li>claim 条件包含 caller Manager enabled、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>codespace.manager_id=0</code>、<code>codespace.status=queued</code>。</li>
 <li>本次 <code>FetchOperation</code> 的 <code>capacity_available</code> 必须大于 0。</li>
 <li>Gitea 不在 claim、<code>done|failed</code> 或 timeout 时修改 <code>last_capacity_total / last_capacity_available</code>。</li>
 <li>claim 成功后，operation 归属不可被后续 <code>DeclareManager</code> 覆盖。</li>
@@ -270,7 +269,6 @@
 <tr><td><code>GITEA_REF_TYPE</code></td><td>ref 类型（branch/tag/commit/pull）</td></tr>
 <tr><td><code>GITEA_REF_NAME</code></td><td>ref 名称</td></tr>
 <tr><td><code>GITEA_COMMIT_SHA</code></td><td>锁定的 commit SHA</td></tr>
-<tr><td><code>GITEA_PULL_ID</code></td><td>PR ID（非 PR 场景为空）</td></tr>
 <tr><td><code>GITEA_TOKEN</code></td><td>Gitea access token，用于 git 操作</td></tr>
 <tr><td><code>CODESPACE_UUID</code></td><td>codespace UUID</td></tr>
 <tr><td><code>CODESPACE_NAME</code></td><td>派生名称，格式 <code>cs-{short_uuid}</code></td></tr>
@@ -352,7 +350,7 @@ report-endpoints
 <ul>
 <li>owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。</li>
 <li>删除该 owner 下 repository 时按 repository 删除规则处理。</li>
-<li>Manager 和 registration secret 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration secret。</li>
+<li>Manager 和 registration token 不属于 owner 或 organization，owner/org 删除不删除 Manager 或 registration token。</li>
 <li>owner/org 删除不向 Manager 下发 delete RPC，不依赖 Manager 在线。</li>
 <li>某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。</li>
 <li>创建用户删除后吊销 token，并不允许 open/SSH/resume。</li>

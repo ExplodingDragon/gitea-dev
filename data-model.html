@@ -158,20 +158,39 @@
                         <h1 id="数据模型"><a class="header" href="#数据模型">数据模型</a></h1>
 <h2 id="数据表"><a class="header" href="#数据表">数据表</a></h2>
 <p>Endpoint、port、Runtime Token、Git token、Gateway Open Token、quota、运行容量计数、Manager binding 等运行时数据，在已有表字段或本地 cache 中存储。</p>
-<h3 id="codespace_manager_registration_secret"><a class="header" href="#codespace_manager_registration_secret">codespace_manager_registration_secret</a></h3>
+<h3 id="codespace"><a class="header" href="#codespace">codespace</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
-<tr><td><code>secret_hash</code></td><td>registration secret 哈希</td><td></td></tr>
-<tr><td><code>secret_salt</code></td><td>盐值</td><td></td></tr>
-<tr><td><code>is_active</code></td><td>是否 active</td><td>同一时间只能有一个 active 且未消费 registration secret</td></tr>
-<tr><td><code>expires_unix</code></td><td>过期时间戳</td><td></td></tr>
-<tr><td><code>created_by</code></td><td>创建者 user ID</td><td></td></tr>
+<tr><td><code>uuid</code></td><td>全局唯一标识</td><td></td></tr>
+<tr><td><code>user_id</code></td><td>创建者 user ID</td><td>允许悬空引用，表示该 codespace 的历史创建者；被物理删除后不改写、不重分配</td></tr>
+<tr><td><code>repo_id</code></td><td>代码来源 repository ID</td><td>允许历史引用，不表示删除检查归属；repository 被删除后显示 <code>source repository deleted</code></td></tr>
+<tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td><td></td></tr>
+<tr><td><code>ref_name</code></td><td>ref 标识</td><td><code>branch</code> → 分支名（如 <code>main</code>）；<code>tag</code> → 标签名（如 <code>v1.0.0</code>）；<code>commit</code> → 完整 commit SHA；<code>pull</code> → Gitea 风格 PR ref 路径（如 <code>refs/pull/42/head</code>），PR 编号可从路径解析</td></tr>
+<tr><td><code>repo_tag</code></td><td>从 <code>.gitea/codespace.yaml</code> 解析的 tag</td><td>create 时确定，后续不随仓库文件变化</td></tr>
+<tr><td><code>commit_sha</code></td><td>锁定 commit SHA</td><td></td></tr>
+<tr><td><code>manager_id</code></td><td>绑定 Manager ID</td><td>create 被领取前为 0，领取后固定</td></tr>
+<tr><td><code>status</code></td><td>当前主状态</td><td></td></tr>
+<tr><td><code>operation_type</code></td><td><code>create</code> / <code>resume</code> / <code>stop</code> / <code>delete</code></td><td>当前 operation 类型</td></tr>
+<tr><td><code>operation_status</code></td><td><code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code></td><td><code>running</code> 表示有正在执行的操作；stale detection、RPC 匹配和并发保护都以此为准</td></tr>
+<tr><td><code>operation_deadline_unix</code></td><td>lease 截止时间戳</td><td></td></tr>
+<tr><td><code>operation_finished_unix</code></td><td>完成时间戳</td><td></td></tr>
+<tr><td><code>operation_status_message</code></td><td>状态消息</td><td></td></tr>
+<tr><td><code>gitea_token_id</code></td><td>当前有效 Gitea access token ID</td><td>为空表示当前没有有效 token</td></tr>
+<tr><td><code>last_active_unix</code></td><td>最近用户交互时间戳</td><td>成功 open Endpoint/SSH auth/resume 进入 running 后更新；<code>ReportRuntimeMetadata</code> 成功写入时更新；仅用于 UI 排序和清理参考，不用于权限判断</td></tr>
 <tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
 <tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
-<tr><td><code>consumed_unix</code></td><td>消费时间戳</td><td></td></tr>
+<tr><td><code>stopped_unix</code></td><td>最近停止时间戳</td><td></td></tr>
+<tr><td><code>status_message</code></td><td>状态消息</td><td>最长 1024 字符，超长截断，禁止控制字符；UI 按普通文本 escape 后展示</td></tr>
+<tr><td><code>log_filename</code></td><td>日志文件名</td><td></td></tr>
+<tr><td><code>log_line_count</code></td><td>日志行数</td><td></td></tr>
+<tr><td><code>log_size</code></td><td>日志大小</td><td></td></tr>
+<tr><td><code>log_indexes</code></td><td>行号到 byte offset 索引</td><td>LONGBLOB，varint 编码的 <code>[]int64</code>，用于按行 seek</td></tr>
+<tr><td><code>log_in_storage</code></td><td>日志在 DBFS 还是对象存储</td><td><code>false</code> 表示日志仍在 DBFS</td></tr>
+<tr><td><code>log_expired</code></td><td>日志是否过期</td><td>列表页和非日志详情区只读取 <code>log_line_count / log_size / log_expired</code>；只有日志面板需要读取 DBFS 日志内容</td></tr>
 </tbody></table>
 </div>
-<p>registration secret 明文只在创建或重置时展示一次。重置只使旧的未消费 secret inactive，不影响现有 Manager 的 manager secret。</p>
+<p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
+<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
@@ -187,50 +206,18 @@
 <tr><td><code>meta_json</code></td><td>诊断与扩展信息 JSON</td><td>包含 <code>gateway_url</code>、<code>gateway_ssh_addr</code>、<code>last_capacity_total</code>、<code>last_capacity_available</code>、<code>backend_capabilities</code> 等 Manager 上报的动态元数据</td></tr>
 </tbody></table>
 </div>
-<h3 id="codespace"><a class="header" href="#codespace">codespace</a></h3>
+<h3 id="codespace_manager_token"><a class="header" href="#codespace_manager_token">codespace_manager_token</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
-<tr><td><code>uuid</code></td><td>全局唯一标识</td><td></td></tr>
-<tr><td><code>user_id</code></td><td>创建者 user ID</td><td>允许悬空引用，表示该 codespace 的历史创建者；被物理删除后不改写、不重分配</td></tr>
-<tr><td><code>repo_id</code></td><td>代码来源 repository ID</td><td>允许历史引用，不表示删除检查归属；repository 被删除后显示 <code>source repository deleted</code></td></tr>
-<tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td><td></td></tr>
-<tr><td><code>ref_name</code></td><td>ref 名称</td><td></td></tr>
-<tr><td><code>repo_tag</code></td><td>从 <code>.gitea/codespace.yaml</code> 解析的 tag</td><td>create 时确定，后续不随仓库文件变化</td></tr>
-<tr><td><code>commit_sha</code></td><td>锁定 commit SHA</td><td></td></tr>
-<tr><td><code>pull_id</code></td><td>PR ID</td><td></td></tr>
-<tr><td><code>manager_id</code></td><td>绑定 Manager ID</td><td>create 被领取前为 0，领取后固定</td></tr>
-<tr><td><code>status</code></td><td>当前主状态</td><td></td></tr>
-<tr><td><code>active_operation_id</code></td><td>当前未完成 lifecycle operation ID</td><td>operation 进入 `done</td></tr>
-<tr><td><code>gitea_token_id</code></td><td>当前有效 Gitea access token ID</td><td>为空表示当前没有有效 token</td></tr>
-<tr><td><code>last_active_unix</code></td><td>最近用户交互时间戳</td><td>成功 open Endpoint/SSH auth/resume 进入 running 后更新；<code>ReportRuntimeMetadata</code> 成功写入时更新；仅用于 UI 排序和清理参考，不用于权限判断</td></tr>
-<tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
-<tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
-<tr><td><code>stopped_unix</code></td><td>最近停止时间戳</td><td></td></tr>
-<tr><td><code>status_message</code></td><td>状态消息</td><td>最长 1024 字符，超长截断，禁止控制字符；UI 按普通文本 escape 后展示</td></tr>
+<tr><td><code>token</code></td><td>明文 Registration Token（唯一索引）</td><td>注册凭据，创建或重置时展示一次</td></tr>
+<tr><td><code>owner_id</code></td><td>创建者/拥有者 user ID</td><td>0=全局，对齐 <code>action_runner_token</code> 的 <code>OwnerID</code></td></tr>
+<tr><td><code>is_active</code></td><td>是否 active</td><td>同一时间只能有一个 active token</td></tr>
+<tr><td><code>created</code></td><td>创建时间戳</td><td>xorm auto</td></tr>
+<tr><td><code>updated</code></td><td>更新时间戳</td><td>xorm auto</td></tr>
+<tr><td><code>deleted</code></td><td>软删除时间戳</td><td>xorm auto</td></tr>
 </tbody></table>
 </div>
-<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
-<h3 id="codespace_operation"><a class="header" href="#codespace_operation">codespace_operation</a></h3>
-<div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
-<tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
-<tr><td><code>codespace_id</code></td><td>所属 codespace ID</td><td></td></tr>
-<tr><td><code>manager_id</code></td><td>执行 Manager ID</td><td>create 被领取前为 0，被领取时与 codespace.manager_id 在同一事务中写入；resume/stop/delete 从创建即绑定既有 manager_id</td></tr>
-<tr><td><code>type</code></td><td><code>create</code> / <code>resume</code> / <code>stop</code> / <code>delete</code></td><td></td></tr>
-<tr><td><code>status</code></td><td><code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code></td><td></td></tr>
-<tr><td><code>deadline_unix</code></td><td>lease 截止时间戳</td><td></td></tr>
-<tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
-<tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
-<tr><td><code>finished_unix</code></td><td>完成时间戳</td><td></td></tr>
-<tr><td><code>status_message</code></td><td>状态消息</td><td></td></tr>
-<tr><td><code>log_filename</code></td><td>日志文件名</td><td></td></tr>
-<tr><td><code>log_line_count</code></td><td>日志行数</td><td></td></tr>
-<tr><td><code>log_size</code></td><td>日志大小</td><td></td></tr>
-<tr><td><code>log_indexes</code></td><td>行号到 byte offset 的索引</td><td>LONGBLOB，varint 编码的 <code>[]int64</code>，用于按行 seek</td></tr>
-<tr><td><code>log_in_storage</code></td><td>日志在 DBFS 还是对象存储</td><td><code>false</code> 表示日志仍在 DBFS</td></tr>
-<tr><td><code>log_expired</code></td><td>日志是否过期</td><td>列表页和非日志详情区只读取 <code>log_line_count / log_size / log_expired</code>；只有日志面板需要读取 DBFS 日志内容</td></tr>
-</tbody></table>
-</div>
-<p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
+<p>设计与 <code>action_runner_token</code> 一致：明文存储，唯一索引。token 可复用，支持多个 Manager 用同一 token 注册。重置时旧 token <code>is_active=false</code>，不影响已注册 Manager 的 <code>manager_secret</code>。</p>
 <h2 id="索引"><a class="header" href="#索引">索引</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
 <tr><td>codespace</td><td><code>uuid</code>（唯一）</td></tr>
@@ -238,8 +225,6 @@
 <tr><td>codespace</td><td><code>(repo_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status, repo_tag)</code></td></tr>
-<tr><td>codespace_operation</td><td><code>(manager_id, status, type)</code></td></tr>
-<tr><td>codespace_operation</td><td><code>(codespace_id)</code></td></tr>
 </tbody></table>
 </div>
 <h2 id="本地-cache"><a class="header" href="#本地-cache">本地 Cache</a></h2>
@@ -322,11 +307,11 @@
 <pre><code class="language-text">codespace_log/
   {manager_id}/
     {codespace_uuid}/
-      {operation_id}.log
+      log
 </code></pre>
 <p>规则：</p>
 <ul>
-<li>append-only</li>
+<li>append-only，单文件连续追加</li>
 <li>每条存储日志都是已脱敏单行</li>
 <li>每行包含 timestamp 和 message</li>
 <li>message 内部不允许真实换行</li>
@@ -334,17 +319,8 @@
 <li>delete 成功后删除 codespace 日志</li>
 <li><code>error</code> 日志保留到用户 delete 或 failed cleanup</li>
 </ul>
-<p>日志文件以 <code>operation_id</code> 命名，因为 Gitea 只保存 lifecycle operation 执行期日志。日志元数据归属 <code>codespace_operation</code>，running 期间没有未完成 operation 时不追加 Gitea operation log。</p>
-<p>operation 日志元数据：</p>
-<div class="table-wrapper"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>log_filename</code></td><td>日志文件名</td></tr>
-<tr><td><code>log_line_count</code></td><td>日志行数</td></tr>
-<tr><td><code>log_size</code></td><td>日志大小</td></tr>
-<tr><td><code>log_indexes</code></td><td>行号到 byte offset 索引（LONGBLOB，varint <code>[]int64</code>）</td></tr>
-<tr><td><code>log_in_storage</code></td><td>日志存储位置（DBFS 或对象存储）</td></tr>
-<tr><td><code>log_expired</code></td><td>日志是否过期</td></tr>
-</tbody></table>
-</div>
+<p>日志存储在 DBFS 单文件中，<code>codespace</code> 行保存当前日志元数据。<code>operation_status == running</code> 时允许追加日志。</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">

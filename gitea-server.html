@@ -181,9 +181,8 @@ POST /{owner}/{repo}/codespace
 <div class="table-wrapper"><table><thead><tr><th>参数</th><th>说明</th></tr></thead><tbody>
 <tr><td><code>repo_id</code></td><td>仓库 ID</td></tr>
 <tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td></tr>
-<tr><td><code>ref_name</code></td><td>ref 名称</td></tr>
+<tr><td><code>ref_name</code></td><td>branch → 分支名；tag → 标签名；commit → commit SHA；pull → PR ref 路径（如 <code>refs/pull/42/head</code>）</td></tr>
 <tr><td><code>commit_sha</code></td><td>commit SHA</td></tr>
-<tr><td><code>pull_id</code></td><td>PR ID</td></tr>
 </tbody></table>
 </div>
 <h3 id="用户-codespace-列表页"><a class="header" href="#用户-codespace-列表页">用户 Codespace 列表页</a></h3>
@@ -296,7 +295,6 @@ DELETE /codespace/{uuid}
 <li><code>ref_type</code></li>
 <li><code>ref_name</code></li>
 <li><code>commit_sha</code></li>
-<li><code>pull_id</code></li>
 <li><code>manager_id</code></li>
 <li><code>manager_display_name</code></li>
 <li><code>manager_online</code></li>
@@ -332,12 +330,12 @@ DELETE /codespace/{uuid}
 <pre><code class="language-text">x-codespace-manager-id: &lt;manager id&gt;
 x-codespace-manager-secret: &lt;manager secret&gt;
 </code></pre>
-<p>只有 <code>RegisterManager</code> 不使用 Manager header。它使用一次性 registration secret 认证。</p>
+<p>只有 <code>RegisterManager</code> 不使用 Manager header。它使用 registration token 认证。</p>
 <p>完整 proto 定义和消息结构见 <a href="rpc-spec.html">RPC 接口定义</a>。</p>
 <h3 id="registermanager"><a class="header" href="#registermanager">RegisterManager</a></h3>
 <ul>
-<li>将一次性 registration secret 兑换为 Manager identity 和 manager secret。</li>
-<li>消费 registration secret。</li>
+<li>将 registration token 兑换为 Manager identity 和 manager secret。</li>
+<li>校验 <code>is_active=true</code>。</li>
 <li>只返回一次明文 manager secret。</li>
 </ul>
 <h3 id="declaremanager"><a class="header" href="#declaremanager">DeclareManager</a></h3>
@@ -390,7 +388,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>更新 progress/stage。</li>
 <li>写入终态结果 <code>done|failed</code>。</li>
 <li>触发 Gitea 服务层同步执行 <a href="glossary.html#state-finalization">State Finalization</a>。</li>
-<li>匹配 <code>operation.id</code>、<code>operation.manager_id</code> 和 <code>codespace.active_operation_id</code>。</li>
+<li>校验 <code>codespace.operation_status == running &amp;&amp; codespace.manager_id == caller</code>。</li>
 <li>operation 已进入 <code>done|failed</code> 后终态不可再改变。</li>
 <li>重复提交相同终态可以幂等返回当前结果，但不重复执行 State Finalization。</li>
 <li>lease 过期后拒绝 progress 和 lease update。</li>
@@ -404,10 +402,8 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <ul>
 <li>按 offset 追加已脱敏日志。</li>
 <li>拒绝日志空洞。</li>
-<li>要求匹配 <code>operation_id / codespace_uuid</code>。</li>
-<li><code>operation_id</code> 始终存在，不允许为空。</li>
-<li>匹配 <code>operation.id</code>、<code>operation.manager_id</code> 和 <code>codespace.active_operation_id</code>。</li>
-<li>只允许 <code>operation.status=queued|running</code> 时追加日志。</li>
+<li>校验 <code>codespace.operation_status == running &amp;&amp; codespace.manager_id == caller</code>。</li>
+<li>只允许 <code>codespace.operation_status in (queued,running)</code> 时追加日志。</li>
 <li>operation 进入 <code>done|failed</code> 后不允许继续追加日志。</li>
 </ul>
 <h3 id="reportruntimemetadata"><a class="header" href="#reportruntimemetadata">ReportRuntimeMetadata</a></h3>
@@ -417,7 +413,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>不写主状态。</li>
 <li>校验调用方 Manager 已通过认证。</li>
 <li>校验 <code>codespace.manager_id == caller.manager_id</code>。</li>
-<li>校验 <code>caller operation_id == codespace.active_operation_id</code>，不匹配则拒绝为 stale。</li>
+<li>校验 <code>codespace.status in (booting,running,stopping,resuming) &amp;&amp; codespace.manager_id == caller</code>，不匹配则拒绝为 stale。</li>
 <li>只接受 <code>booting|running|resuming|stopping</code> 状态写入。</li>
 <li><code>queued|stopped|deleting|error</code> 拒绝写入 Runtime Metadata。</li>
 <li>stale 上报返回 stale，不写 cache，不改主状态。</li>
@@ -494,15 +490,11 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>Manager 重启后上报本地 Runtime Instance 集合。</li>
 <li>Gitea 检测 <a href="glossary.html#state-divergence">State Divergence</a>，并可返回 <a href="glossary.html#manager-instruction">Manager Instruction</a> <code>cleanup_local_runtime</code>。</li>
 </ul>
-<p>所有 operation-bound RPC 都携带：</p>
-<pre><code class="language-text">operation_id
-codespace_uuid
-</code></pre>
+<p>所有 operation-bound RPC 都携带 <code>codespace_uuid</code>，Gitea 通过 <code>codespace.operation_status</code> 和 <code>codespace.manager_id</code> 完成校验。</p>
 <p><a href="glossary.html#stale-report">Stale Report</a> 不改变当前状态。</p>
 <h3 id="operation-payload"><a class="header" href="#operation-payload">Operation Payload</a></h3>
 <p><code>FetchOperation</code> 返回给 Manager 的 operation payload 字段：</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>适用类型</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>operation_id</code></td><td>全部</td><td>Operation ID</td></tr>
 <tr><td><code>operation_type</code></td><td>全部</td><td><code>create</code>/<code>resume</code>/<code>stop</code>/<code>delete</code></td></tr>
 <tr><td><code>codespace_uuid</code></td><td>全部</td><td>Codespace UUID</td></tr>
 <tr><td><code>lease_deadline_unix</code></td><td>全部</td><td>Lease 截止时间</td></tr>
@@ -515,9 +507,8 @@ codespace_uuid
 <tr><td><code>head_repo_web_url</code></td><td>create/resume</td><td>PR head 仓库 Web URL</td></tr>
 <tr><td><code>start_ref</code></td><td>create/resume</td><td>Manager fetch/checkout 的 ref 提示</td></tr>
 <tr><td><code>ref_type</code></td><td>create/resume</td><td><code>branch</code>/<code>tag</code>/<code>commit</code>/<code>pull</code></td></tr>
-<tr><td><code>ref_name</code></td><td>create/resume</td><td>ref 名称</td></tr>
+<tr><td><code>ref_name</code></td><td>create/resume</td><td><code>branch</code> → 分支名；<code>tag</code> → 标签名；<code>commit</code> → commit SHA；<code>pull</code> → PR ref 路径</td></tr>
 <tr><td><code>commit_sha</code></td><td>create/resume</td><td>锁定 commit SHA</td></tr>
-<tr><td><code>pull_id</code></td><td>create/resume</td><td>PR ID</td></tr>
 </tbody></table>
 </div>
 <p>规则：</p>
@@ -625,7 +616,7 @@ ttl = OPEN_TOKEN_EXPIRE
 <li>校验过期时间。</li>
 <li>校验调用方 Manager 身份等于 <code>manager_id</code>。</li>
 <li>重新读取 codespace。</li>
-<li>校验 codespace 当前为 <code>running</code>，且 <code>active_operation_id</code> 匹配。</li>
+<li>校验 codespace 当前为 <code>running</code>。</li>
 <li>校验用户仍具备 Interactive Access。</li>
 <li>校验 Endpoint 仍存在于当前 Runtime Metadata。</li>
 <li>校验 Manager 仍在线。</li>
@@ -644,11 +635,12 @@ manager_id
 </blockquote>
 <h2 id="cron-任务"><a class="header" href="#cron-任务">Cron 任务</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>任务</th><th>默认调度</th><th>职责</th></tr></thead><tbody>
-<tr><td><code>reconcile_codespace_operations</code></td><td><code>@every 1m</code></td><td>处理中间态超时、Manager offline timeout、stale operation、token 吊销和状态分歧</td></tr>
-<tr><td><code>cleanup_failed_codespaces</code></td><td><code>@daily</code></td><td>清理长期保留的 <code>error</code> 记录和日志；清理过期或已消费且超过保留期的 registration secret</td></tr>
-<tr><td><code>cleanup_codespace_logs</code></td><td><code>@daily</code></td><td>清理已完成 operation 的过期日志</td></tr>
+<tr><td><code>reconcile_codespace_states</code></td><td><code>@every 1m</code></td><td>检查中间态（booting/stopping/resuming/deleting）的 <code>operation_deadline_unix</code> 超时、Manager offline timeout、stale runtime metadata，推进到 error 或吊销 token</td></tr>
+<tr><td><code>cleanup_failed_codespaces</code></td><td><code>@daily</code></td><td>清理超过保留期的 <code>error</code> 状态 codespace 记录和日志；清理超过保留期的 inactive registration token</td></tr>
+<tr><td><code>cleanup_codespace_logs</code></td><td><code>@daily</code></td><td>清理超过 <code>LOG_RETENTION_DAYS</code> 的已完成 operation 日志文件</td></tr>
 </tbody></table>
 </div>
+<p><code>reconcile_codespace_states</code> 定时扫描中间态 codespace，处理 <code>operation_deadline_unix</code> 超时和 Manager 离线导致的停滞，防止 codespace 永久卡死在中间态。<code>cleanup_failed_codespaces</code> 和 <code>cleanup_codespace_logs</code> 分别处理数据生命周期，避免无效记录和日志长期堆积。</p>
 <h2 id="配置"><a class="header" href="#配置">配置</a></h2>
 <p>Gitea：</p>
 <pre><code class="language-ini">[codespace]
@@ -665,9 +657,8 @@ OPEN_TOKEN_EXPIRE = 60s
 LOG_MAX_LINE_SIZE = 64KiB
 LOG_RETENTION_DAYS = 365
 FAILED_RETENTION_DAYS = 365
-REGISTRATION_SECRET_EXPIRE = 24h
 
-[cron.reconcile_codespace_operations]
+[cron.reconcile_codespace_states]
 ENABLED = true
 RUN_AT_START = true
 SCHEDULE = @every 1m
@@ -687,8 +678,6 @@ SCHEDULE = @daily
 <li><code>OPEN_TOKEN_EXPIRE</code> 也是 <a href="glossary.html#gateway-open-token">Gateway Open Token</a> 的 Gitea cache TTL。</li>
 <li>SSH 认证限流与退避属于 Gateway 配置，不属于 Gitea 配置。</li>
 <li><code>OPERATION_LEASE_TIMEOUT</code> 是 Manager claim/续租 <a href="glossary.html#operation">Operation</a> 的 lease 时长。</li>
-<li><code>REGISTRATION_SECRET_EXPIRE</code> 是 registration secret 的有效期。</li>
-<li>registration secret 清理由 <code>cleanup_failed_codespaces</code> 处理。</li>
 </ul>
 <p>Manager 本地配置由 Manager 自己管理，例如：</p>
 <pre><code class="language-text">/etc/gitea-codespace/manager.yaml
