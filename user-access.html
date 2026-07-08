@@ -241,78 +241,82 @@ DELETE /codespace/{uuid}
 <li>repository code unit 可读性（<code>CanRead(unit.Code)</code>）</li>
 <li>archived、mirror、empty、being migrated、pending transfer、broken 等 repository 状态</li>
 </ul>
-<p>Create 要求：</p>
+<h3 id="create-要求"><a class="header" href="#create-要求">Create 要求</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>条件</th><th>说明</th></tr></thead><tbody>
+<tr><td>登录</td><td>当前用户已登录</td></tr>
+<tr><td>登录限制</td><td>满足 Gitea 登录限制（<code>is_active</code>、<code>prohibit_login</code>、<code>must_change_password</code>、站点强制 2FA）</td></tr>
+<tr><td>代码读取</td><td>拥有 repository code-read 权限（<code>CanRead(unit.Code)</code>）</td></tr>
+<tr><td>仓库状态</td><td>不处于 archived、migrating、pending transfer、broken、empty 或无法解析目标 ref/commit</td></tr>
+</tbody></table>
+</div>
+<h3 id="interactive-access-要求"><a class="header" href="#interactive-access-要求">Interactive Access 要求</a></h3>
+<p>适用于 <code>open</code>、SSH、<code>resume</code>：</p>
+<div class="table-wrapper"><table><thead><tr><th>条件</th><th>说明</th></tr></thead><tbody>
+<tr><td>身份</td><td>仅 codespace 创建用户本人</td></tr>
+<tr><td>登录限制</td><td>创建用户当前仍满足 Gitea 登录限制</td></tr>
+<tr><td>代码读取</td><td>创建用户当前仍有 repository code-read 权限</td></tr>
+<tr><td>仓库状态</td><td>仓库当前状态允许交互访问</td></tr>
+<tr><td>codespace 状态</td><td>codespace 与 Manager 状态允许该动作</td></tr>
+<tr><td>Endpoint</td><td>open 时 <a href="glossary.html#endpoint">Endpoint</a> metadata 必须存在</td></tr>
+</tbody></table>
+</div>
+<h3 id="administrative-permission"><a class="header" href="#administrative-permission">Administrative Permission</a></h3>
+<p>适用于查看最小信息、日志、stop、delete：</p>
+<div class="table-wrapper"><table><thead><tr><th>角色</th><th>权限范围</th></tr></thead><tbody>
+<tr><td>创建用户本人</td><td>始终拥有，除非已被物理删除</td></tr>
+<tr><td>组织管理员</td><td>组织仓库下额外拥有（<code>IsOrganizationAdmin(ctx, orgID, userID)</code> 判定）</td></tr>
+<tr><td>普通协作者/repo 管理员</td><td>不获得他人 codespace 权限</td></tr>
+<tr><td>组织管理员限制</td><td>不能进入其他用户 workspace</td></tr>
+</tbody></table>
+</div>
+<p>管理权限不要求创建用户当前仍具备 repo code-read。</p>
+<h3 id="个人仓库与组织仓库"><a class="header" href="#个人仓库与组织仓库">个人仓库与组织仓库</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>场景</th><th>规则</th></tr></thead><tbody>
+<tr><td>个人仓库</td><td>不存在 owner 代理管理他人 codespace；创建用户被删除后只保留后台清理和日志保留</td></tr>
+<tr><td>组织仓库</td><td>创建用户失去 repo 访问、被禁用或被删除后，组织管理员仍可 stop/delete 和查看日志/最小信息</td></tr>
+</tbody></table>
+</div>
+<h3 id="minimal-info"><a class="header" href="#minimal-info">Minimal Info</a></h3>
+<p>只允许返回：</p>
 <ul>
-<li>当前用户已登录。</li>
-<li>当前用户满足 Gitea 登录限制。</li>
-<li>当前用户拥有 repository code-read 权限。</li>
-<li>repository code unit 可读。</li>
-<li>repository 不处于 archived、migrating、pending transfer、broken、empty 或无法解析目标 ref/commit 的状态。</li>
+<li><code>uuid</code></li>
+<li><code>status</code></li>
+<li><code>status_message</code></li>
+<li><code>created_unix</code></li>
+<li><code>updated_unix</code></li>
+<li><code>stopped_unix</code></li>
+<li><code>creator_id</code></li>
+<li><code>creator_display_name</code></li>
+<li><code>creator_deleted</code></li>
+<li><code>repo_id</code></li>
+<li><code>repo_display_name</code></li>
+<li><code>repo_deleted</code></li>
+<li><code>ref_type</code></li>
+<li><code>ref_name</code></li>
+<li><code>commit_sha</code></li>
+<li><code>pull_id</code></li>
+<li><code>manager_id</code></li>
+<li><code>manager_display_name</code></li>
+<li><code>manager_online</code></li>
+<li><code>log_line_count</code></li>
+<li><code>log_size</code></li>
+<li><code>last_log_unix</code></li>
+<li><code>log_expired</code></li>
+<li><code>allowed_actions</code></li>
 </ul>
-<p>Interactive Access（<code>open</code>、SSH、<code>resume</code>）要求：</p>
+<p>禁止返回：</p>
 <ul>
-<li>仅 codespace 创建用户本人。</li>
-<li>创建用户当前仍满足 Gitea 登录限制。</li>
-<li>创建用户当前仍有 repository code-read 权限。</li>
-<li>repository 当前状态允许交互访问。</li>
-<li>codespace 与 Manager 状态允许该动作。</li>
-<li>open 时 Endpoint metadata 必须存在。</li>
+<li><code>gitea_token_id</code></li>
+<li>Manager Secret</li>
+<li>Runtime Token</li>
+<li>Gateway Open Token</li>
+<li><code>token hash / salt</code></li>
+<li><code>internal_ssh</code></li>
+<li>Endpoint upstream</li>
+<li>完整 <code>meta_json</code></li>
+<li>日志正文</li>
+<li>Runtime Instance 内部 host / port / user</li>
 </ul>
-<p>Administrative Permission（查看最小信息、日志、stop、delete）：</p>
-<ul>
-<li>创建用户本人始终拥有管理权限，除非创建用户已被物理删除。</li>
-<li>组织仓库下，组织管理员额外拥有管理权限（由 <code>IsOrganizationAdmin(ctx, orgID, userID)</code> 判定，覆盖 Owners 团队和具备 admin 权限的团队成员）。</li>
-<li>管理权限不要求创建用户当前仍具备 repo code-read。</li>
-<li>组织管理员不能进入其他用户 workspace。</li>
-<li>普通协作者和普通 repo 管理员不会因为 repo 权限获得他人 codespace 权限。</li>
-</ul>
-<p>个人仓库：</p>
-<ul>
-<li>不存在 owner 代理管理他人 codespace。</li>
-<li>创建用户被删除后，只保留后台清理和日志保留。</li>
-</ul>
-<p>组织仓库：</p>
-<ul>
-<li>创建用户失去 repo 访问、被禁用或被删除后，组织管理员仍可 stop/delete 和查看日志/最小信息。</li>
-</ul>
-<p>Minimal info 只允许返回：</p>
-<pre><code class="language-text">uuid
-status
-status_message
-created_unix
-updated_unix
-stopped_unix
-creator_id
-creator_display_name
-creator_deleted
-repo_id
-repo_display_name
-repo_deleted
-ref_type
-ref_name
-commit_sha
-pull_id
-manager_id
-manager_display_name
-manager_online
-log_line_count
-log_size
-last_log_unix
-log_expired
-allowed_actions
-</code></pre>
-<p>Minimal info 禁止返回：</p>
-<pre><code class="language-text">gitea_token_id
-Manager Secret
-Runtime Token
-Gateway Open Token
-token hash / salt
-internal_ssh
-Endpoint upstream
-完整 meta_json
-日志正文
-Runtime Instance 内部 host / port / user
-</code></pre>
 <h2 id="endpoint-打开流程"><a class="header" href="#endpoint-打开流程">Endpoint 打开流程</a></h2>
 <p><code>POST /codespace/{uuid}/open</code> 打开一个 Runtime Metadata Endpoint。</p>
 <p>输入：</p>
@@ -503,17 +507,19 @@ failure_category
 failure_retryable
 </code></pre>
 <p>失败分类：</p>
-<pre><code class="language-text">invalid_credentials
-login_restricted
-totp_required_or_invalid
-codespace_not_found
-codespace_not_running
-ssh_disabled
-repo_access_lost
-manager_mismatch
-permission_denied
-internal_error
-</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>分类</th><th>含义</th></tr></thead><tbody>
+<tr><td><code>invalid_credentials</code></td><td>密码或公钥无效</td></tr>
+<tr><td><code>login_restricted</code></td><td>用户登录受限</td></tr>
+<tr><td><code>totp_required_or_invalid</code></td><td>需要 TOTP 或 TOTP 无效</td></tr>
+<tr><td><code>codespace_not_found</code></td><td>codespace 不存在</td></tr>
+<tr><td><code>codespace_not_running</code></td><td>codespace 未运行</td></tr>
+<tr><td><code>ssh_disabled</code></td><td>SSH 已禁用</td></tr>
+<tr><td><code>repo_access_lost</code></td><td>仓库访问权限丢失</td></tr>
+<tr><td><code>manager_mismatch</code></td><td>Manager 不匹配</td></tr>
+<tr><td><code>permission_denied</code></td><td>权限拒绝</td></tr>
+<tr><td><code>internal_error</code></td><td>内部错误</td></tr>
+</tbody></table>
+</div>
 <p>Gitea 校验：</p>
 <ul>
 <li><code>ssh_user</code> 映射到有效 codespace。</li>
