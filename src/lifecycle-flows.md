@@ -78,20 +78,22 @@ tag: default
 ### Manager 匹配
 
 - create 记录固定 `repo_tag`。
-- enabled Manager 参与 tag 匹配。
-- 没有 enabled Manager 支持 `repo_tag` 时，create 进入 `error` 并写入无可用 tag 匹配日志。
+- enabled Manager 按 owner scope 和 tag 参与匹配。
+- global Manager 参与所有 owner scope 的匹配。
+- owner scoped Manager 参与相同 repository owner 的匹配；owner 可以是个人用户或组织，组织 ID 使用 Gitea `user.id`。
+- 没有 enabled Manager 同时满足 owner scope 和 `repo_tag` 时，create 进入 `error` 并写入无可用 Manager 匹配日志。
 - create 创建时不绑定具体 Manager。
 - 具体 `manager_id` 只在某个 Manager 通过 `FetchOperation` 成功领取 create [Operation](glossary.md#operation) 时写入。
 - 有匹配 Manager 但全部离线、满载、不调用 `FetchOperation`，或调用 `FetchOperation` 但声明不可接收 create 时，create 保持 `queued`（参见 [Manager Capacity](glossary.md#manager-capacity)）。
 
-使用统一 Manager 池，repository 只需要通过 tag 描述运行侧能力需求。Manager 不按 owner/org/repo scope 分组，避免 repository、owner/org 删除流程与 Manager 生命周期互相耦合。
+owner scope 表达 Manager 管理边界，tag 表达运行能力需求。global Manager 用于站点级容量，owner scoped Manager 用于个人或组织自有容量；两者共同进入 create 匹配，可以让站点管理员和 owner 管理员在同一套 claim 机制下扩展容量。
 
 Create operation claim：
 
 - claim 前：`codespace.manager_id=0`，`codespace.operation_status=queued`。
 - `FetchOperation` 原子 claim。
 - claim 同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_deadline_unix`，并将 codespace 从 `queued` 推进到 `booting`。
-- claim 条件包含 caller Manager enabled、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=queued`。
+- claim 条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=queued`。
 - 本次 `FetchOperation` 的 `capacity_available` 大于 0 时才 claim create/resume。
 - Gitea 不在 claim、`done|failed` 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
 - claim 成功后，operation 归属保持为领取它的 Manager。
