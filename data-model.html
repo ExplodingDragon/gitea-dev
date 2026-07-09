@@ -171,6 +171,7 @@
 <tr><td><code>commit_sha</code></td><td>锁定 commit SHA</td><td></td></tr>
 <tr><td><code>manager_id</code></td><td>绑定 Manager ID</td><td>create 被领取前为 0，领取后固定</td></tr>
 <tr><td><code>status</code></td><td>当前主状态</td><td></td></tr>
+<tr><td><code>operation_id</code></td><td>当前 operation 标识</td><td>每次 create/resume/stop/delete 创建新的标识，用于 Manager 上报归属校验</td></tr>
 <tr><td><code>operation_type</code></td><td><code>create</code> / <code>resume</code> / <code>stop</code> / <code>delete</code></td><td>当前 operation 类型</td></tr>
 <tr><td><code>operation_status</code></td><td><code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code></td><td><code>running</code> 表示有正在执行的操作；stale detection、RPC 匹配和并发保护都以此为准</td></tr>
 <tr><td><code>operation_deadline_unix</code></td><td>lease 截止时间戳</td><td></td></tr>
@@ -199,10 +200,11 @@
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
 <tr><td><code>name</code></td><td>名称</td><td></td></tr>
+<tr><td><code>owner_id</code></td><td>Manager owner scope</td><td><code>0</code> 表示 global；非 0 表示 Gitea owner 的 <code>user.id</code>，owner 可以是个人用户或组织</td></tr>
 <tr><td><code>admin_state</code></td><td><code>enabled</code> / <code>disabled</code></td><td>管理员控制的管理态：disabled Manager 保留已有任务的 stop/delete 和状态分歧上报能力；在线态由 <code>last_online_unix</code> 和 timeout 推导</td></tr>
 <tr><td><code>secret_hash</code></td><td>manager secret 哈希</td><td></td></tr>
 <tr><td><code>secret_salt</code></td><td>盐值</td><td></td></tr>
-<tr><td><code>tags_json</code></td><td>支持的 tags JSON</td><td>Manager 不按 owner/org/repo 分组</td></tr>
+<tr><td><code>tags_json</code></td><td>支持的 tags JSON</td><td>Manager owner scope 由 <code>owner_id</code> 表达，运行能力由 tags 表达</td></tr>
 <tr><td><code>runtime_state</code></td><td><code>online</code> / <code>recovering</code> / <code>offline</code></td><td>Manager 维护恢复运行态；不等同于 codespace 主状态</td></tr>
 <tr><td><code>last_online_unix</code></td><td>最近在线时间戳</td><td></td></tr>
 <tr><td><code>last_recovering_unix</code></td><td>最近进入 recovering 时间戳</td><td>Manager 启动恢复、Runtime scan 或 metadata rebuild 开始时更新</td></tr>
@@ -216,15 +218,15 @@
 <h3 id="codespace_manager_token"><a class="header" href="#codespace_manager_token">codespace_manager_token</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>自增主键</td><td></td></tr>
-<tr><td><code>token</code></td><td>明文 Registration Token（唯一索引）</td><td>注册凭据，创建或重置时展示一次</td></tr>
-<tr><td><code>owner_id</code></td><td>创建者/拥有者 user ID</td><td>0=全局，对齐 <code>action_runner_token</code> 的 <code>OwnerID</code></td></tr>
+<tr><td><code>token</code></td><td>明文 Registration Token（唯一索引）</td><td>注册入口凭据，设置页展示给管理员</td></tr>
+<tr><td><code>owner_id</code></td><td>Registration Token owner scope</td><td><code>0</code> 表示 global；非 0 表示 Gitea owner 的 <code>user.id</code>，owner 可以是个人用户或组织</td></tr>
 <tr><td><code>is_active</code></td><td>是否 active</td><td>同一时间只能有一个 active token</td></tr>
 <tr><td><code>created</code></td><td>创建时间戳</td><td>xorm auto</td></tr>
 <tr><td><code>updated</code></td><td>更新时间戳</td><td>xorm auto</td></tr>
 <tr><td><code>deleted</code></td><td>软删除时间戳</td><td>xorm auto</td></tr>
 </tbody></table>
 </div>
-<p>设计与 <code>action_runner_token</code> 一致：明文存储，唯一索引。token 可复用，支持多个 Manager 用同一 token 注册。重置时旧 token <code>is_active=false</code>，不影响已注册 Manager 的 <code>manager_secret</code>。</p>
+<p>设计与 <code>action_runner_token</code> 一致：明文存储，唯一索引。token 可复用，支持多个 Manager 用同一 token 注册。<code>owner_id</code> 与 Gitea repository owner 语义一致，组织是 <code>user</code> 表中 <code>type=organization</code> 的 owner 记录。</p>
 <h2 id="索引"><a class="header" href="#索引">索引</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
 <tr><td>codespace</td><td><code>uuid</code>（唯一）</td></tr>
@@ -232,6 +234,10 @@
 <tr><td>codespace</td><td><code>(repo_id, status)</code>，仅覆盖 repository 存在的记录</td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(manager_id, status, repo_tag)</code></td></tr>
+<tr><td>codespace_manager</td><td><code>(owner_id, admin_state)</code></td></tr>
+<tr><td>codespace_manager</td><td><code>(owner_id, runtime_state)</code></td></tr>
+<tr><td>codespace_manager_token</td><td><code>token</code>（唯一）</td></tr>
+<tr><td>codespace_manager_token</td><td><code>(owner_id, is_active)</code></td></tr>
 </tbody></table>
 </div>
 <h2 id="本地-cache"><a class="header" href="#本地-cache">本地 Cache</a></h2>

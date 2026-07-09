@@ -222,19 +222,21 @@
 <h3 id="manager-匹配"><a class="header" href="#manager-匹配">Manager 匹配</a></h3>
 <ul>
 <li>create 记录固定 <code>repo_tag</code>。</li>
-<li>enabled Manager 参与 tag 匹配。</li>
-<li>没有 enabled Manager 支持 <code>repo_tag</code> 时，create 进入 <code>error</code> 并写入无可用 tag 匹配日志。</li>
+<li>enabled Manager 按 owner scope 和 tag 参与匹配。</li>
+<li>global Manager 参与所有 owner scope 的匹配。</li>
+<li>owner scoped Manager 参与相同 repository owner 的匹配；owner 可以是个人用户或组织，组织 ID 使用 Gitea <code>user.id</code>。</li>
+<li>没有 enabled Manager 同时满足 owner scope 和 <code>repo_tag</code> 时，create 进入 <code>error</code> 并写入无可用 Manager 匹配日志。</li>
 <li>create 创建时不绑定具体 Manager。</li>
 <li>具体 <code>manager_id</code> 只在某个 Manager 通过 <code>FetchOperation</code> 成功领取 create <a href="glossary.html#operation">Operation</a> 时写入。</li>
 <li>有匹配 Manager 但全部离线、满载、不调用 <code>FetchOperation</code>，或调用 <code>FetchOperation</code> 但声明不可接收 create 时，create 保持 <code>queued</code>（参见 <a href="glossary.html#manager-capacity">Manager Capacity</a>）。</li>
 </ul>
-<p>使用统一 Manager 池，repository 只需要通过 tag 描述运行侧能力需求。Manager 不按 owner/org/repo scope 分组，避免 repository、owner/org 删除流程与 Manager 生命周期互相耦合。</p>
+<p>owner scope 表达 Manager 管理边界，tag 表达运行能力需求。global Manager 用于站点级容量，owner scoped Manager 用于个人或组织自有容量；两者共同进入 create 匹配，可以让站点管理员和 owner 管理员在同一套 claim 机制下扩展容量。</p>
 <p>Create operation claim：</p>
 <ul>
 <li>claim 前：<code>codespace.manager_id=0</code>，<code>codespace.operation_status=queued</code>。</li>
 <li><code>FetchOperation</code> 原子 claim。</li>
 <li>claim 同时写入 <code>codespace.manager_id</code>、<code>codespace.operation_status=running</code>、<code>codespace.operation_deadline_unix</code>，并将 codespace 从 <code>queued</code> 推进到 <code>booting</code>。</li>
-<li>claim 条件包含 caller Manager enabled、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>codespace.manager_id=0</code>、<code>codespace.status=queued</code>。</li>
+<li>claim 条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>codespace.manager_id=0</code>、<code>codespace.status=queued</code>。</li>
 <li>本次 <code>FetchOperation</code> 的 <code>capacity_available</code> 大于 0 时才 claim create/resume。</li>
 <li>Gitea 不在 claim、<code>done|failed</code> 或 timeout 时修改 <code>last_capacity_total / last_capacity_available</code>。</li>
 <li>claim 成功后，operation 归属保持为领取它的 Manager。</li>

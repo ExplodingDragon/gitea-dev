@@ -164,7 +164,7 @@ package codespace.v1;
 
 // ManagerService is implemented by Gitea and called by Codespace Manager.
 service ManagerService {
-  // RegisterManager exchanges a one-time registration token for a Manager identity.
+  // RegisterManager exchanges an active registration token for a Manager identity.
   rpc RegisterManager(RegisterManagerRequest) returns (RegisterManagerResponse);
 
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
@@ -198,7 +198,7 @@ service ManagerService {
 // --- RegisterManager ---
 
 message RegisterManagerRequest {
-  // The one-time registration token issued by the Gitea admin.
+  // The registration token shown in the Codespace manager settings page.
   string registration_token = 1;
 }
 
@@ -217,6 +217,10 @@ message DeclareManagerRequest {
   repeated string tags = 3;
   // Optional diagnostic metadata.
   map&lt;string, string&gt; meta = 4;
+  string version = 5;
+  string name = 6;
+  // online | recovering
+  string manager_runtime_state = 7;
 }
 
 message DeclareManagerResponse {}
@@ -236,6 +240,7 @@ message FetchOperationResponse {
 }
 
 message OperationPayload {
+  string operation_id = 1;
   string operation_type = 2; // create | resume | stop | delete
   string codespace_uuid = 3;
   int64 lease_deadline_unix = 4;
@@ -258,6 +263,7 @@ message OperationPayload {
 
 message UpdateOperationRequest {
   string codespace_uuid = 1;
+  string operation_id = 2;
 
   // Optional: renew the lease.
   oneof result {
@@ -288,10 +294,11 @@ message UpdateOperationResponse {
 
 message UpdateLogRequest {
   string codespace_uuid = 1;
+  string operation_id = 2;
   // Byte offset within the log file.
-  int64 offset = 2;
+  int64 offset = 3;
   // Pre-sanitized log lines, each as a single-line string.
-  repeated string lines = 3;
+  repeated string lines = 4;
 }
 
 message UpdateLogResponse {}
@@ -313,8 +320,9 @@ message ReportRuntimeMetadataResponse {
 
 message RequestGiteaTokenRequest {
   string codespace_uuid = 1;
+  string operation_id = 2;
   // Must be "create" or "resume".
-  string operation_type = 2;
+  string operation_type = 3;
 }
 
 message RequestGiteaTokenResponse {
@@ -364,12 +372,17 @@ message VerifySSHPublicKeyResponse {
 // --- ReportInstances ---
 
 message ReportInstancesRequest {
+  string snapshot_id = 1;
+  bool snapshot_complete = 2;
   // Set of local Runtime Instance identifiers owned by this Manager.
-  repeated RuntimeInstanceRef instances = 1;
+  repeated RuntimeInstanceRef instances = 3;
 }
 
 message RuntimeInstanceRef {
   string codespace_uuid = 1;
+  string runtime_state = 2;
+  string observed_operation_id = 3;
+  int64 observed_unix = 4;
 }
 
 message ReportInstancesResponse {
@@ -381,6 +394,8 @@ message InstanceInstruction {
   string codespace_uuid = 1;
   // e.g. "cleanup_local_runtime".
   string manager_instruction = 2;
+  // e.g. "extra_runtime", "missing_runtime", "manager_mismatch".
+  string divergence_category = 3;
 }
 </code></pre>
 <h2 id="认证机制"><a class="header" href="#认证机制">认证机制</a></h2>
