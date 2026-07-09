@@ -157,21 +157,21 @@
                     <main>
                         <h1 id="维护与重启恢复"><a class="header" href="#维护与重启恢复">维护与重启恢复</a></h1>
 <h2 id="总体模型"><a class="header" href="#总体模型">总体模型</a></h2>
-<p>Gitea 重启和 Manager 重启都属于日常维护事件。重启会短暂影响本地 cache、worker、Gateway session、Runtime Metadata 或 Runtime 观测数据，codespace 主状态仍由 Gitea 数据库和 State Finalization 维护。</p>
+<p>Gitea 重启和 Manager 重启都属于日常维护事件。重启会短暂影响本地 cache、worker、Gateway session、Runtime Metadata 或 Runtime 上报数据，codespace 主状态仍由 Gitea 数据库和 State Finalization 维护。</p>
 <p>维护恢复使用三类数据：</p>
-<div class="table-wrapper"><table><thead><tr><th>类型</th><th>权威方</th><th>作用</th></tr></thead><tbody>
+<div class="table-wrapper"><table><thead><tr><th>类型</th><th>负责方</th><th>作用</th></tr></thead><tbody>
 <tr><td>Desired Action</td><td>Gitea</td><td>下发 <code>create/resume/stop/delete</code></td></tr>
 <tr><td>Main State</td><td>Gitea</td><td>保存 <code>queued/booting/running/stopping/stopped/resuming/deleting/error</code></td></tr>
-<tr><td>Runtime Observation</td><td>Manager</td><td>上报本地 Runtime 是否存在、metadata、执行结果</td></tr>
+<tr><td>Runtime Report</td><td>Manager</td><td>上报本地 Runtime 是否存在、metadata、执行结果</td></tr>
 </tbody></table>
 </div>
-<p>Gitea 数据库是生命周期权威，本地 cache 和 Manager inventory 是运行观测来源。维护期间先保持数据库主状态稳定，再通过 Manager 重新上报的事实恢复交互能力或收敛差异。</p>
+<p>生命周期状态以 Gitea 数据库为准，本地 cache 和 Manager inventory 只提供运行信息。维护期间先保持数据库主状态稳定，再根据 Manager 重新上报的信息恢复交互能力或处理差异。</p>
 <p>实现验收点：</p>
 <ul>
 <li>Gitea 重启后保留所有 codespace 主状态。</li>
 <li>Manager 重启后通过 <code>DeclareManager(recovering)</code> 进入恢复流程。</li>
 <li>Manager 上报的 Runtime inventory 作为 reconciliation 输入。</li>
-<li>Gitea 根据数据库状态返回 cleanup 或继续等待的收敛结果。</li>
+<li>Gitea 根据数据库状态返回 cleanup 或继续等待。</li>
 </ul>
 <h2 id="gitea-重启恢复"><a class="header" href="#gitea-重启恢复">Gitea 重启恢复</a></h2>
 <p>Gitea 重启后从数据库恢复：</p>
@@ -188,11 +188,11 @@ token binding
 <pre><code class="language-text">Gateway Open Token cache
 Runtime Metadata cache
 本机锁
-短期页面观测数据
+短期页面展示数据
 </code></pre>
 <p>启动后主状态保持：</p>
 <div class="table-wrapper"><table><thead><tr><th>主状态</th><th>恢复行为</th></tr></thead><tbody>
-<tr><td><code>queued</code></td><td>等待 Manager claim</td></tr>
+<tr><td><code>queued</code></td><td>等待 Manager 领取</td></tr>
 <tr><td><code>booting</code></td><td>等待当前 Manager 按 <code>operation_id</code> 继续上报</td></tr>
 <tr><td><code>running</code></td><td>等待 Manager 重建 Runtime Metadata</td></tr>
 <tr><td><code>stopping</code></td><td>等待当前 Manager 上报 stop 结果</td></tr>
@@ -202,7 +202,7 @@ Runtime Metadata cache
 <tr><td><code>error</code></td><td>保持 error</td></tr>
 </tbody></table>
 </div>
-<p>Gitea 本地 cache 只承载 open token、Runtime Metadata 和短期页面观测。进程重启后保留数据库状态，可以避免维护重启造成批量误失败；Runtime Metadata 由 Manager 重建，Gateway Open Token 由用户重新 open 生成。</p>
+<p>Gitea 本地 cache 只承载 open token、Runtime Metadata 和短期页面展示数据。进程重启后保留数据库状态，可以减少维护重启造成的批量误失败；Runtime Metadata 由 Manager 重建，Gateway Open Token 由用户重新 open 生成。</p>
 <p>实现验收点：</p>
 <ul>
 <li>Gitea 启动保留所有 codespace 主状态。</li>
@@ -215,8 +215,8 @@ Runtime Metadata cache
 <ol>
 <li><code>DeclareManager(manager_runtime_state=recovering)</code>。</li>
 <li>扫描本地 Runtime Instance。</li>
-<li>生成 Runtime inventory snapshot。</li>
-<li><code>ReportInstances</code> 上报 snapshot。</li>
+<li>生成 Runtime inventory 快照。</li>
+<li><code>ReportInstances</code> 上报快照。</li>
 <li>继续当前 <code>operation_id</code> 对应的本地 operation。</li>
 <li>重建 Runtime Metadata。</li>
 <li><code>DeclareManager(manager_runtime_state=online)</code>。</li>
@@ -225,7 +225,7 @@ Runtime Metadata cache
 <p><code>DeclareManagerRequest</code> 包含：</p>
 <pre><code class="language-text">manager_runtime_state = recovering | online
 </code></pre>
-<p>Manager 重启后先恢复已有 Runtime 事实，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回，尤其是正在 stop/resume 的 operation。</p>
+<p>Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回，尤其是正在 stop/resume 的 operation。</p>
 <p>实现验收点：</p>
 <ul>
 <li>recovering 状态写入 <code>codespace_manager.runtime_state</code>。</li>
@@ -263,16 +263,16 @@ missing = expected - reported
 <tr><td>已物理删除</td><td>无记录</td></tr>
 </tbody></table>
 </div>
-<p>数量差异来自 Gitea 期望集合与 Manager 本地集合不同。Gitea 用数据库主状态表达期望，Manager 用 snapshot 表达事实，最终由 Gitea 返回收敛指令。</p>
+<p>数量差异来自 Gitea 记录和 Manager 本地 Runtime 列表不同。Gitea 用数据库主状态判断哪些 Runtime 应该存在，Manager 用快照报告本地实际列表，最后由 Gitea 返回处理指令。</p>
 <p>实现验收点：</p>
 <ul>
 <li>Gitea 按 <code>manager_id</code> 查询 expected。</li>
-<li>Manager 上报完整 snapshot 后计算 extra/missing。</li>
+<li>Manager 上报完整快照后计算 extra/missing。</li>
 <li>差异分类写入审计日志或状态消息。</li>
-<li>reconciliation 使用差异证据推进后续动作。</li>
+<li>reconciliation 使用差异信息推进后续动作。</li>
 </ul>
-<h2 id="extra-runtime-收敛"><a class="header" href="#extra-runtime-收敛">Extra Runtime 收敛</a></h2>
-<p>extra runtime 表示 Manager 本地存在 Gitea 当前未期望存在的 Runtime。</p>
+<h2 id="extra-runtime-处理"><a class="header" href="#extra-runtime-处理">Extra Runtime 处理</a></h2>
+<p>extra runtime 表示 Manager 本地存在一条 Gitea 当前没有记录为应存在的 Runtime。</p>
 <div class="table-wrapper"><table><thead><tr><th>场景</th><th>Gitea 指令</th></tr></thead><tbody>
 <tr><td>Gitea 无 codespace 记录</td><td><code>cleanup_local_runtime</code></td></tr>
 <tr><td>codespace 已物理删除</td><td><code>cleanup_local_runtime</code></td></tr>
@@ -282,17 +282,17 @@ missing = expected - reported
 <tr><td>codespace 状态为 <code>queued</code></td><td><code>cleanup_local_runtime</code></td></tr>
 </tbody></table>
 </div>
-<p>Gitea 记录中没有当前 Manager 对该 Runtime 的生命周期所有权时，该 Runtime 属于运行侧残留资源。Gitea 返回 cleanup 指令，使 Manager 本地状态收敛到数据库权威状态。</p>
+<p>Gitea 记录中没有当前 Manager 对该 Runtime 的生命周期归属时，该 Runtime 属于运行侧残留资源。Gitea 返回 cleanup 指令，让 Manager 清理本地残留 Runtime。</p>
 <p>实现验收点：</p>
 <ul>
 <li>extra runtime 返回 cleanup instruction。</li>
 <li>extra runtime 保持 Gitea 主状态稳定。</li>
-<li>Manager 清理完成后下一次 snapshot 中该 Runtime 消失。</li>
+<li>Manager 清理完成后下一次快照中该 Runtime 消失。</li>
 <li>cleanup 过程写入 Manager 本地日志和 Gitea 差异审计信息。</li>
 </ul>
-<h2 id="missing-runtime-收敛"><a class="header" href="#missing-runtime-收敛">Missing Runtime 收敛</a></h2>
-<p>missing runtime 表示 Gitea 期望 Runtime 存在，但 Manager 完整 snapshot 中没有对应 Runtime。</p>
-<div class="table-wrapper"><table><thead><tr><th>Gitea 状态</th><th>收敛行为</th></tr></thead><tbody>
+<h2 id="missing-runtime-处理"><a class="header" href="#missing-runtime-处理">Missing Runtime 处理</a></h2>
+<p>missing runtime 表示 Gitea 记录中应该存在 Runtime，但 Manager 完整快照中没有对应 Runtime。</p>
+<div class="table-wrapper"><table><thead><tr><th>Gitea 状态</th><th>处理方式</th></tr></thead><tbody>
 <tr><td><code>booting</code></td><td>恢复窗口内等待当前 create 继续上报；窗口到期进入 <code>error</code></td></tr>
 <tr><td><code>running</code></td><td>记录 divergence，吊销 token，进入 <code>error</code></td></tr>
 <tr><td><code>stopping</code></td><td>当前 stop operation 可上报 done，进入 <code>stopped</code></td></tr>
@@ -302,17 +302,17 @@ missing = expected - reported
 <tr><td><code>stopped</code></td><td>保持 stopped</td></tr>
 </tbody></table>
 </div>
-<p>Runtime 缺失是运行侧事实。对于 stop/delete，缺失满足目标结果；对于 running/create/resume，缺失表示交互能力无法成立，需要由 Gitea 收敛到明确失败状态或等待恢复窗口内的继续上报。</p>
+<p>Runtime 缺失说明 Manager 本地没有对应实例。对于 stop/delete，缺失满足目标结果；对于 running/create/resume，缺失表示交互能力无法成立，需要由 Gitea 进入失败状态或等待恢复窗口内的继续上报。</p>
 <p>实现验收点：</p>
 <ul>
 <li>missing running 由 Gitea finalization 到 <code>error</code>。</li>
-<li>missing stopping 通过 stop done 收敛到 <code>stopped</code>。</li>
+<li>missing stopping 通过 stop done 进入 <code>stopped</code>。</li>
 <li>missing deleting 通过 delete done 完成物理删除。</li>
 <li>missing booting/resuming 使用恢复窗口吸收维护重启抖动。</li>
 </ul>
 <h2 id="stop-恢复"><a class="header" href="#stop-恢复">stop 恢复</a></h2>
 <p>Manager 重启后继续处理当前 stop operation。</p>
-<div class="table-wrapper"><table><thead><tr><th>Runtime 观测</th><th>Manager 行为</th></tr></thead><tbody>
+<div class="table-wrapper"><table><thead><tr><th>Runtime 状态</th><th>Manager 行为</th></tr></thead><tbody>
 <tr><td>Runtime 仍运行</td><td>继续 stop，完成后上报 done</td></tr>
 <tr><td>Runtime 已停止</td><td>上报 done</td></tr>
 <tr><td>Runtime 已不存在</td><td>上报 done</td></tr>
@@ -329,7 +329,7 @@ missing = expected - reported
 </ul>
 <h2 id="resume-恢复"><a class="header" href="#resume-恢复">resume 恢复</a></h2>
 <p>Manager 重启后继续处理当前 resume operation。</p>
-<div class="table-wrapper"><table><thead><tr><th>Runtime 观测</th><th>Manager 行为</th></tr></thead><tbody>
+<div class="table-wrapper"><table><thead><tr><th>Runtime 状态</th><th>Manager 行为</th></tr></thead><tbody>
 <tr><td>Runtime 已运行且 metadata 完整</td><td>先上报 Runtime Metadata，再上报 done</td></tr>
 <tr><td>Runtime 正在恢复</td><td>继续 resume 并上报 progress</td></tr>
 <tr><td>Runtime 仍停止</td><td>继续执行 resume</td></tr>
@@ -367,15 +367,15 @@ stale_operation
 metadata_missing
 snapshot_incomplete
 </code></pre>
-<p>维护重启期间，Gitea 给 Manager 时间重新上报完整事实；完整 snapshot 到达后，Gitea 按数据库主状态和当前 operation 收敛差异。这样既能吸收正常维护抖动，也能在真实差异出现时给出明确结果。</p>
+<p>维护重启期间，Gitea 给 Manager 时间重新上报完整运行信息；完整快照到达后，Gitea 按数据库主状态和当前 operation 处理差异。这样既能处理正常维护抖动，也能在真实差异出现时给出明确结果。</p>
 <p>实现验收点：</p>
 <ul>
 <li>recovery window 内保留当前主状态。</li>
 <li>有恢复证据时刷新 <code>operation_last_recovering_unix</code>。</li>
 <li>snapshot complete 后计算 expected/reported 差异。</li>
 <li>extra runtime 返回 cleanup。</li>
-<li>missing runtime 按当前主状态收敛。</li>
-<li>recovery deadline 到期后通过 State Finalization 推进明确结果。</li>
+<li>missing runtime 按当前主状态处理。</li>
+<li>recovery deadline 到期后通过 State Finalization 写入明确结果。</li>
 </ul>
 <h2 id="gateway-session-恢复"><a class="header" href="#gateway-session-恢复">Gateway Session 恢复</a></h2>
 <p>Gitea 重启后，已建立 Gateway session 等待下一次 revalidate。Open Token cache 丢失只影响未消费 token，用户重新从 Gitea open 可生成新的 token。</p>

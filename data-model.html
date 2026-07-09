@@ -173,10 +173,10 @@
 <tr><td><code>status</code></td><td>当前主状态</td><td></td></tr>
 <tr><td><code>operation_id</code></td><td>当前 operation 标识</td><td>每次 create/resume/stop/delete 创建新的标识，用于 Manager 上报归属校验</td></tr>
 <tr><td><code>operation_type</code></td><td><code>create</code> / <code>resume</code> / <code>stop</code> / <code>delete</code></td><td>当前 operation 类型</td></tr>
-<tr><td><code>operation_status</code></td><td><code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code></td><td><code>running</code> 表示有正在执行的操作；stale detection、RPC 匹配和并发保护都以此为准</td></tr>
+<tr><td><code>operation_status</code></td><td><code>queued</code> / <code>running</code> / <code>done</code> / <code>failed</code></td><td><code>running</code> 表示有正在执行的操作；过期上报识别、RPC 匹配和并发保护都以此为准</td></tr>
 <tr><td><code>operation_deadline_unix</code></td><td>lease 截止时间戳</td><td></td></tr>
 <tr><td><code>operation_recovery_deadline_unix</code></td><td>维护恢复截止时间戳</td><td>Gitea/Manager 重启或 Manager offline 后进入恢复窗口时写入；用于区分日常维护恢复和真实失败</td></tr>
-<tr><td><code>operation_last_recovering_unix</code></td><td>最近恢复观测时间戳</td><td>Manager 上报 recovering 或恢复 operation 时更新</td></tr>
+<tr><td><code>operation_last_recovering_unix</code></td><td>最近恢复上报时间戳</td><td>Manager 上报 recovering 或恢复 operation 时更新</td></tr>
 <tr><td><code>operation_finished_unix</code></td><td>完成时间戳</td><td></td></tr>
 <tr><td><code>operation_status_message</code></td><td>状态消息</td><td></td></tr>
 <tr><td><code>gitea_token_id</code></td><td>当前有效 Gitea access token ID</td><td>为空表示当前没有有效 token</td></tr>
@@ -248,11 +248,11 @@
 </ul>
 <p>规则：</p>
 <ul>
-<li>cache 只影响交互能力和页面展示，不影响主状态权威。</li>
-<li>主状态推进、权限闭环、删除闭环和 operation 超时闭环只依赖数据库。</li>
+<li>cache 只影响交互能力和页面展示，不影响主状态。</li>
+<li>主状态推进、权限判断、删除处理和 operation 超时处理只依赖数据库。</li>
 <li>一次性 token 校验通过本机锁串行化，使用 get → validate → delete 模式，cache 原生原子操作不是必需依赖。</li>
-<li>cache 内容都是短期、可失效或可由 Manager 重建的数据；丢失不影响 codespace 生命周期、权限、删除闭环或 operation 超时判断。</li>
-<li>数据库仍是主状态和权限闭环的唯一持久权威。</li>
+<li>cache 内容都是短期、可失效或可由 Manager 重建的数据；丢失不影响 codespace 生命周期、权限、删除处理或 operation 超时判断。</li>
+<li>主状态和权限相关的持久数据都以数据库为准。</li>
 </ul>
 <h2 id="runtime-metadata-结构"><a class="header" href="#runtime-metadata-结构">Runtime Metadata 结构</a></h2>
 <p><code>ReportRuntimeMetadata</code> 只写当前 Runtime Metadata 快照。允许的结构：</p>
@@ -295,7 +295,7 @@
 <ul>
 <li><code>endpoints</code> 以 JSON 数组存储在 Runtime Metadata cache 中。</li>
 <li><code>internal_ssh</code> 不在普通 UI/API 输出中暴露。</li>
-<li><code>endpoint_id</code> 由 Manager 上报并确保在同一 <code>codespace_id</code> 内唯一。</li>
+<li><code>endpoint_id</code> 由 Manager 上报，并在同一 <code>codespace_id</code> 内保持唯一。</li>
 <li>不同 codespace 可以使用相同 <code>endpoint_id</code>。</li>
 <li><code>label</code> 只用于 UI 展示，可以重复，不是路由键。</li>
 <li><code>health</code> 作为 Endpoint 可选展示字段，仅用于 UI 展示。</li>
@@ -310,7 +310,7 @@
 <li>resource usage 是可选展示信息。</li>
 <li>缺失 resource usage 时显示 <code>unavailable</code>。</li>
 <li>Runtime Metadata 仅记录当前最新快照，cache miss 只影响交互与展示。</li>
-<li>Runtime Metadata 是动态观测数据，用于展示和交互入口。主状态由 operation finalization 和 reconciliation 写入，基于数据库状态推进。</li>
+<li>Runtime Metadata 是动态运行信息，用于展示和交互入口。主状态由 operation 状态写入和 reconciliation 处理，推进依据来自数据库状态。</li>
 </ul>
 <h2 id="日志存储"><a class="header" href="#日志存储">日志存储</a></h2>
 <p>Codespace <a href="glossary.html#operation">Operation</a> 日志存储在 DBFS（<code>models/dbfs/</code>，32KB 分块 + 乐观锁）。</p>

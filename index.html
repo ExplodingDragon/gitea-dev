@@ -164,7 +164,7 @@
 <tr><td>Codespace Gateway（Manager deployment 内组件）</td><td>用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发</td></tr>
 </tbody></table>
 </div>
-<p>Gitea 管理生命周期和权限闭环，运行时选型和后端（Incus/Docker 等）由 Manager 独立管理。运行时专有配置和 Runtime Token 均由 Manager 维护。</p>
+<p>Gitea 管理生命周期、权限判断和 token 状态，运行时选型和后端（Incus/Docker 等）由 Manager 独立管理。运行时专有配置和 Runtime Token 均由 Manager 维护。</p>
 <h2 id="架构"><a class="header" href="#架构">架构</a></h2>
 <pre class="mermaid">flowchart LR
     User[&quot;用户&lt;br/&gt;浏览器 / SSH 客户端&quot;]
@@ -207,7 +207,7 @@
 <ul>
 <li>Codespace 部署模型为 Gitea 单实例。</li>
 <li>Gitea 与 Manager 之间只通过 ManagerService RPC 通信。</li>
-<li>Manager 是运行侧唯一的 Gitea 注册身份。</li>
+<li>Manager 是运行侧在 Gitea 中注册的身份。</li>
 <li>Gateway 是 Manager deployment 内部组件，通过 Manager 身份调用 Gitea。</li>
 </ul>
 <p><strong>数据边界</strong></p>
@@ -227,7 +227,7 @@
 <li>Runtime Instance 只通过 Runtime HTTP API 调用 Manager。</li>
 <li>Endpoint upstream 只由 Gateway 和 Manager 解析。</li>
 </ul>
-<p>用户 Endpoint、WebSocket 和 SSH channel 是长连接流量，不适合让 Gitea Web 进程代理。Manager/Gateway 与 Runtime Instance 在同一部署内，能直接解析 upstream 和内部 SSH 连接，Gitea 保持为短路径鉴权与状态权威。</p>
+<p>用户 Endpoint、WebSocket 和 SSH channel 都是长连接流量，不适合让 Gitea Web 进程代理。Manager/Gateway 与 Runtime Instance 在同一部署内，可以直接解析 upstream 和内部 SSH 连接；Gitea 只处理鉴权和状态写入。</p>
 <p>核心通信流程：</p>
 <pre class="mermaid">sequenceDiagram
     autonumber
@@ -261,8 +261,8 @@
 <h2 id="核心原则"><a class="header" href="#核心原则">核心原则</a></h2>
 <ul>
 <li>Gitea 只负责授权、状态、日志、token 绑定和跳转入口。</li>
-<li>Codespace 复用 Gitea 现有用户、组织、仓库、权限（<code>CanRead(unit.Code)</code> 统一入口）、access token（<code>models/auth/access_token.go</code>）、SSH key、登录限制、git、Pull Request 和 Actions task claim 模型。</li>
-<li>create、open、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一权限判定入口。统一入口让 Web、RPC 和 Gateway 对同一用户状态、repository 状态与 Manager 状态得到一致结论，避免 handler 各自拼接权限条件。</li>
+<li>Codespace 复用 Gitea 现有用户、组织、仓库、权限（<code>CanRead(unit.Code)</code> 统一入口）、access token（<code>models/auth/access_token.go</code>）、SSH key、登录限制、git、Pull Request 和 Actions task 领取模型。</li>
+<li>create、open、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一权限判定入口。统一入口让 Web、RPC 和 Gateway 对同一用户状态、repository 状态与 Manager 状态得到一致结论，减少 handler 各自拼接权限条件带来的分歧。</li>
 <li>用户拥有 repository code-read 权限就可以创建 codespace。</li>
 <li>codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。</li>
 <li>Manager 使用 codespace 身份访问 repository，不直接使用自己身份。</li>
@@ -275,16 +275,16 @@
 <li>失败为终态，通过 delete 退出。</li>
 <li>delete 成功后物理删除 codespace、operation 和日志。</li>
 <li>Manager 的并发容量由 Manager 自行控制并以 <code>capacity_available</code> 上报，Gitea 不维护运行容量计数。</li>
-<li>Manager 使用本地 operation worker pool 执行已 claim 的 operation，create/resume 使用容量槽位，stop/delete 使用独立 cleanup 队列。这样资源创建与资源回收互不阻塞，Manager 满载时仍能推进清理。</li>
+<li>Manager 使用本地 operation worker pool 执行已领取的 operation，create/resume 使用容量槽位，stop/delete 使用独立 cleanup 队列。这样资源创建与资源回收互不阻塞，Manager 满载时仍能推进清理。</li>
 <li>Runtime Instance name 由 <code>codespace_uuid</code> 确定性派生。这样 create、resume、delete 和本地清理都能找到同一个运行实例，便于幂等执行。</li>
-<li>Gitea 重启和 Manager 重启按日常维护事件处理。重启不直接改变 codespace 主状态，交互入口可以临时返回 rebuilding/recovering 分类，恢复窗口结束且没有恢复证据时才由 reconciliation 推进到 <code>error</code>。这样可以区分正常维护和真实生命周期失败。</li>
+<li>Gitea 重启和 Manager 重启按日常维护事件处理。重启不直接改变 codespace 主状态，交互入口可以临时返回 rebuilding/recovering 分类；恢复窗口结束且没有恢复证据时，再由 reconciliation 写入 <code>error</code>。这样可以区分正常维护和真实生命周期失败。</li>
 <li>Gateway Endpoint 第一版支持 HTTP reverse proxy 和 WebSocket upgrade，SSH 使用独立接入面。这样覆盖 Web IDE 和端口预览主场景，同时减少任意 TCP tunnel 带来的鉴权、审计和资源复杂度。</li>
-<li>Gateway session 使用 TTL、idle timeout 和周期 revalidate。这样既控制长连接资源占用，也让权限变化在可预期时间内收敛。</li>
+<li>Gateway session 使用 TTL、idle timeout 和周期 revalidate。这样既控制长连接资源占用，也能在可预期时间内处理权限变化。</li>
 <li>SSH 认证限流与退避由 Gateway 按 source IP、codespace、source IP + codespace 和 public key fingerprint 多维度执行。这样可以降低暴力破解风险，并减少单一维度限流的误伤。</li>
 <li>Gateway access log 使用结构化 JSON line，并记录模板、hash 和失败分类，不记录 token、cookie、query string 或完整 user agent。这样满足运维审计和排障，同时降低敏感信息泄漏风险。</li>
 <li>repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中吊销 token、置空 repository 关联字段并保留来源已删除状态。这样用户能明确看到来源仓库已删除，Runtime 清理仍通过 <code>codespace.uuid</code> 和已绑定 Manager 完成，不依赖已经不存在的 repository row。</li>
 <li>codespace 日志第一版存储在 DBFS，使用 byte offset 追加和读取。DBFS 已适合运行中日志 seek/read/write，先不引入对象存储归档可以减少日志 transfer 状态对生命周期状态机的影响。</li>
-<li>测试按 models、services、RPC routes、Web routes 和 integration 分层组织。这样可以分别覆盖数据模型、状态事务、权限/token 边界和跨层生命周期流程，避免 Manager backend 细节污染 Gitea 状态权威测试。</li>
+<li>测试按 models、services、RPC routes、Web routes 和 integration 分层组织。这样可以分别覆盖数据模型、状态事务、权限/token 边界和跨层生命周期流程，让 Gitea 侧测试聚焦数据库状态和服务行为。</li>
 </ul>
 
                     </main>
