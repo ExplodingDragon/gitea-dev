@@ -17,7 +17,7 @@ service ManagerService {
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
   rpc DeclareManager(DeclareManagerRequest) returns (DeclareManagerResponse);
 
-  // FetchOperation pulls an operation that the Manager can claim and execute.
+  // FetchOperation returns one operation for the Manager to execute.
   rpc FetchOperation(FetchOperationRequest) returns (FetchOperationResponse);
 
   // UpdateOperation renews the lease, updates progress, or reports a final result.
@@ -82,7 +82,7 @@ message FetchOperationRequest {
 }
 
 message FetchOperationResponse {
-  // Present when an operation was claimed.
+  // Present when an operation was assigned.
   OperationPayload operation = 1;
 }
 
@@ -154,7 +154,7 @@ message UpdateLogResponse {}
 
 message ReportRuntimeMetadataRequest {
   string codespace_uuid = 1;
-  // JSON payload matching the Runtime Metadata schema.
+  // JSON data matching the Runtime Metadata schema.
   string metadata_json = 2;
 }
 

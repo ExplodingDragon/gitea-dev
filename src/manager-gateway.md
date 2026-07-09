@@ -117,20 +117,20 @@ Declare 声明：
 - `0 <= capacity_available <= capacity_total`
 - create/resume 需要 Manager 在本次 `FetchOperation` 中声明可接收，且 `capacity_available > 0`。stop/delete 不受 `capacity_available` 限制。
 - capacity 是 Manager 最近上报的本地可接收能力快照，不是 Gitea quota。
-- Manager 是实际运行容量权威，自行确保不拉取超过本地真实容量的 create/resume [Operation](glossary.md#operation)。
-- Gitea 确保 operation 只被一个 Manager 领取。Manager 自行控制本地并发，不超容量拉取。
+- Manager 根据本地真实容量决定是否拉取 create/resume [Operation](glossary.md#operation)。
+- Gitea 通过数据库条件更新保证 operation 只被一个 Manager 领取。Manager 自行控制本地并发，不超容量拉取。
 - `FetchOperation` 使用 request 中的 `capacity_total / capacity_available` 覆盖数据库中的容量快照。
 
-Manager 主动 pull operation；满载时不拉取 create/resume，queued operation 自然等待。Gitea 看不到 Manager 本地 Runtime 队列、资源占用和启动中任务，不是真实容量权威，只保存最近容量快照用于 UI、诊断和本次 `FetchOperation` 准入检查。
+Manager 主动 pull operation；满载时不拉取 create/resume，queued operation 自然等待。Gitea 看不到 Manager 本地 Runtime 队列、资源占用和启动中任务，只保存最近容量快照用于 UI、诊断和本次 `FetchOperation` 领取判断。
 
 ### Manager Worker Pool 与 Runtime 映射
 
-Manager 本地维护 operation worker pool。worker pool 执行已 claim 的 operation；是否继续从 Gitea claim create/resume 由 Manager 通过 `capacity_available` 表达。
+Manager 本地维护 operation worker pool。worker pool 执行已领取的 operation；是否继续从 Gitea 领取 create/resume 由 Manager 通过 `capacity_available` 表达。
 
 规则：
 
-- `FetchOperation` 单次最多 claim 一个 operation。
-- 已 claim 的 operation 使用 `operation_id` 绑定后续 `UpdateOperation`、`UpdateLog` 和 `RequestGiteaToken`。
+- `FetchOperation` 单次最多领取一个 operation。
+- 已领取的 operation 使用 `operation_id` 绑定后续 `UpdateOperation`、`UpdateLog` 和 `RequestGiteaToken`。
 - create/resume 使用容量槽位。
 - stop/delete 使用独立 cleanup 队列，不占 create/resume 容量。
 - operation 调度优先级为 `delete > stop > resume > create`。
@@ -143,9 +143,9 @@ cs-{codespace_uuid_short}
 
 `codespace_uuid_short` 取 UUID 去掉 `-` 后前 20 位。
 
-这样设计的原因是 Gitea 只知道 operation 和 Manager 上报的容量快照，Manager 才知道本地 CPU、内存、backend 队列和 Runtime 启动状态。stop/delete 独立于 create/resume 容量，可以保证资源回收在 Manager 满载时仍然推进。Runtime name 由 `codespace_uuid` 派生，可以让 create、resume、delete 和本地清理都找到同一个实例，保证运行侧操作具备幂等基础。
+这样设计的原因是 Gitea 只知道 operation 和 Manager 上报的容量快照，Manager 才知道本地 CPU、内存、backend 队列和 Runtime 启动状态。stop/delete 独立于 create/resume 容量，可以让 Manager 满载时仍然推进资源回收。Runtime name 由 `codespace_uuid` 派生，让 create、resume、delete 和本地清理都能找到同一个实例。
 
-Manager 重启恢复策略见 [维护与重启恢复](maintenance-recovery.md)。该设计把 Manager 重启视为日常维护事件，先恢复本地 Runtime 观测和 Runtime Metadata，再恢复 create/resume claim，避免维护重启直接造成 codespace 失败。
+Manager 重启恢复策略见 [维护与重启恢复](maintenance-recovery.md)。该设计把 Manager 重启视为日常维护事件，先恢复本地 Runtime 信息和 Runtime Metadata，再恢复 create/resume 领取，减少维护重启造成的 codespace 误失败。
 
 ### Manager 禁用与删除
 
@@ -225,7 +225,7 @@ Content-Type: application/json
 | `PUT` | `/api/runtime/v1/endpoints/{endpoint_id}` | 更新 Endpoint |
 | `DELETE` | `/api/runtime/v1/endpoints/{endpoint_id}` | 删除 Endpoint |
 
-Runtime Instance 只需要获取初始化信息和声明可打开入口。生命周期状态、Gitea token、日志和 Runtime Metadata 都由 Manager 统一转接到 Gitea，接口面保持在 boot/endpoints 可减少 Runtime 与 Gitea 设计的耦合。
+Runtime Instance 只需要获取初始化信息和声明可打开入口。生命周期状态、Gitea token、日志和 Runtime Metadata 都由 Manager 统一转接到 Gitea，Runtime HTTP API 保持在 boot/endpoints 两类接口，可以减少 Runtime 与 Gitea 生命周期设计的耦合。
 
 ### GET /boot
 
@@ -235,34 +235,34 @@ Runtime Instance 只需要获取初始化信息和声明可打开入口。生命
 
 | 字段 | 来源 |
 | --- | --- |
-| `codespace_uuid` | Operation payload |
+| `codespace_uuid` | Operation 返回数据 |
 | `operation_type` | `create` / `resume` |
 | `server_time_unix` | Manager 当前时间 |
 | `workspace_dir` | Manager 本地决定 |
 | `runtime_token_bound_source_ip` | Manager 记录 |
-| `gitea_repo_clone_url` | Operation payload |
-| `gitea_repo_web_url` | Operation payload |
-| `gitea_base_repo_clone_url` | Operation payload |
-| `gitea_base_repo_web_url` | Operation payload |
-| `gitea_head_repo_clone_url` | Operation payload |
-| `gitea_head_repo_web_url` | Operation payload |
-| `gitea_repo_id` | Operation payload |
-| `gitea_repo_full_name` | Operation payload |
-| `gitea_owner_id` | Operation payload |
-| `gitea_owner_name` | Operation payload |
-| `gitea_owner_type` | Operation payload |
-| `gitea_owner_display_name` | Operation payload |
-| `gitea_ref_type` | Operation payload |
-| `gitea_ref_name` | Operation payload |
-| `gitea_commit_sha` | Operation payload |
+| `gitea_repo_clone_url` | Operation 返回数据 |
+| `gitea_repo_web_url` | Operation 返回数据 |
+| `gitea_base_repo_clone_url` | Operation 返回数据 |
+| `gitea_base_repo_web_url` | Operation 返回数据 |
+| `gitea_head_repo_clone_url` | Operation 返回数据 |
+| `gitea_head_repo_web_url` | Operation 返回数据 |
+| `gitea_repo_id` | Operation 返回数据 |
+| `gitea_repo_full_name` | Operation 返回数据 |
+| `gitea_owner_id` | Operation 返回数据 |
+| `gitea_owner_name` | Operation 返回数据 |
+| `gitea_owner_type` | Operation 返回数据 |
+| `gitea_owner_display_name` | Operation 返回数据 |
+| `gitea_ref_type` | Operation 返回数据 |
+| `gitea_ref_name` | Operation 返回数据 |
+| `gitea_commit_sha` | Operation 返回数据 |
 | `gitea_token` | Gitea `RequestGiteaToken` |
 | `codespace_name` | Manager 派生（`cs-{short_uuid}`） |
-| `codespace_owner_name` | Operation payload |
-| `codespace_repo_name` | Operation payload |
+| `codespace_owner_name` | Operation 返回数据 |
+| `codespace_repo_name` | Operation 返回数据 |
 
 `GET /boot` 规则：
 
-- 这些信息由 Manager 根据 Gitea operation payload 和 Manager 本地配置组合生成。
+- 这些信息由 Manager 根据 Gitea operation 返回数据 和 Manager 本地配置组合生成。
 - `workspace_dir` 由 Manager 本地决策生成。
 - `gitea_token` 来自 Gitea `RequestGiteaToken`。
 - `codespace_name` 使用 `cs-{short_uuid}` 派生规则。
@@ -330,7 +330,7 @@ Endpoint API 规则：
 - `health` 可选字段，上报后仅用于 UI 展示。
 - 每次 Endpoint create/update/delete 后，Manager 重新生成当前 Runtime Metadata 快照并调用 `ReportRuntimeMetadata`。
 
-Endpoint 使用 `endpoint_id` 做路由键，使用 `label` 做展示文本。这样设计可以让授权、路由和展示分离：Gitea 只需要确认 Endpoint 是否存在，Gateway 负责解析内部 upstream，UI 文案变化不会影响已有 open 链路。
+Endpoint 使用 `endpoint_id` 做路由键，使用 `label` 做展示文本。这样做可以把授权、路由和展示分开：Gitea 只需要确认 Endpoint 是否存在，Gateway 负责解析内部 upstream，UI 文案变化不会影响已有 open 流程。
 
 ## Gateway 设计
 
@@ -436,7 +436,7 @@ GATEWAY_MAX_SESSIONS_PER_USER = 128
 - repo/user access lost 后，新 session 由 Gitea 返回对应失败分类；已建立 session 在下一次周期 revalidate 时关闭。
 - Runtime upstream 断开时 session 保留，下一次请求重新连接，直到 TTL 或 idle timeout 到期。
 
-这样设计的原因是 TTL 限制长期遗留 session，idle timeout 控制资源占用，周期 revalidate 让权限变化可以收敛，同时避免每个请求都回 Gitea。stop/delete/disabled 是明确管理事件，由 Manager/Gateway 本地事件立即关闭连接。
+这样设计的原因是 TTL 限制长期遗留 session，idle timeout 控制资源占用，周期 revalidate 用于处理权限变化，同时减少每个请求回到 Gitea 的开销。stop/delete/disabled 是明确管理事件，由 Manager/Gateway 本地事件立即关闭连接。
 
 ## SSH 接入
 
@@ -456,7 +456,7 @@ SSH 可用性：
 
 ### SSH 中转模型
 
-Manager 确保 Runtime Instance 存在兼容 OpenSSH 的 sshd。
+Manager 创建的 Runtime Instance 提供兼容 OpenSSH 的 sshd。
 
 Gateway 中转流程：
 
