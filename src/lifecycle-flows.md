@@ -60,9 +60,9 @@ tag: default
 - `ref_type=commit`：读取 repository default branch。
 - 文件缺失等价于 `tag=default`。
 - 空仓库在读取配置前返回 empty repository 分类。
-- default branch 不存在、目标 branch tree 不可读、配置 blob 不是普通文件时，create 进入 `error` 并写入配置读取失败日志。
-- 配置文件超过 `CODESPACE_REPO_CONFIG_MAX_SIZE` 时，create 进入 `error` 并写入配置过大日志，默认上限 64 KiB。
-- YAML 非法时，create 进入 `error` 并写入 YAML 解析失败日志。
+- default branch 不存在、目标 branch tree 不可读、配置 blob 不是普通文件时，create 进入 `failed` 并写入配置读取失败日志。
+- 配置文件超过 `CODESPACE_REPO_CONFIG_MAX_SIZE` 时，create 进入 `failed` 并写入配置过大日志，默认上限 64 KiB。
+- YAML 非法时，create 进入 `failed` 并写入 YAML 解析失败日志。
 - `tag` 缺失或空字符串等价于 `default`。
 - 未知字段忽略，create 日志中提示当前只识别 `tag`。
 - `tag` 解析后 lower-case。
@@ -73,7 +73,7 @@ tag: default
 - tag/commit 场景读取 default branch，避免任意历史 commit 改变 Manager 选择。
 - PR 场景使用 base branch，让目标仓库维护者控制运行侧选择；实际代码仍按用户选择的 ref 锁定到具体 commit SHA。
 
-配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。create 失败时仍创建 codespace 对象并进入 `error`，日志写明失败原因，用户可以从同一个对象页看到为什么没有进入队列。
+配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。create 失败时仍创建 codespace 对象并进入 `failed`，日志写明失败原因，用户可以从同一个对象页看到为什么没有进入队列。
 
 ### Manager 匹配
 
@@ -81,19 +81,19 @@ tag: default
 - enabled Manager 按 owner scope 和 tag 参与匹配。
 - global Manager 参与所有 owner scope 的匹配。
 - owner scoped Manager 参与相同 repository owner 的匹配；owner 可以是个人用户或组织，组织 ID 使用 Gitea `user.id`。
-- 没有 enabled Manager 同时满足 owner scope 和 `repo_tag` 时，create 进入 `error` 并写入无可用 Manager 匹配日志。
+- 没有 enabled Manager 同时满足 owner scope 和 `repo_tag` 时，create 进入 `failed` 并写入无可用 Manager 匹配日志。
 - create 创建时不绑定具体 Manager。
 - 具体 `manager_id` 只在某个 Manager 通过 `FetchOperation` 成功领取 create [Operation](glossary.md#operation) 时写入。
-- 有匹配 Manager 但全部离线、满载、不调用 `FetchOperation`，或调用 `FetchOperation` 但声明不可接收 create 时，create 保持 `queued`（参见 [Manager Capacity](glossary.md#manager-capacity)）。
+- 有匹配 Manager 但全部离线、满载、不调用 `FetchOperation`，或调用 `FetchOperation` 但声明不可接收 create 时，create 保持 `status=creating, operation_status=queued`（参见 [Manager Capacity](glossary.md#manager-capacity)），页面可派生展示为 queued。
 
 owner scope 表达 Manager 管理边界，tag 表达运行能力需求。global Manager 用于站点级容量，owner scoped Manager 用于个人或组织自有容量；两者共同进入 create 匹配，可以让站点管理员和 owner 管理员在同一套领取机制下扩展容量。
 
 Create operation 领取：
 
-- 领取前：`codespace.manager_id=0`，`codespace.operation_status=queued`。
+- 领取前：`codespace.status=creating`，`codespace.manager_id=0`，`codespace.operation_type=create`，`codespace.operation_status=queued`。
 - `FetchOperation` 通过数据库条件更新完成领取。
-- 领取同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_deadline_unix`，并将 codespace 从 `queued` 推进到 `booting`。
-- 领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=queued`。
+- 领取同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_started_unix`、`codespace.operation_deadline_unix`。
+- 领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=creating`、`codespace.operation_type=create`、`codespace.operation_status=queued`。
 - 本次 `FetchOperation` 的 `capacity_available` 大于 0 时才领取 create/resume。
 - Gitea 不在领取、`done|failed` 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
 - 领取成功后，operation 归属保持为领取它的 Manager。
@@ -101,7 +101,7 @@ Create operation 领取：
 
 ### Boot 与 Init
 
-`booting` 是首次 create 的环境初始化状态。
+create 的 running operation 是首次环境初始化阶段，页面可派生展示为 `booting`。
 
 Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为初始化入口。统一入口可以让 clone、checkout、git 凭据、内部 SSH 和默认 IDE 启动都在同一日志上下文中执行，失败时用户能从一个 codespace 对象页看到完整过程。
 
@@ -206,18 +206,18 @@ Repository 删除：
 - pre-cleanup 失败时 repository 删除整体失败并回滚。
 - 对引用该 repository 的关联 codespace，pre-cleanup 在同一事务内：
   - 吊销 Gitea Token，open/SSH/resume 返回 source repository deleted 分类。
-  - 将 `repo_id` 置空，并保留 `status_message=source repository deleted; cleanup required`。
+  - 将 `repo_id` 置空；空 `repo_id` 即表示来源 repository 已不可再解析。
   - codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 `deleting`。
-  - codespace 从未绑定 Manager 或 Manager 记录不存在时进入 `error`。
+  - codespace 从未绑定 Manager 或 Manager 记录不存在时进入 `failed`。
 - disabled Manager 也允许领取已绑定给自己的 delete operation。
 - Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 `deleting`，等待 Manager 回来领取。
-- delete timeout 后进入 `error`。
+- delete operation 在 Manager online 时超过 lease，或 Manager 超过 `MANAGER_RESTART_GRACE` 仍未恢复时进入 `failed`。
 - repository 删除事务创建的 delete operation 使用 `codespace_uuid` 生成返回数据。
 - repository DB 记录删除后，Manager 仍通过 `codespace_uuid` 领取 delete operation 并完成 Runtime cleanup。
-- source repository 删除后，相关 codespace 列表和详情页根据空 `repo_id` 与 `status_message` 显示 `source repository deleted`。
+- source repository 删除后，相关 codespace 列表和详情页根据空 `repo_id` 显示来源 repository 已删除或不可用。
 - repository 删除不发送站点通知。
 
-repository 与 codespace 的关系不是生命周期强关联。repository 删除后，保留悬空 `repo_id` 不能恢复原仓库，反而容易让后续权限和展示逻辑误以为还能解析 repository。将关联字段置空并保留明确状态消息，可以让用户知道来源已删除，同时让 codespace 继续按自身 UUID 完成日志查看和 Runtime 清理。
+repository 与 codespace 的关系不是生命周期强关联。repository 删除后，保留悬空 `repo_id` 不能恢复原仓库，反而容易让后续权限和展示逻辑误以为还能解析 repository。将 `repo_id` 置空，可以用一个明确的机器状态表达来源已不可解析，同时让 codespace 继续按自身 UUID 完成日志查看和 Runtime 清理。
 
 ### Owner/User/Org 删除
 

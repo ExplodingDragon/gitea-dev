@@ -130,7 +130,7 @@ Manager 本地维护 operation worker pool。worker pool 执行已领取的 oper
 规则：
 
 - `FetchOperation` 单次最多领取一个 operation。
-- 已领取的 operation 使用 `operation_id` 绑定后续 `UpdateOperation`、`UpdateLog` 和 `RequestGiteaToken`。
+- 已领取的 operation 使用 `operation_rversion` 绑定后续 `UpdateOperation`、`UpdateLog` 和 `RequestGiteaToken`。
 - create/resume 使用容量槽位。
 - stop/delete 使用独立 cleanup 队列，不占 create/resume 容量。
 - operation 调度优先级为 `delete > stop > resume > create`。
@@ -279,7 +279,6 @@ Runtime Instance 只需要获取初始化信息和声明可打开入口。生命
 | --- | --- | --- |
 | `success` | 是 | `true` / `false` |
 | `stage` | 否 | 当前 boot stage |
-| `message` | 否 | 状态消息 |
 | `started_unix` | 否 | 启动时间戳 |
 | `completed_unix` | 否 | 完成时间戳 |
 
@@ -444,12 +443,13 @@ GATEWAY_MAX_SESSIONS_PER_USER = 128
 
 SSH 是 codespace 自身稳定接入面，不是 Endpoint。
 
-用户通过 `ssh cs-{codespace_id}@gateway_host` 连接。Gateway 从连接串解析 `codespace_id`，直接查表获取 codespace，然后调用 `VerifySSHPublicKey` 完成公钥认证。用户身份通过公钥匹配确定，创建者用户名由 Gitea 侧从 `user_id` 获取。
+用户通过 `ssh cs-{codespace_uuid}@gateway_host` 连接。Gateway 从连接串解析 `codespace_uuid`，直接查表获取 codespace，然后调用 `VerifySSHPublicKey` 完成公钥认证。用户身份通过公钥匹配确定，创建者用户名由 Gitea 侧从 `user_id` 获取。
 
 SSH 可用性：
 
-- `running` 状态提供 SSH。
-- `queued|booting|stopping|stopped|resuming|deleting|error` 返回状态不可用分类。
+- `running` 状态且没有 active stop/delete operation 时提供 SSH。
+- `creating|stopped|deleting|failed` 返回状态不可用分类。
+- `running` 但存在 active stop/delete operation 时返回状态不可用分类。
 - stopped codespace 通过显式 resume 恢复后再提供 SSH。
 
 这样设计的原因是 SSH 是长连接交互面，只有 running 状态能保证 internal SSH metadata、Manager/Gateway 转发和 repository access 判定同时成立。stopped 自动唤醒会把认证尝试变成生命周期操作，容易让普通 SSH 客户端重试触发意外资源启动。
@@ -460,8 +460,8 @@ Manager 创建的 Runtime Instance 提供兼容 OpenSSH 的 sshd。
 
 Gateway 中转流程：
 
-1. 用户连接 `ssh cs-{codespace_id}@gateway_host`。
-2. Gateway 从连接串解析 `codespace_id`，查找对应 codespace。
+1. 用户连接 `ssh cs-{codespace_uuid}@gateway_host`。
+2. Gateway 从连接串解析 `codespace_uuid`，查找对应 codespace。
 3. Gateway 调用 Gitea `VerifySSHPublicKey(codespace_uuid, public_key_blob)` 完成公钥认证。
 4. Gateway 确认 codespace 为 running。
 5. Gateway 作为 SSH client 连接 Runtime Instance 内部 sshd。
@@ -588,7 +588,7 @@ codespace 日志是生命周期操作的执行证据，单文件连续追加。`
 - 下载日志和 UI 日志使用同一份脱敏内容。
 - 错误摘要必须在 operation 进入 `done|failed` 前上传。
 - operation 进入 `done|failed` 后，Gitea 日志进入封闭状态。
-- stop/resume/delete 覆盖 `operation_type` 和 `operation_status` 后，日志继续追加到同一文件。
+- stop/resume/delete 创建新的 operation 版本后，日志继续追加到同一文件。
 - 只有 `operation_status == running` 时才能追加 Gitea 日志。
 
 脱敏责任放在 Manager，是因为 Manager 创建 Runtime、注入 token，并最早看到 init 输出。Gitea 的防御性清理用于降低展示风险，但不能替代 Manager 对已知敏感值的精确 mask；这样边界清晰，日志泄漏时也能定位责任组件。

@@ -82,7 +82,7 @@ Gitea 后台任务处理 operation 超时、过期上报、状态分歧和清理
 
 <span id="stale-report"></span>
 ## Stale Report
-Manager 上报中的 `codespace_uuid`、`operation_id`、`manager_id` 或 operation status 与当前 codespace 状态不匹配。
+Manager 上报中的 `codespace_uuid`、`operation_rversion`、`manager_id` 或 operation status 与当前 codespace 状态不匹配。
 
 <span id="state-divergence"></span>
 ## State Divergence

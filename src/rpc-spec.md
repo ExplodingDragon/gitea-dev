@@ -87,7 +87,7 @@ message FetchOperationResponse {
 }
 
 message OperationPayload {
-  string operation_id = 1;
+  int64 operation_rversion = 1;
   string operation_type = 2; // create | resume | stop | delete
   string codespace_uuid = 3;
   int64 lease_deadline_unix = 4;
@@ -110,7 +110,7 @@ message OperationPayload {
 
 message UpdateOperationRequest {
   string codespace_uuid = 1;
-  string operation_id = 2;
+  int64 operation_rversion = 2;
 
   // Optional: renew the lease.
   oneof result {
@@ -124,12 +124,10 @@ message UpdateOperationRequest {
 message FinalResult {
   // "done" or "failed".
   string status = 1;
-  string status_message = 2;
 }
 
 message ProgressUpdate {
   string stage = 1;
-  string message = 2;
 }
 
 message UpdateOperationResponse {
@@ -141,7 +139,7 @@ message UpdateOperationResponse {
 
 message UpdateLogRequest {
   string codespace_uuid = 1;
-  string operation_id = 2;
+  int64 operation_rversion = 2;
   // Byte offset within the log file.
   int64 offset = 3;
   // Pre-sanitized log lines, each as a single-line string.
@@ -167,7 +165,7 @@ message ReportRuntimeMetadataResponse {
 
 message RequestGiteaTokenRequest {
   string codespace_uuid = 1;
-  string operation_id = 2;
+  int64 operation_rversion = 2;
   // Must be "create" or "resume".
   string operation_type = 3;
 }
@@ -228,7 +226,7 @@ message ReportInstancesRequest {
 message RuntimeInstanceRef {
   string codespace_uuid = 1;
   string runtime_state = 2;
-  string observed_operation_id = 3;
+  int64 observed_operation_rversion = 3;
   int64 observed_unix = 4;
 }
 
