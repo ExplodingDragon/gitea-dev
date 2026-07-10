@@ -28,7 +28,7 @@ Runtime HTTP API 由 Manager 实现，路由与 Gitea route 分离。
 - 生命周期入口使用 `create / open / resume / stop / delete`。这些动作覆盖用户需要的完整生命周期，并与状态机中的 operation 类型保持一致。
 - 主状态使用 `creating / running / stopped / deleting / failed`。`queued / booting / stopping / resuming / metadata_rebuilding / recovering` 由主状态、operation 字段和 Manager 运行态派生，用于 UI 和失败分类，不写入 `codespace.status`。
 - 异步生命周期统一称为 operation。统一术语后，领取、lease、状态写入和 reconciliation 可以使用同一套处理逻辑，也能和 task、job 等 CI/CD 术语区分开。
-- 容量控制由 Manager 通过 `capacity_total / capacity_available` 上报。Gitea 保存最近容量快照用于 UI、诊断和 FetchOperation 领取判断，真实资源占用由 Manager 控制，因为只有 Manager 能看到本地 Runtime 队列、backend 限制和启动中实例。
+- 容量控制由 Manager 通过 `capacity_total / capacity_available` 上报。Gitea 保存最近容量快照用于 UI、诊断和 `FetchOperations` 领取判断，真实资源占用由 Manager 控制，因为只有 Manager 能看到本地 Runtime 队列、backend 限制和启动中实例。
 - Gitea 侧复用现有 permission、token、SSH key、setting、cron、routing、DBFS 和测试组织方式。复用现有基础能力可以减少新的安全边界和重复实现，让 codespace 行为与 Gitea 现有访问模型一致。
 
 实现完成后的最低验证：
@@ -46,7 +46,7 @@ make lint-backend
 
 - `models/codespace`：状态字段、索引、查询、token binding 反查。
 - `services/codespace`：权限判定、State Finalization、repository delete pre-cleanup、repo-bound token、日志 offset。
-- `routers/api/codespace`：ManagerService RPC auth、FetchOperation 领取、UpdateOperation 幂等。
+- `routers/api/codespace`：ManagerService RPC auth、`FetchOperations` 领取、UpdateOperation 幂等。
 - `routers/web/codespace`：create/open/stop/resume/delete 页面行为。
 - `integration`：create -> fetch operation -> log -> done -> open token -> delete 完整流程。
 

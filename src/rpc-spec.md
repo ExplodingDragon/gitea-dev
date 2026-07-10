@@ -17,8 +17,8 @@ service ManagerService {
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
   rpc DeclareManager(DeclareManagerRequest) returns (DeclareManagerResponse);
 
-  // FetchOperation returns one operation for the Manager to execute.
-  rpc FetchOperation(FetchOperationRequest) returns (FetchOperationResponse);
+  // FetchOperations returns operations for the Manager to execute.
+  rpc FetchOperations(FetchOperationsRequest) returns (FetchOperationsResponse);
 
   // UpdateOperation renews the lease, updates progress, or reports a final result.
   rpc UpdateOperation(UpdateOperationRequest) returns (UpdateOperationResponse);
@@ -40,6 +40,9 @@ service ManagerService {
 
   // ReportInstances reports the set of local Runtime Instances (used after Manager restart).
   rpc ReportInstances(ReportInstancesRequest) returns (ReportInstancesResponse);
+
+  // ReportRuntimeTransition reports a Manager-initiated stop/resume fact.
+  rpc ReportRuntimeTransition(ReportRuntimeTransitionRequest) returns (ReportRuntimeTransitionResponse);
 }
 
 // --- RegisterManager ---
@@ -62,7 +65,8 @@ message DeclareManagerRequest {
   string gateway_url = 1;
   string gateway_ssh_addr = 2;
   repeated string tags = 3;
-  // Optional diagnostic metadata.
+  // Includes gateway_ssh_host_key_algorithm, gateway_ssh_host_key_fingerprint_sha256,
+  // gateway_ssh_host_key_updated_unix, capacity snapshot, and backend capabilities.
   map<string, string> meta = 4;
   string version = 5;
   string name = 6;
@@ -72,18 +76,23 @@ message DeclareManagerRequest {
 
 message DeclareManagerResponse {}
 
-// --- FetchOperation ---
+// --- FetchOperations ---
 
-message FetchOperationRequest {
+message FetchOperationsRequest {
   int32 capacity_total = 1;
   int32 capacity_available = 2;
-  // Operation types the Manager is willing to accept this pull.
   repeated string accepted_operation_types = 3; // e.g. ["create", "resume", "stop", "delete"]
+  int32 max_operations = 4;
+  repeated ObservedOperation observed_operations = 5;
 }
 
-message FetchOperationResponse {
-  // Present when an operation was assigned.
-  OperationPayload operation = 1;
+message ObservedOperation {
+  string codespace_uuid = 1;
+  int64 operation_rversion = 2;
+}
+
+message FetchOperationsResponse {
+  repeated OperationPayload operations = 1;
 }
 
 message OperationPayload {
@@ -92,7 +101,6 @@ message OperationPayload {
   string codespace_uuid = 3;
   int64 lease_deadline_unix = 4;
 
-  // Fields present only for create/resume.
   string repo_clone_url = 10;
   string repo_web_url = 11;
   string repo_tag = 12;
@@ -112,7 +120,6 @@ message UpdateOperationRequest {
   string codespace_uuid = 1;
   int64 operation_rversion = 2;
 
-  // Optional: renew the lease.
   oneof result {
     // Report a final outcome.
     FinalResult final = 10;
@@ -187,7 +194,7 @@ message ValidateOpenTokenResponse {
   string codespace_uuid = 3;
   string endpoint_id = 4;
   int64 manager_id = 5;
-  // Only present when allowed=false.
+  // Empty when allowed=true.
   string failure_reason = 6;
 }
 
@@ -197,13 +204,9 @@ message VerifySSHPublicKeyRequest {
   // codespace_uuid parsed from SSH connection string (cs-{id} prefix).
   string codespace_uuid = 1;
   string public_key_blob = 2;
-  // Optional, for diagnostics only.
-  string public_key_fingerprint = 3;
-  // Optional, for diagnostics only.
-  string public_key_algorithm = 4;
-  string source_ip = 5;
-  string user_agent_or_client_version = 6;
-  string gateway_session_id = 7;
+  string source_ip = 3;
+  string user_agent_or_client_version = 4;
+  string gateway_session_id = 5;
 }
 
 message VerifySSHPublicKeyResponse {
@@ -241,6 +244,24 @@ message InstanceInstruction {
   string manager_instruction = 2;
   // e.g. "extra_runtime", "missing_runtime", "manager_mismatch".
   string divergence_category = 3;
+}
+
+// --- ReportRuntimeTransition ---
+
+message ReportRuntimeTransitionRequest {
+  string codespace_uuid = 1;
+  // running | stopped
+  string runtime_state = 2;
+  string transition_reason = 3;
+  int64 observed_unix = 4;
+  // Runtime Metadata snapshot observed after the transition.
+  string metadata_json = 5;
+}
+
+message ReportRuntimeTransitionResponse {
+  bool accepted = 1;
+  string failure_category = 2;
+  string manager_instruction = 3;
 }
 ```
 

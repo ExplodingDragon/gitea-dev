@@ -83,19 +83,19 @@ tag: default
 - owner scoped Manager 参与相同 repository owner 的匹配；owner 可以是个人用户或组织，组织 ID 使用 Gitea `user.id`。
 - 没有 enabled Manager 同时满足 owner scope 和 `repo_tag` 时，create 进入 `failed` 并写入无可用 Manager 匹配日志。
 - create 创建时不绑定具体 Manager。
-- 具体 `manager_id` 只在某个 Manager 通过 `FetchOperation` 成功领取 create [Operation](glossary.md#operation) 时写入。
-- 有匹配 Manager 但全部离线、满载、不调用 `FetchOperation`，或调用 `FetchOperation` 但声明不可接收 create 时，create 保持 `status=creating, operation_status=queued`（参见 [Manager Capacity](glossary.md#manager-capacity)），页面可派生展示为 queued。
+- 具体 `manager_id` 只在某个 Manager 通过 `FetchOperations` 成功领取 create [Operation](glossary.md#operation) 时写入。
+- 有匹配 Manager 但全部离线、满载、不调用 `FetchOperations`，或调用 `FetchOperations` 但声明不可接收 create 时，create 保持 `status=creating, operation_status=queued`（参见 [Manager Capacity](glossary.md#manager-capacity)），页面可派生展示为 queued。
 
 owner scope 表达 Manager 管理边界，tag 表达运行能力需求。global Manager 用于站点级容量，owner scoped Manager 用于个人或组织自有容量；两者共同进入 create 匹配，可以让站点管理员和 owner 管理员在同一套领取机制下扩展容量。
 
 Create operation 领取：
 
 - 领取前：`codespace.status=creating`，`codespace.manager_id=0`，`codespace.operation_type=create`，`codespace.operation_status=queued`。
-- `FetchOperation` 通过数据库条件更新完成领取。
+- `FetchOperations` 通过数据库条件更新完成领取。
 - 领取同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_started_unix`、`codespace.operation_deadline_unix`。
-- 领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperation` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=creating`、`codespace.operation_type=create`、`codespace.operation_status=queued`。
-- 本次 `FetchOperation` 的 `capacity_available` 大于 0 时才领取 create/resume。
-- Gitea 不在领取、`done|failed` 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
+- 领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperations` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=creating`、`codespace.operation_type=create`、`codespace.operation_status=queued`。
+- 本次 `FetchOperations` 的 `capacity_available` 大于 0 时才领取 create/resume。
+- Gitea 不在领取、final result 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
 - 领取成功后，operation 归属保持为领取它的 Manager。
 - 并发领取失败不是系统错误。
 
@@ -150,12 +150,6 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为初始化入
 | `CODESPACE_MANAGER_BASE_URL` | Runtime HTTP API 基础 URL（由 Manager 注入） |
 | `CODESPACE_RUNTIME_TOKEN` | Runtime Token（由 Manager 注入） |
 | `CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY` | Gateway 内部 SSH 公钥 |
-
-可选环境变量：
-
-| 环境变量 | 说明 |
-| --- | --- |
-| `CODESPACE_BOOT_LOG_PATH` | boot 阶段日志写入路径 |
 
 环境变量规则：
 
@@ -242,7 +236,7 @@ Manager 管理流程分为禁用、清理、注销三步：
 - 未删除 codespace 和 active operation 清理完成后，再物理删除 Manager 记录。
 - 物理删除 Manager 记录表示注销 Gitea 注册身份；后续 ManagerService RPC 返回 unregistered manager 分类。
 
-这样设计的原因是 Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespace 生命周期操作。把二者分开，可以避免删除 Manager 记录时隐式触发运行侧破坏性动作，也能让管理员先禁用止血，再按 codespace 对象逐个清理和审计。
+这样设计的原因是 Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespace 生命周期操作。把二者分开，可以避免删除 Manager 记录时隐式触发运行侧破坏性动作，也能让管理员先禁用止血，再按 codespace 对象逐个清理和排查。
 
 ### 重命名
 

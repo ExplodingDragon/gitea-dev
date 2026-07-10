@@ -90,7 +90,7 @@ sequenceDiagram
     User->>Gitea: POST /{owner}/{repo}/codespace
     Gitea->>Gitea: 校验仓库 / ref / 权限
     Gitea->>Gitea: 创建 codespace + 创建 operation
-    Manager->>Gitea: FetchOperation
+    Manager->>Gitea: FetchOperations
     Gitea-->>Manager: 返回 create operation 数据
     Manager->>Gitea: RequestGiteaToken
     Manager->>Runtime: 创建 Runtime + 注入初始化环境变量
@@ -123,6 +123,8 @@ sequenceDiagram
 - codespace-bound token 继续使用 Gitea access token 和 `write:repository` scope，并通过 repo binding 判定限制到创建时绑定的 repository。这样保留 Gitea 现有 token 体系，同时补足通用 scope 不能表达单仓库边界的问题。
 - create、resume、stop、delete 必须幂等。
 - 同一 codespace 同一时刻只能有一个 active operation。
+- active operation 完成后清空 operation 字段，不保留 operation 历史；失败诊断通过 codespace 日志读取。
+- Manager 可通过 `ReportRuntimeTransition` 上报本地主动 stop/resume 事实，Gitea 校验后再写入主状态。
 - codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。
 - create 失败后在同一 codespace 对象上进入 `failed`，由用户决定 delete 后重新创建。失败时 Runtime、token 和日志可能已部分产生，仅允许 delete 操作保证状态一致。
 - 失败为终态，通过 delete 退出。
@@ -131,10 +133,10 @@ sequenceDiagram
 - Manager 使用本地 operation worker pool 执行已领取的 operation，create/resume 使用容量槽位，stop/delete 使用独立 cleanup 队列。这样资源创建与资源回收互不阻塞，Manager 满载时仍能推进清理。
 - Runtime Instance name 由 `codespace_uuid` 确定性派生。这样 create、resume、delete 和本地清理都能找到同一个运行实例，便于幂等执行。
 - Gitea 重启和 Manager 重启按日常维护事件处理。重启不直接改变 codespace 主状态，交互入口可以临时返回 metadata_rebuilding/recovering 分类；Manager 恢复完成并上报完整 inventory 后，再由 reconciliation 写入明确结果。这样可以区分正常维护和真实生命周期失败。
-- Gateway Endpoint 第一版支持 HTTP reverse proxy 和 WebSocket upgrade，SSH 使用独立接入面。这样覆盖 Web IDE 和端口预览主场景，同时减少任意 TCP tunnel 带来的鉴权、审计和资源复杂度。
+- Gateway Endpoint 第一版支持 HTTP reverse proxy 和 WebSocket upgrade，SSH 使用独立接入面。这样覆盖 Web IDE 和端口预览主场景，同时减少任意 TCP tunnel 带来的鉴权和资源复杂度。
 - Gateway session 使用 TTL、idle timeout 和周期 revalidate。这样既控制长连接资源占用，也能在可预期时间内处理权限变化。
-- SSH 认证限流与退避由 Gateway 按 source IP、codespace、source IP + codespace 和 public key fingerprint 多维度执行。这样可以降低暴力破解风险，并减少单一维度限流的误伤。
-- Gateway access log 使用结构化 JSON line，并记录模板、hash 和失败分类，不记录 token、cookie、query string 或完整 user agent。这样满足运维审计和排障，同时降低敏感信息泄漏风险。
+- SSH 认证限流与退避由 Gateway 按 source IP、codespace、source IP + codespace 和 public key hash 多维度执行。这样可以降低暴力破解风险，并减少单一维度限流的误伤。
+- Gateway access log 使用结构化 JSON line，并记录模板、hash 和失败分类，不记录 token、cookie、query string 或完整 user agent。这样满足运维排障，同时降低敏感信息泄漏风险。
 - repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中吊销 token 并置空 `repo_id`。空 `repo_id` 是来源 repository 已不可解析的机器状态；Runtime 清理仍通过 `codespace.uuid` 和已绑定 Manager 完成，不依赖已经不存在的 repository row。
 - codespace 日志第一版存储在 DBFS，使用 byte offset 追加和读取。DBFS 已适合运行中日志 seek/read/write，先不引入对象存储归档可以减少日志 transfer 状态对生命周期状态机的影响。
 - 测试按 models、services、RPC routes、Web routes 和 integration 分层组织。这样可以分别覆盖数据模型、状态事务、权限/token 边界和跨层生命周期流程，让 Gitea 侧测试聚焦数据库状态和服务行为。
