@@ -10,7 +10,7 @@ Codespace 生命周期由三类数据共同表达：
 | active operation 字段 | Gitea 当前下发给 Manager 的生命周期指令。 |
 | Manager runtime fact | Manager 通过 inventory、metadata 和 transition 上报的本地运行事实。 |
 
-Gitea 下发动作以 active operation 为准；Manager 本地资源存在性以 Manager 上报为事实来源，但只有 Gitea 校验并写入数据库后才改变主状态。Repository 状态只参与 create 来源校验；codespace 创建完成后，状态机不再因 repository 删除、归档、迁移、ref 变化或访问权限变化而改变主状态。`queued`、`booting`、`stopping`、`resuming`、`metadata_rebuilding` 和 `recovering` 都是派生展示态，不写入 `codespace.status`。
+动作以 active operation 为准；Manager 事实经 Gitea 校验后改变主状态。Repository 状态只参与 create 来源校验；codespace 创建完成后，状态机不再因 repository 事件或访问权限变化而改变主状态。`queued`、`booting`、`stopping`、`resuming`、`metadata_rebuilding` 和 `recovering` 都是派生展示态，不写入 `codespace.status`。
 
 Gitea 负责：
 
@@ -38,11 +38,11 @@ Manager 负责：
 stateDiagram-v2
     direction TB
 
-    creating: 创建中 (creating)
-    running: 运行中 (running)
-    stopped: 已停止 (stopped)
-    deleting: 删除中 (deleting)
-    failed: 失败 (failed)
+    creating: 创建中
+    running: 运行中
+    stopped: 已停止
+    deleting: 删除中
+    failed: 失败
 
     [*] --> creating
     creating --> running
@@ -67,7 +67,7 @@ stateDiagram-v2
 | `deleting` | delete 已创建，正在等待 Manager 清理或正在清理。 | 无用户动作 |
 | `failed` | 生命周期失败，保留日志和记录。 | delete |
 
-`creating` 覆盖 create 排队和 boot 初始化，因为排队还是执行中由 active operation 表达。`running` 和 `stopped` 是资源结果；stop/resume 正在执行时主状态保持当前资源结果，交互能力由 active operation 禁用。
+`creating` 覆盖 create 排队和 boot 初始化，排队与执行中由 active operation 区分。`running` 和 `stopped` 是资源结果；stop/resume 执行时主状态不变，交互能力由 active operation 禁用。
 
 ## Active Operation
 
@@ -159,37 +159,6 @@ ReportRuntimeTransition
 | `deleting` | 任意用户动作 | 拒绝 |
 
 普通动作要求当前没有 active operation。delete 是终止目标，可以抢占当前 create/resume/stop：Gitea 递增 `operation_rversion`，写入 delete operation，并把主状态改为 `deleting`。旧 Manager 使用旧版本上报时返回 stale，避免旧结果覆盖新的删除目标。
-
-用户动作写入流程：
-
-```mermaid
-flowchart TD
-    action["用户动作"]
-    kind{"动作类型"}
-    create_check{"create 校验通过"}
-    normal_check{"可执行"}
-    delete_check{"状态不是 deleting"}
-    queued["写 queued"]
-    deleting["写 deleting"]
-    reject["拒绝或写 failed"]
-    wait["等待 Manager 领取"]
-    done["结束"]
-
-    action --> kind
-    kind -- create --> create_check
-    create_check -- 是 --> queued
-    create_check -- 否 --> reject
-    kind -- resume stop --> normal_check
-    normal_check -- 是 --> queued
-    normal_check -- 否 --> reject
-    kind -- delete --> delete_check
-    delete_check -- 是 --> deleting
-    delete_check -- 否 --> reject
-    queued --> wait
-    deleting --> wait
-    reject --> done
-    wait --> done
-```
 
 ## FetchOperations
 
@@ -321,7 +290,7 @@ State Finalization 在同一事务内执行：
 
 重复 final 同一 `operation_rversion` 时，如果 active operation 已清空且主状态已经匹配目标结果，返回 `idempotent_done`。如果主状态不匹配，返回 `stale_operation`。
 
-stop 失败进入 `failed` 是因为 Gitea 已经无法确认 Runtime 是否仍处于可交互一致状态；继续允许 open/SSH 会扩大不一致风险。delete 失败进入 `failed`，用户或管理员可以再次 delete，新的 delete operation 会递增 `operation_rversion`。
+stop 失败进入 `failed`：Gitea 无法确认 Runtime 可交互一致性，继续允许 open/SSH 会扩大不一致风险。delete 失败进入 `failed`，用户或管理员可以再次 delete，新的 delete operation 会递增 `operation_rversion`。
 
 token 随主状态收敛：
 
@@ -373,46 +342,6 @@ ReportRuntimeTransition:
 
 `ReportRuntimeTransition` 不递增 `operation_rversion`，因为它不是 Gitea 下发的指令，而是 Manager 上报的运行事实。
 
-Manager 主动状态上报流程：
-
-```mermaid
-flowchart TD
-    report["RuntimeTransition"]
-    active{"存在 active operation"}
-    status{"当前主状态"}
-    fact_running{"Manager fact"}
-    fact_stopped{"Manager fact"}
-    metadata{"metadata 完整"}
-    conflict["operation conflict"]
-    stale["stale_operation"]
-    write_stopped["写 stopped"]
-    keep_running["幂等保持 running"]
-    write_running["写 running"]
-    keep_stopped["幂等保持 stopped"]
-    metadata_required["metadata_required"]
-    done["结束"]
-
-    report --> active
-    active -- 是 --> conflict
-    active -- 否 --> status
-    status -- running --> fact_running
-    status -- stopped --> fact_stopped
-    status -- 其他 --> stale
-    fact_running -- stopped --> write_stopped
-    fact_running -- running --> keep_running
-    fact_stopped -- running --> metadata
-    fact_stopped -- stopped --> keep_stopped
-    metadata -- 是 --> write_running
-    metadata -- 否 --> metadata_required
-    conflict --> done
-    stale --> done
-    write_stopped --> done
-    keep_running --> done
-    write_running --> done
-    keep_stopped --> done
-    metadata_required --> done
-```
-
 ## Runtime Metadata
 
 `ReportRuntimeMetadata` 上报当前 Runtime 快照：
@@ -433,7 +362,7 @@ Runtime Metadata 写入 Gitea 本地 cache，用于页面展示、Endpoint exist
 - `status=stopped` 时 metadata 只用于展示保留资源信息，不提供 open/SSH。
 - `status=deleting/failed` 返回 stale。
 
-Runtime Metadata 是运行时信息，变化频繁，也可以由 Manager 重建，因此放在 cache 中。cache miss 只影响展示和交互入口，不改变主状态。
+Runtime Metadata 变化频繁且可重建，放在 cache 中。cache miss 只影响展示和交互入口，不改变主状态。
 
 ## 派生展示态
 
@@ -484,7 +413,7 @@ active operation lease 到期时按 Manager 状态判断：
 | offline 且未超过 `MANAGER_RESTART_GRACE` | 暂缓失败。 |
 | offline 超过 `MANAGER_RESTART_GRACE` | 按当前 operation failed 处理。 |
 
-维护恢复是 Manager 级事件，因此不在每条 codespace 上保存 recovery deadline。完整 `ReportInstances(snapshot_complete=true)` 到达后，Gitea 优先使用 inventory 事实处理差异，不继续等待 timeout。
+维护恢复是 Manager 级事件，不在每条 codespace 上保存 recovery deadline。完整 `ReportInstances(snapshot_complete=true)` 到达后，Gitea 优先使用 inventory 事实处理差异，不继续等待 timeout。
 
 ## State Reconciliation
 

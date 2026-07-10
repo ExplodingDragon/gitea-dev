@@ -50,7 +50,7 @@ Gitea 签发给 Runtime Instance 做 git 访问的 access token。
 
 <span id="registration-token"></span>
 ## Registration Token
-管理员创建的明文凭据，存储在 `codespace_manager_token` 表。Manager 通过 `RegisterManager` 注册并获得 manager secret。设计与 `action_runner_token` 一致（明文存储、唯一索引查找）。
+管理员创建的明文凭据，存储在 `codespace_manager_token` 表。Manager 通过 `RegisterManager` 注册并获得 manager secret。设计与 `action_runner_token` 一致。
 
 <span id="runtime-token"></span>
 ## Runtime Token

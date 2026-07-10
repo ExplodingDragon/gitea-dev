@@ -77,21 +77,21 @@ sequenceDiagram
     participant G as Gitea
     participant B as Backend
 
-    M->>G: DeclareManager recovering
-    M->>B: scan runtimes
-    M->>G: ReportInstances snapshot
-    G-->>M: reconciliation instructions
+    M->>G: DeclareManager(recovering)
+    M->>B: 扫描本地 Runtime
+    M->>G: ReportInstances(完整快照)
+    G-->>M: 调和指令
     alt extra runtime
-        M->>B: cleanup local runtime
+        M->>B: 清理本地 Runtime
     else missing runtime
-        G->>G: converge main state
+        G->>G: 收敛主状态
     else matched runtime
         M->>G: ReportRuntimeMetadata
     end
-    M->>G: transition if needed and online
-    G-->>M: online accepted
-    M->>G: FetchOperations create resume
-    G-->>M: operations or empty
+    M->>G: 如有差异则 ReportRuntimeTransition 并 DeclareManager(online)
+    G-->>M: online 确认
+    M->>G: FetchOperations(create/resume)
+    G-->>M: 返回 operation 或空
 ```
 
 实现验收点：
@@ -171,7 +171,7 @@ missing runtime 表示 Gitea 记录中应该存在 Runtime 资源，但 Manager 
 | `deleting` | 视为 cleanup 已完成，物理删除 codespace、token、日志和绑定数据。 |
 | `failed` | 保持 failed。 |
 
-Runtime 缺失说明 Manager 本地没有对应资源。对于 delete，缺失满足目标结果；对于 creating/running/stopped，缺失说明 Gitea 记录和运行侧事实已经无法形成可交互或可恢复的 workspace，因此进入 failed。
+Runtime 缺失说明 Manager 无对应资源。delete 时缺失即满足目标；creating/running/stopped 时缺失表明无法恢复，转入 failed。
 
 ## Manager 主动 Transition 恢复
 
@@ -217,7 +217,7 @@ Manager 重启后继续处理当前 Gitea-issued operation。
 | resume | Runtime 仍停止 | 继续执行 resume。 |
 | resume | Runtime 不存在或恢复失败 | 上报 failed。 |
 
-stop 的目标是让 running codespace 退出可交互运行态，并保留可恢复资源。Runtime 不存在不满足 stopped 的可恢复语义，因此进入 failed，而不是 stopped。resume 的目标是恢复可交互运行态，Manager 先重建 Runtime Metadata，再上报 resume done，可以让主状态和交互入口同步可用。
+stop 让 running codespace 退出可交互态并保留可恢复资源。Runtime 不存在则无法满足 stopped 可恢复语义，故进入 failed。resume 恢复可交互态，Manager 先重建 Runtime Metadata 再上报 resume done，使状态与交互入口同步可用。
 
 ## Reconciliation
 
