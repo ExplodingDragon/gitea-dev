@@ -176,25 +176,25 @@
 <p>Manager 实现、Runtime Instance 使用 Runtime Token 调用的 HTTP/JSON API。</p>
 <p><span id="operation"></span></p>
 <h2 id="operation"><a class="header" href="#operation">Operation</a></h2>
-<p>一次异步生命周期操作，类型为 create、resume、stop、delete。</p>
+<p>Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete。operation 只表示 active 指令，完成后不保留历史状态。</p>
 <p><span id="manager-matching"></span></p>
 <h2 id="manager-matching"><a class="header" href="#manager-matching">Manager Matching</a></h2>
 <p>Gitea 按 owner scope 和 repository tag 匹配可以领取 create operation 的 Manager。</p>
 <p><span id="manager-capacity"></span></p>
 <h2 id="manager-capacity"><a class="header" href="#manager-capacity">Manager Capacity</a></h2>
-<p>Manager 最近上报的本地 create/resume 可接收能力快照，用于展示、诊断和 FetchOperation 领取判断。</p>
+<p>Manager 最近上报到 <code>meta_json</code> 的本地 create/resume 可接收能力快照，用于管理页面展示和诊断。<code>FetchOperations</code> 领取判断以 request 中 <code>capacity_total / capacity_available</code> 声明值为准。</p>
 <p><span id="endpoint"></span></p>
 <h2 id="endpoint"><a class="header" href="#endpoint">Endpoint</a></h2>
 <p>Runtime 声明的可打开入口，使用 endpoint_id 标识。</p>
 <p><span id="gateway-open-token"></span></p>
 <h2 id="gateway-open-token"><a class="header" href="#gateway-open-token">Gateway Open Token</a></h2>
-<p>Gitea 为打开 Endpoint 签发的一次性短期 opaque token。</p>
+<p>Gitea 为打开 Endpoint 签发的一次性短期 opaque token。采用 OAuth2 Authorization Code 模式：Gitea 作为 Authorization Server 签发 authorization code（<code>hex(CryptoRandomBytes(32))</code>），Gateway 作为 Client 以 Manager 身份提交 code 换取 open binding。完整流程见 <a href="gitea-server.html#gateway-open-token">Gitea 服务端 - Gateway Open Token</a>。</p>
 <p><span id="gitea-token"></span></p>
 <h2 id="gitea-token"><a class="header" href="#gitea-token">Gitea Token</a></h2>
 <p>Gitea 签发给 Runtime Instance 做 git 访问的 access token。</p>
 <p><span id="registration-token"></span></p>
 <h2 id="registration-token"><a class="header" href="#registration-token">Registration Token</a></h2>
-<p>管理员创建的明文凭据，存储在 <code>codespace_manager_token</code> 表。Manager 通过 <code>RegisterManager</code> 注册并获得 manager secret。设计与 <code>action_runner_token</code> 一致（明文存储、唯一索引查找）。</p>
+<p>管理员创建的明文凭据，存储在 <code>codespace_manager_token</code> 表。Manager 通过 <code>RegisterManager</code> 注册并获得 manager secret。设计与 <code>action_runner_token</code> 一致。</p>
 <p><span id="runtime-token"></span></p>
 <h2 id="runtime-token"><a class="header" href="#runtime-token">Runtime Token</a></h2>
 <p>Manager 签发给 Runtime Instance 调用 Runtime HTTP API 的 token。</p>
@@ -218,7 +218,7 @@
 <p>Gitea 后台任务处理 operation 超时、过期上报、状态分歧和清理。</p>
 <p><span id="stale-report"></span></p>
 <h2 id="stale-report"><a class="header" href="#stale-report">Stale Report</a></h2>
-<p>Manager 上报中的 <code>codespace_uuid</code>、<code>operation_id</code>、<code>manager_id</code> 或 operation status 与当前 codespace 状态不匹配。</p>
+<p>Manager 上报中的 <code>codespace_uuid</code>、<code>operation_rversion</code>、<code>manager_id</code> 或 operation status 与 Gitea 当前 active operation 不匹配。</p>
 <p><span id="state-divergence"></span></p>
 <h2 id="state-divergence"><a class="header" href="#state-divergence">State Divergence</a></h2>
 <p>Gitea 记录状态与 Manager 上报的 Runtime Instance 实际状态不一致。</p>
@@ -228,6 +228,9 @@
 <p><span id="manager-instruction"></span></p>
 <h2 id="manager-instruction"><a class="header" href="#manager-instruction">Manager Instruction</a></h2>
 <p>Gitea 返回给 Manager 的调和指令，例如 cleanup_local_runtime。</p>
+<p><span id="minimal-info"></span></p>
+<h2 id="minimal-info"><a class="header" href="#minimal-info">Minimal Info</a></h2>
+<p>面向列表页、站点管理员管理视图和 repository 删除后的弱关联展示的缩略字段集，只包含识别对象、判断状态和发起允许动作所需信息（<code>uuid</code>、<code>status</code>、<code>created_unix</code>、<code>user_id</code>、<code>ref_type</code>、<code>manager_id</code> 等），不含 token、internal SSH、Endpoint upstream 或日志正文。完整字段定义见 <a href="gitea-server.html#minimal-info">Gitea 服务端 - Minimal Info</a>。</p>
 <h2 id="命名规则"><a class="header" href="#命名规则">命名规则</a></h2>
 <ul>
 <li>codespace 创建者字段统一为 <code>user_id</code>。</li>

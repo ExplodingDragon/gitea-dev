@@ -170,8 +170,8 @@ service ManagerService {
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
   rpc DeclareManager(DeclareManagerRequest) returns (DeclareManagerResponse);
 
-  // FetchOperation returns one operation for the Manager to execute.
-  rpc FetchOperation(FetchOperationRequest) returns (FetchOperationResponse);
+  // FetchOperations returns operations for the Manager to execute.
+  rpc FetchOperations(FetchOperationsRequest) returns (FetchOperationsResponse);
 
   // UpdateOperation renews the lease, updates progress, or reports a final result.
   rpc UpdateOperation(UpdateOperationRequest) returns (UpdateOperationResponse);
@@ -182,7 +182,8 @@ service ManagerService {
   // ReportRuntimeMetadata writes a Runtime Metadata snapshot to Gitea's local cache.
   rpc ReportRuntimeMetadata(ReportRuntimeMetadataRequest) returns (ReportRuntimeMetadataResponse);
 
-  // RequestGiteaToken requests a one-time Gitea access token for an active create/resume operation.
+  // RequestGiteaToken returns the current Gitea access token for a creating/running codespace,
+  // issuing one only when the codespace has no token.
   rpc RequestGiteaToken(RequestGiteaTokenRequest) returns (RequestGiteaTokenResponse);
 
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
@@ -193,6 +194,9 @@ service ManagerService {
 
   // ReportInstances reports the set of local Runtime Instances (used after Manager restart).
   rpc ReportInstances(ReportInstancesRequest) returns (ReportInstancesResponse);
+
+  // ReportRuntimeTransition reports a Manager-initiated stop/resume fact.
+  rpc ReportRuntimeTransition(ReportRuntimeTransitionRequest) returns (ReportRuntimeTransitionResponse);
 }
 
 // --- RegisterManager ---
@@ -215,7 +219,8 @@ message DeclareManagerRequest {
   string gateway_url = 1;
   string gateway_ssh_addr = 2;
   repeated string tags = 3;
-  // Optional diagnostic metadata.
+  // Includes gateway_ssh_host_key_algorithm, gateway_ssh_host_key_fingerprint_sha256,
+  // gateway_ssh_host_key_updated_unix, capacity snapshot, and backend capabilities.
   map&lt;string, string&gt; meta = 4;
   string version = 5;
   string name = 6;
@@ -225,27 +230,32 @@ message DeclareManagerRequest {
 
 message DeclareManagerResponse {}
 
-// --- FetchOperation ---
+// --- FetchOperations ---
 
-message FetchOperationRequest {
+message FetchOperationsRequest {
   int32 capacity_total = 1;
   int32 capacity_available = 2;
-  // Operation types the Manager is willing to accept this pull.
   repeated string accepted_operation_types = 3; // e.g. ["create", "resume", "stop", "delete"]
+  int32 max_operations = 4;
+  repeated ObservedOperation observed_operations = 5;
 }
 
-message FetchOperationResponse {
-  // Present when an operation was assigned.
-  OperationPayload operation = 1;
+message ObservedOperation {
+  string codespace_uuid = 1;
+  int64 operation_rversion = 2;
+}
+
+message FetchOperationsResponse {
+  repeated OperationPayload operations = 1;
 }
 
 message OperationPayload {
-  string operation_id = 1;
+  int64 operation_rversion = 1;
   string operation_type = 2; // create | resume | stop | delete
   string codespace_uuid = 3;
   int64 lease_deadline_unix = 4;
 
-  // Fields present only for create/resume.
+  // Present for create. Resume uses the already initialized workspace.
   string repo_clone_url = 10;
   string repo_web_url = 11;
   string repo_tag = 12;
@@ -263,9 +273,8 @@ message OperationPayload {
 
 message UpdateOperationRequest {
   string codespace_uuid = 1;
-  string operation_id = 2;
+  int64 operation_rversion = 2;
 
-  // Optional: renew the lease.
   oneof result {
     // Report a final outcome.
     FinalResult final = 10;
@@ -277,16 +286,18 @@ message UpdateOperationRequest {
 message FinalResult {
   // "done" or "failed".
   string status = 1;
-  string status_message = 2;
 }
 
 message ProgressUpdate {
+  // Current boot stage. May be empty to signal "renew lease" only;
+  // Gitea responds with updated deadline_unix.
   string stage = 1;
-  string message = 2;
 }
 
 message UpdateOperationResponse {
-  string operation_status = 1;
+  // "accepted" | "idempotent_done" | "stale_operation"
+  string result = 1;
+  // Latest lease deadline when result is "accepted".
   int64 deadline_unix = 2;
 }
 
@@ -294,7 +305,7 @@ message UpdateOperationResponse {
 
 message UpdateLogRequest {
   string codespace_uuid = 1;
-  string operation_id = 2;
+  int64 operation_rversion = 2;
   // Byte offset within the log file.
   int64 offset = 3;
   // Pre-sanitized log lines, each as a single-line string.
@@ -320,20 +331,19 @@ message ReportRuntimeMetadataResponse {
 
 message RequestGiteaTokenRequest {
   string codespace_uuid = 1;
-  string operation_id = 2;
-  // Must be "create" or "resume".
-  string operation_type = 3;
 }
 
 message RequestGiteaTokenResponse {
-  // The plaintext access token. Returned once; not stored by ManagerService.
+  // The plaintext access token for this codespace.
   string token = 1;
 }
 
 // --- ValidateOpenToken ---
 
+// Validates and consumes an OAuth2-style authorization code
+// issued by Gitea for a codespace endpoint open request.
 message ValidateOpenTokenRequest {
-  string open_token = 1;
+  string code = 1;
 }
 
 message ValidateOpenTokenResponse {
@@ -342,7 +352,7 @@ message ValidateOpenTokenResponse {
   string codespace_uuid = 3;
   string endpoint_id = 4;
   int64 manager_id = 5;
-  // Only present when allowed=false.
+  // Empty when allowed=true.
   string failure_reason = 6;
 }
 
@@ -352,13 +362,9 @@ message VerifySSHPublicKeyRequest {
   // codespace_uuid parsed from SSH connection string (cs-{id} prefix).
   string codespace_uuid = 1;
   string public_key_blob = 2;
-  // Optional, for diagnostics only.
-  string public_key_fingerprint = 3;
-  // Optional, for diagnostics only.
-  string public_key_algorithm = 4;
-  string source_ip = 5;
-  string user_agent_or_client_version = 6;
-  string gateway_session_id = 7;
+  string source_ip = 3;
+  string user_agent_or_client_version = 4;
+  string gateway_session_id = 5;
 }
 
 message VerifySSHPublicKeyResponse {
@@ -381,7 +387,7 @@ message ReportInstancesRequest {
 message RuntimeInstanceRef {
   string codespace_uuid = 1;
   string runtime_state = 2;
-  string observed_operation_id = 3;
+  int64 observed_operation_rversion = 3;
   int64 observed_unix = 4;
 }
 
@@ -396,6 +402,24 @@ message InstanceInstruction {
   string manager_instruction = 2;
   // e.g. "extra_runtime", "missing_runtime", "manager_mismatch".
   string divergence_category = 3;
+}
+
+// --- ReportRuntimeTransition ---
+
+message ReportRuntimeTransitionRequest {
+  string codespace_uuid = 1;
+  // running | stopped
+  string runtime_state = 2;
+  string transition_reason = 3;
+  int64 observed_unix = 4;
+  // Runtime Metadata snapshot observed after the transition.
+  string metadata_json = 5;
+}
+
+message ReportRuntimeTransitionResponse {
+  bool accepted = 1;
+  string failure_category = 2;
+  string manager_instruction = 3;
 }
 </code></pre>
 <h2 id="认证机制"><a class="header" href="#认证机制">认证机制</a></h2>

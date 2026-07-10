@@ -188,7 +188,7 @@
 <li>Manager 可以使用 <code>start_ref</code> 加速 fetch，最终 checkout 以 <code>commit_sha</code> 为准，并校验 HEAD 等于 <code>commit_sha</code>。</li>
 <li>Manager tag matching 和 <code>.gitea/codespace.yaml</code> 使用 base repository。</li>
 </ul>
-<p>PR 页面属于 base repository，但实际代码来自 head commit。锁定 PR 当前 head commit 可以避免创建后 head branch 移动导致 workspace 内容漂移；同时校验 head repository 可读，避免通过 base repository 的 PR ref 间接读取用户无权访问的 head repository。</p>
+<p>PR 页面属于 base repository 但代码来自 head commit。锁定当前 head commit 防止 head branch 移动导致的 workspace 漂移；校验 head repository 可读，防止通过 base repository PR ref 间接访问无权 head repository。</p>
 <h3 id="repository-codespace-配置"><a class="header" href="#repository-codespace-配置">Repository Codespace 配置</a></h3>
 <p>配置文件：</p>
 <pre><code class="language-text">.gitea/codespace.yaml
@@ -205,9 +205,9 @@
 <li><code>ref_type=commit</code>：读取 repository default branch。</li>
 <li>文件缺失等价于 <code>tag=default</code>。</li>
 <li>空仓库在读取配置前返回 empty repository 分类。</li>
-<li>default branch 不存在、目标 branch tree 不可读、配置 blob 不是普通文件时，create 进入 <code>error</code> 并写入配置读取失败日志。</li>
-<li>配置文件超过 <code>CODESPACE_REPO_CONFIG_MAX_SIZE</code> 时，create 进入 <code>error</code> 并写入配置过大日志，默认上限 64 KiB。</li>
-<li>YAML 非法时，create 进入 <code>error</code> 并写入 YAML 解析失败日志。</li>
+<li>default branch 不存在、目标 branch tree 不可读、配置 blob 不是普通文件时，create 进入 <code>failed</code> 并写入配置读取失败日志。</li>
+<li>配置文件超过 <code>CODESPACE_REPO_CONFIG_MAX_SIZE</code> 时，create 进入 <code>failed</code> 并写入配置过大日志，默认上限 64 KiB。</li>
+<li>YAML 非法时，create 进入 <code>failed</code> 并写入 YAML 解析失败日志。</li>
 <li><code>tag</code> 缺失或空字符串等价于 <code>default</code>。</li>
 <li>未知字段忽略，create 日志中提示当前只识别 <code>tag</code>。</li>
 <li><code>tag</code> 解析后 lower-case。</li>
@@ -218,32 +218,62 @@
 <li>tag/commit 场景读取 default branch，避免任意历史 commit 改变 Manager 选择。</li>
 <li>PR 场景使用 base branch，让目标仓库维护者控制运行侧选择；实际代码仍按用户选择的 ref 锁定到具体 commit SHA。</li>
 </ul>
-<p>配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。create 失败时仍创建 codespace 对象并进入 <code>error</code>，日志写明失败原因，用户可以从同一个对象页看到为什么没有进入队列。</p>
+<p>配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。create 失败时仍创建 codespace 对象并进入 <code>failed</code>，日志写明失败原因，用户可以从同一个对象页看到为什么没有进入队列。</p>
 <h3 id="manager-匹配"><a class="header" href="#manager-匹配">Manager 匹配</a></h3>
 <ul>
 <li>create 记录固定 <code>repo_tag</code>。</li>
 <li>enabled Manager 按 owner scope 和 tag 参与匹配。</li>
 <li>global Manager 参与所有 owner scope 的匹配。</li>
 <li>owner scoped Manager 参与相同 repository owner 的匹配；owner 可以是个人用户或组织，组织 ID 使用 Gitea <code>user.id</code>。</li>
-<li>没有 enabled Manager 同时满足 owner scope 和 <code>repo_tag</code> 时，create 进入 <code>error</code> 并写入无可用 Manager 匹配日志。</li>
+<li>没有 enabled Manager 同时满足 owner scope 和 <code>repo_tag</code> 时，create 进入 <code>failed</code> 并写入无可用 Manager 匹配日志。</li>
 <li>create 创建时不绑定具体 Manager。</li>
-<li>具体 <code>manager_id</code> 只在某个 Manager 通过 <code>FetchOperation</code> 成功领取 create <a href="glossary.html#operation">Operation</a> 时写入。</li>
-<li>有匹配 Manager 但全部离线、满载、不调用 <code>FetchOperation</code>，或调用 <code>FetchOperation</code> 但声明不可接收 create 时，create 保持 <code>queued</code>（参见 <a href="glossary.html#manager-capacity">Manager Capacity</a>）。</li>
+<li>具体 <code>manager_id</code> 只在某个 Manager 通过 <code>FetchOperations</code> 成功领取 create <a href="glossary.html#operation">Operation</a> 时写入。</li>
+<li>有匹配 Manager 但全部离线、满载、不调用 <code>FetchOperations</code>，或调用 <code>FetchOperations</code> 但声明不可接收 create 时，create 保持 <code>status=creating, operation_status=queued</code>（参见 <a href="glossary.html#manager-capacity">Manager Capacity</a>），页面可派生展示为 queued。</li>
 </ul>
-<p>owner scope 表达 Manager 管理边界，tag 表达运行能力需求。global Manager 用于站点级容量，owner scoped Manager 用于个人或组织自有容量；两者共同进入 create 匹配，可以让站点管理员和 owner 管理员在同一套领取机制下扩展容量。</p>
+<p>owner scope 表达 Manager 管理边界，tag 表达运行能力需求。global Manager 用于站点级容量，owner scoped Manager 用于个人或组织自有容量。</p>
 <p>Create operation 领取：</p>
 <ul>
-<li>领取前：<code>codespace.manager_id=0</code>，<code>codespace.operation_status=queued</code>。</li>
-<li><code>FetchOperation</code> 通过数据库条件更新完成领取。</li>
-<li>领取同时写入 <code>codespace.manager_id</code>、<code>codespace.operation_status=running</code>、<code>codespace.operation_deadline_unix</code>，并将 codespace 从 <code>queued</code> 推进到 <code>booting</code>。</li>
-<li>领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperation</code> 声明可接收 create、<code>codespace.manager_id=0</code>、<code>codespace.status=queued</code>。</li>
-<li>本次 <code>FetchOperation</code> 的 <code>capacity_available</code> 大于 0 时才领取 create/resume。</li>
-<li>Gitea 不在领取、<code>done|failed</code> 或 timeout 时修改 <code>last_capacity_total / last_capacity_available</code>。</li>
+<li>领取前：<code>codespace.status=creating</code>，<code>codespace.manager_id=0</code>，<code>codespace.operation_type=create</code>，<code>codespace.operation_status=queued</code>。</li>
+<li><code>FetchOperations</code> 通过数据库条件更新完成领取。</li>
+<li>领取同时写入 <code>codespace.manager_id</code>、<code>codespace.operation_status=running</code>、<code>codespace.operation_started_unix</code>、<code>codespace.operation_deadline_unix</code>。</li>
+<li>领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 <code>repo_tag</code>、本次 <code>FetchOperations</code> 声明可接收 create、<code>codespace.manager_id=0</code>、<code>codespace.status=creating</code>、<code>codespace.operation_type=create</code>、<code>codespace.operation_status=queued</code>。</li>
+<li>本次 <code>FetchOperations</code> 的 <code>capacity_available</code> 大于 0 时才领取 create/resume。</li>
+<li><code>capacity_total / capacity_available</code> 仅用于本次领取判断，不写入数据库。数据库中的容量值由 <code>DeclareManager</code> 的 <code>meta_json</code> 更新，仅用于管理页面展示。</li>
 <li>领取成功后，operation 归属保持为领取它的 Manager。</li>
 <li>并发领取失败不是系统错误。</li>
 </ul>
+<p>Create 初始化流程：</p>
+<pre class="mermaid">sequenceDiagram
+    participant U as User
+    participant G as Gitea
+    participant M as Manager
+    participant R as Runtime
+
+    U-&gt;&gt;G: create
+    G-&gt;&gt;G: 校验来源与配置
+    alt source or manager unavailable
+        G-&gt;&gt;G: status failed
+        G--&gt;&gt;U: show failed state
+    else queued
+        G-&gt;&gt;G: status creating
+        G--&gt;&gt;U: show creating state
+        M-&gt;&gt;G: FetchOperations
+        G--&gt;&gt;M: 下发 create 数据
+        M-&gt;&gt;R: 创建 Runtime 并初始化
+        M-&gt;&gt;G: RequestGiteaToken
+        G--&gt;&gt;M: 返回 token
+        R-&gt;&gt;M: 上报 boot 结果
+        alt boot failed
+            M-&gt;&gt;G: UpdateOperation failed
+            G--&gt;&gt;U: show failed state
+        else boot ok
+            M-&gt;&gt;G: 上报 metadata 与 done
+            G--&gt;&gt;U: show running state
+        end
+    end
+</pre>
 <h3 id="boot-与-init"><a class="header" href="#boot-与-init">Boot 与 Init</a></h3>
-<p><code>booting</code> 是首次 create 的环境初始化状态。</p>
+<p>create 的 running operation 是首次环境初始化阶段，页面可派生展示为 <code>booting</code>。</p>
 <p>Codespace Manager 在 Runtime Instance 启动后以 <code>init.sh</code> 作为初始化入口。统一入口可以让 clone、checkout、git 凭据、内部 SSH 和默认 IDE 启动都在同一日志上下文中执行，失败时用户能从一个 codespace 对象页看到完整过程。</p>
 <p><code>init.sh</code> 负责：</p>
 <ul>
@@ -289,19 +319,13 @@
 <tr><td><code>CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY</code></td><td>Gateway 内部 SSH 公钥</td></tr>
 </tbody></table>
 </div>
-<p>可选环境变量：</p>
-<div class="table-wrapper"><table><thead><tr><th>环境变量</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>CODESPACE_BOOT_LOG_PATH</code></td><td>boot 阶段日志写入路径</td></tr>
-</tbody></table>
-</div>
 <p>环境变量规则：</p>
 <ul>
 <li><code>CODESPACE_NAME</code> 由 <code>codespace.uuid</code> 派生（<code>cs-{short_uuid}</code>），每次展示时计算。</li>
-<li><code>CODESPACE_NAME</code> 生成规则固定为 <code>cs-{short_uuid}</code>，其中 <code>short_uuid</code> 取 <code>codespace.uuid</code> 前 12 位。</li>
+<li><code>CODESPACE_NAME</code> 生成规则固定为 <code>cs-{short_uuid}</code>，其中 <code>short_uuid</code> 取 UUID 去掉 <code>-</code> 后前 20 位。</li>
 <li>UI 展示名称使用同一派生规则。</li>
 <li>delete 后 <code>CODESPACE_NAME</code> 不复用。</li>
-<li>Runtime Instance name 由 Manager 用 <code>codespace_uuid</code> 本地生成，<code>CODESPACE_NAME</code> 作为补充标识。</li>
-<li>Runtime Instance name 仍由 Manager 用 <code>codespace_uuid</code> 本地生成。</li>
+<li>Runtime Instance name 使用同一 <code>cs-{short_uuid}</code> 规则，由 Manager 用 <code>codespace_uuid</code> 本地生成。</li>
 <li><code>CODESPACE_WORKSPACE_DIR</code>、<code>CODESPACE_MANAGER_BASE_URL</code> 和 <code>CODESPACE_RUNTIME_TOKEN</code> 由 Manager 创建 Runtime 时注入。</li>
 </ul>
 <p>Boot 完成条件：</p>
@@ -325,59 +349,51 @@ report-endpoints
 </code></pre>
 <h2 id="外部变化"><a class="header" href="#外部变化">外部变化</a></h2>
 <h3 id="repository-删除"><a class="header" href="#repository-删除">Repository 删除</a></h3>
-<p>Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，进入受限模式：create、resume、open、SSH 返回 repository unavailable 分类；logs、stop、delete 继续按 Administrative Permission 判定。</p>
-<p>受限模式的原因是 repository 权限、路径或 git 数据处于不可稳定读取状态，交互入口暂停可以避免 Runtime 继续基于不可靠来源运行；管理入口保留可以让用户或组织管理员查看日志并回收资源。</p>
+<p>Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，只影响 create 的来源校验和后续 Git HTTP(S) 访问。已有 codespace 已经按创建时锁定的 <code>commit_sha</code>、Runtime 数据和 Manager binding 初始化完成，open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定。</p>
 <p>Repository 删除：</p>
 <ul>
-<li>repository 删除确认 UI 提示会清理或影响的 codespace 数量。</li>
+<li>repository 删除确认 UI 提示会影响的 codespace 数量。</li>
 <li>repository 删除成功页或确认摘要展示受影响的 codespace 数量。</li>
 <li>repository 删除在 <code>repo_service.DeleteRepository</code> / <code>DeleteRepositoryDirectly</code> 的数据库事务中执行 codespace pre-cleanup。</li>
 <li>pre-cleanup 放在读取 repository row 和收集删除上下文之后、删除 repository row 之前。</li>
 <li>pre-cleanup 失败时 repository 删除整体失败并回滚。</li>
 <li>对引用该 repository 的关联 codespace，pre-cleanup 在同一事务内：
 <ul>
-<li>吊销 Gitea Token，open/SSH/resume 返回 source repository deleted 分类。</li>
-<li>将 <code>repo_id</code> 置空，并保留 <code>status_message=source repository deleted; cleanup required</code>。</li>
-<li>codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 <code>deleting</code>。</li>
-<li>codespace 从未绑定 Manager 或 Manager 记录不存在时进入 <code>error</code>。</li>
+<li>将 <code>repo_id</code> 置空；空 <code>repo_id</code> 即表示来源 repository 已不可再解析。</li>
+<li>不因 repository 删除单独吊销 Gitea Token；若当前仍有 token，<code>repo_id</code> 置空后它对任何 repository 都会被 repo binding 拒绝。后续进入 <code>stopped</code>、<code>failed</code>、<code>deleting</code> 或物理删除时按状态吊销。</li>
+<li>不创建 delete operation，不改变 <code>status</code>，不清理 Runtime。</li>
 </ul>
 </li>
-<li>disabled Manager 也允许领取已绑定给自己的 delete operation。</li>
-<li>Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 <code>deleting</code>，等待 Manager 回来领取。</li>
-<li>delete timeout 后进入 <code>error</code>。</li>
-<li>repository 删除事务创建的 delete operation 使用 <code>codespace_uuid</code> 生成返回数据。</li>
-<li>repository DB 记录删除后，Manager 仍通过 <code>codespace_uuid</code> 领取 delete operation 并完成 Runtime cleanup。</li>
-<li>source repository 删除后，相关 codespace 列表和详情页根据空 <code>repo_id</code> 与 <code>status_message</code> 显示 <code>source repository deleted</code>。</li>
+<li>source repository 删除后，相关 codespace 列表和详情页根据空 <code>repo_id</code> 显示来源 repository 已删除或不可用。</li>
 <li>repository 删除不发送站点通知。</li>
 </ul>
-<p>repository 与 codespace 的关系不是生命周期强关联。repository 删除后，保留悬空 <code>repo_id</code> 不能恢复原仓库，反而容易让后续权限和展示逻辑误以为还能解析 repository。将关联字段置空并保留明确状态消息，可以让用户知道来源已删除，同时让 codespace 继续按自身 UUID 完成日志查看和 Runtime 清理。</p>
 <h3 id="owneruserorg-删除"><a class="header" href="#owneruserorg-删除">Owner/User/Org 删除</a></h3>
 <ul>
 <li>owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。</li>
 <li>删除该 owner 下 repository 时按 repository 删除规则处理。</li>
 <li>Manager 和 registration token 的归属与管理独立于 owner 或 organization。owner/org 删除操作不级联删除 Manager 或 registration token。</li>
-<li>owner/org 删除触发 repository 删除流程，codespace 由 repository 删除规则处理对应的生命周期。</li>
+<li>owner/org 删除触发 repository 删除流程时，codespace 只执行 repository 删除规则中的弱关联更新和来源展示置空，不级联销毁 Runtime。</li>
 <li>某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。</li>
-<li>创建用户删除后 token 被吊销，open/SSH/resume 返回 user deleted 分类。</li>
-<li>组织管理员可清理组织仓库下的相关 codespace。</li>
+<li>创建用户删除后不因用户删除单独吊销 token；open、SSH 和 resume 返回 user deleted 分类，Git HTTP(S) 访问由 Gitea 现有用户/token 检查自然拒绝。</li>
+<li>站点管理员可管理所有 codespace。</li>
 </ul>
-<p>用户、组织和 repository 删除都走已有 Gitea 删除流程，再由 repository 删除规则处理 codespace。这样做可以复用 Gitea 已有 owner/repository 生命周期顺序，让 codespace 清理成为 repository 删除的一部分，而不是新增一套并行级联规则。</p>
+<p>用户、组织和 repository 删除都走已有 Gitea 删除流程，再由 repository 删除规则处理 codespace 的弱关联更新，复用现有生命周期顺序而不是新增并行级联销毁规则。</p>
 <h3 id="manager-删除"><a class="header" href="#manager-删除">Manager 删除</a></h3>
 <p>Manager 管理流程分为禁用、清理、注销三步：</p>
 <ul>
 <li>常规管理操作使用禁用 Manager。</li>
-<li>禁用 Manager 后，新的 open/SSH/resume/operation 领取根据 Manager disabled 状态返回 disabled 分类。</li>
+<li>禁用 Manager 后，新的 open/SSH/resume/create 领取根据 Manager disabled 状态返回 disabled 分类；已绑定的 stop/delete 领取和上报继续允许。</li>
 <li>禁用 Manager 不批量改写 codespace 生命周期状态，已有状态由后续 operation、用户操作和 reconciliation 处理。</li>
 <li>引用该 Manager 的 codespace 通过 delete operation 完成 Runtime cleanup。</li>
 <li>未删除 codespace 和 active operation 清理完成后，再物理删除 Manager 记录。</li>
 <li>物理删除 Manager 记录表示注销 Gitea 注册身份；后续 ManagerService RPC 返回 unregistered manager 分类。</li>
 </ul>
-<p>这样设计的原因是 Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespace 生命周期操作。把二者分开，可以避免删除 Manager 记录时隐式触发运行侧破坏性动作，也能让管理员先禁用止血，再按 codespace 对象逐个清理和审计。</p>
+<p>Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespace 生命周期操作。分开处理可以避免删除 Manager 记录时隐式触发运行侧破坏性动作，管理员可以先禁用止血再按 codespace 对象逐个清理。</p>
 <h3 id="重命名"><a class="header" href="#重命名">重命名</a></h3>
 <ul>
 <li>记录关联以 ID 为准。</li>
 <li>名称每次展示时解析。</li>
-<li>create/resume operation 返回数据使用当时的当前名称重新生成 clone/web URL。</li>
+<li>create operation 返回数据使用当时的当前名称生成 clone/web URL；resume 基于已初始化 workspace，不重新生成 repository payload。</li>
 <li>显示缓存和 runtime 动态数据按需从 cache 或 Manager 获取，每次展示时计算。</li>
 </ul>
 
