@@ -463,6 +463,38 @@ request 字段：
 - `gitea_token_id` 非空时直接返回保存的 `gitea_token` 明文。
 - `gitea_token_id` 为空时签发新 token，写入 `gitea_token_id` 和 `gitea_token`，再返回明文。
 
+`RequestGiteaToken` 决策流程：
+
+```mermaid
+flowchart TD
+    request[RequestGiteaToken]
+    manager{Manager 绑定有效}
+    status{codespace status}
+    creating{create 已领取}
+    running{无 active stop delete}
+    token{gitea_token_id 非空}
+    return_token[返回明文 token]
+    issue_return[签发保存并返回]
+    unavailable[返回状态不可用]
+    done[结束]
+
+    request --> manager
+    manager -- 否 --> unavailable
+    manager -- 是 --> status
+    status -- creating --> creating
+    status -- running --> running
+    status -- 其他 --> unavailable
+    creating -- 是 --> token
+    creating -- 否 --> unavailable
+    running -- 是 --> token
+    running -- 否 --> unavailable
+    token -- 是 --> return_token
+    token -- 否 --> issue_return
+    return_token --> done
+    issue_return --> done
+    unavailable --> done
+```
+
 ### ValidateOpenToken
 
 - 校验并消费 [Gateway Open Token](glossary.md#gateway-open-token)。

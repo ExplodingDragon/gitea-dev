@@ -36,7 +36,7 @@ Manager 负责：
 
 ```mermaid
 stateDiagram-v2
-    direction LR
+    direction TB
 
     creating: 创建中 (creating)
     running: 运行中 (running)
@@ -100,6 +100,32 @@ operation_deadline_unix
 
 operation 完成后不保留 `done` 或 `failed` operation 状态。Gitea 写入最终主状态，并清空 active operation 字段；失败诊断从 codespace 日志读取。
 
+active operation 生命周期：
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    NoOp: 无 active operation
+    Queued: queued
+    Running: running
+    Done: 已写入目标主状态
+    Failed: 已写入 failed 主状态
+
+    [*] --> NoOp
+    NoOp --> Queued: 写入 operation
+    Queued --> Running: Manager 领取
+    Queued --> Failed: queue timeout
+    Running --> Done: final done
+    Running --> Failed: final failed
+    Running --> Failed: lease timeout
+    Running --> Queued: delete 抢占
+    Done --> NoOp: 清空 active operation
+    Failed --> NoOp: 清空 active operation
+```
+
+`progress` 和 `renew lease` 不改变 `operation_status`，仍停留在 `Running`。delete 抢占时会递增 `operation_rversion` 并替换 active operation payload；若原 operation 仍是 `Queued`，主状态不变但 payload 已替换；若原 operation 是 `Running`，新 delete operation 回到 `Queued` 等待领取。旧版本上报返回 stale。
+
 `operation_rversion` 是 Gitea 当前下发 operation payload 的版本。递增时机：
 
 ```text
@@ -133,6 +159,37 @@ ReportRuntimeTransition
 | `deleting` | 任意用户动作 | 拒绝 |
 
 普通动作要求当前没有 active operation。delete 是终止目标，可以抢占当前 create/resume/stop：Gitea 递增 `operation_rversion`，写入 delete operation，并把主状态改为 `deleting`。旧 Manager 使用旧版本上报时返回 stale，避免旧结果覆盖新的删除目标。
+
+用户动作写入流程：
+
+```mermaid
+flowchart TD
+    action["用户动作"]
+    kind{"动作类型"}
+    create_check{"create 校验通过"}
+    normal_check{"可执行"}
+    delete_check{"状态不是 deleting"}
+    queued["写 queued"]
+    deleting["写 deleting"]
+    reject["拒绝或写 failed"]
+    wait["等待 Manager 领取"]
+    done["结束"]
+
+    action --> kind
+    kind -- create --> create_check
+    create_check -- 是 --> queued
+    create_check -- 否 --> reject
+    kind -- resume stop --> normal_check
+    normal_check -- 是 --> queued
+    normal_check -- 否 --> reject
+    kind -- delete --> delete_check
+    delete_check -- 是 --> deleting
+    delete_check -- 否 --> reject
+    queued --> wait
+    deleting --> wait
+    reject --> done
+    wait --> done
+```
 
 ## FetchOperations
 
@@ -198,6 +255,30 @@ create 领取时额外写入 `manager_id`。领取不递增 `operation_rversion`
 - Manager 已上报相同 `observed_operations` 版本的 running operation 不重复下发完整 payload。
 - Manager 未上报、上报版本不同、或刚领取 queued operation 时返回完整 payload。
 
+`FetchOperations` 领取流程：
+
+```mermaid
+flowchart TD
+    fetch["FetchOperations"]
+    prepare["容量快照和 DB 粗筛"]
+    filter{"有可领取候选"}
+    sort["按优先级排序"]
+    claim{"条件更新成功"}
+    payload["写 running 并返回 payload"]
+    empty["返回空"]
+    done["结束"]
+
+    fetch --> prepare
+    prepare --> filter
+    filter -- 否 --> empty
+    filter -- 是 --> sort
+    sort --> claim
+    claim -- 否 --> filter
+    claim -- 是 --> payload
+    payload --> done
+    empty --> done
+```
+
 ## UpdateOperation 与 State Finalization
 
 `UpdateOperation` 上报 Gitea-issued active operation 的执行情况：
@@ -242,6 +323,30 @@ State Finalization 在同一事务内执行：
 
 stop 失败进入 `failed` 是因为 Gitea 已经无法确认 Runtime 是否仍处于可交互一致状态；继续允许 open/SSH 会扩大不一致风险。delete 失败进入 `failed`，用户或管理员可以再次 delete，新的 delete operation 会递增 `operation_rversion`。
 
+token 随主状态收敛：
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    NoToken: 无 token
+    HasToken: 持有 token
+    Revoking: 吊销处理中
+    Cleared: 字段已清空
+
+    [*] --> NoToken
+    NoToken --> HasToken: 工作状态申请
+    HasToken --> Revoking: stop done
+    HasToken --> Revoking: final failed
+    HasToken --> Revoking: timeout
+    HasToken --> Revoking: missing runtime
+    HasToken --> Revoking: delete cleanup
+    Revoking --> Cleared: 清空 id 和明文
+    Cleared --> NoToken
+```
+
+`creating -> running` 不吊销 token，重复 `RequestGiteaToken` 直接返回已保存明文，二者都不改变 `HasToken` 状态。
+
 ## Manager Runtime Transition
 
 Manager 可以在没有 Gitea-issued active operation 时主动上报本地 stop/resume 事实：
@@ -267,6 +372,46 @@ ReportRuntimeTransition:
 | Manager disabled | `running` | 返回 `manager_disabled` |
 
 `ReportRuntimeTransition` 不递增 `operation_rversion`，因为它不是 Gitea 下发的指令，而是 Manager 上报的运行事实。
+
+Manager 主动状态上报流程：
+
+```mermaid
+flowchart TD
+    report["RuntimeTransition"]
+    active{"存在 active operation"}
+    status{"当前主状态"}
+    fact_running{"Manager fact"}
+    fact_stopped{"Manager fact"}
+    metadata{"metadata 完整"}
+    conflict["operation conflict"]
+    stale["stale_operation"]
+    write_stopped["写 stopped"]
+    keep_running["幂等保持 running"]
+    write_running["写 running"]
+    keep_stopped["幂等保持 stopped"]
+    metadata_required["metadata_required"]
+    done["结束"]
+
+    report --> active
+    active -- 是 --> conflict
+    active -- 否 --> status
+    status -- running --> fact_running
+    status -- stopped --> fact_stopped
+    status -- 其他 --> stale
+    fact_running -- stopped --> write_stopped
+    fact_running -- running --> keep_running
+    fact_stopped -- running --> metadata
+    fact_stopped -- stopped --> keep_stopped
+    metadata -- 是 --> write_running
+    metadata -- 否 --> metadata_required
+    conflict --> done
+    stale --> done
+    write_stopped --> done
+    keep_running --> done
+    write_running --> done
+    keep_stopped --> done
+    metadata_required --> done
+```
 
 ## Runtime Metadata
 

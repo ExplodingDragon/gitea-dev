@@ -99,6 +99,39 @@ Create operation 领取：
 - 领取成功后，operation 归属保持为领取它的 Manager。
 - 并发领取失败不是系统错误。
 
+Create 初始化流程：
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant G as Gitea
+    participant M as Manager
+    participant R as Runtime
+
+    U->>G: create
+    G->>G: validate source and config
+    alt source or manager unavailable
+        G->>G: status failed
+        G-->>U: show failed state
+    else queued
+        G->>G: status creating
+        G-->>U: show creating state
+        M->>G: FetchOperations
+        G-->>M: create payload
+        M->>R: create runtime and init
+        M->>G: RequestGiteaToken
+        G-->>M: token
+        R->>M: boot result
+        alt boot failed
+            M->>G: UpdateOperation failed
+            G-->>U: show failed state
+        else boot ok
+            M->>G: metadata and done
+            G-->>U: show running state
+        end
+    end
+```
+
 ### Boot 与 Init
 
 create 的 running operation 是首次环境初始化阶段，页面可派生展示为 `booting`。
@@ -201,6 +234,23 @@ Repository 删除：
   - 不创建 delete operation，不改变 `status`，不清理 Runtime。
 - source repository 删除后，相关 codespace 列表和详情页根据空 `repo_id` 显示来源 repository 已删除或不可用。
 - repository 删除不发送站点通知。
+
+Repository 删除弱关联流程：
+
+```mermaid
+flowchart TD
+    delete_repo[repository 删除事务]
+    cleanup[置空 repo_id 并保留 status Runtime]
+    token{当前有 token}
+    deny[token 保留但拒绝所有 repo]
+    done[完成 pre cleanup]
+
+    delete_repo --> cleanup
+    cleanup --> token
+    token -- 是 --> deny
+    deny --> done
+    token -- 否 --> done
+```
 
 repository 与 codespace 的关系不是生命周期强关联。repository 删除后，保留悬空 `repo_id` 不能恢复原仓库，反而容易让后续 token 绑定和展示逻辑误以为还能解析 repository。将 `repo_id` 置空，可以用一个明确的机器状态表达来源已不可解析，同时让 codespace 继续按自身 UUID、Manager binding 和 Runtime 数据完成 open、SSH、resume、stop、delete、logs 与后续用户主动清理。
 

@@ -69,6 +69,31 @@ Manager 启动流程：
 
 Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回。`operation_rversion` 相同的 running operation 不需要重复下发完整 payload；版本缺失或不同则由 Gitea 重新下发。
 
+Manager 重启恢复流程：
+
+```mermaid
+sequenceDiagram
+    participant M as Manager
+    participant G as Gitea
+    participant B as Backend
+
+    M->>G: DeclareManager recovering
+    M->>B: scan runtimes
+    M->>G: ReportInstances snapshot
+    G-->>M: reconciliation instructions
+    alt extra runtime
+        M->>B: cleanup local runtime
+    else missing runtime
+        G->>G: converge main state
+    else matched runtime
+        M->>G: ReportRuntimeMetadata
+    end
+    M->>G: transition if needed and online
+    G-->>M: online accepted
+    M->>G: FetchOperations create resume
+    G-->>M: operations or empty
+```
+
 实现验收点：
 
 - recovering 状态写入 `codespace_manager.runtime_state`。

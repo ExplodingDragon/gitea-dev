@@ -136,7 +136,7 @@ sequenceDiagram
 - Runtime Instance name 由 `codespace_uuid` 确定性派生。这样 create、resume、delete 和本地清理都能找到同一个运行实例，便于幂等执行。
 - Gitea 重启和 Manager 重启按日常维护事件处理。重启不直接改变 codespace 主状态，交互入口可以临时返回 metadata_rebuilding/recovering 分类；Manager 恢复完成并上报完整 inventory 后，再由 reconciliation 写入明确结果。这样可以区分正常维护和真实生命周期失败。
 - Gateway Endpoint 第一版支持 HTTP reverse proxy 和 WebSocket upgrade，SSH 使用独立接入面。这样覆盖 Web IDE 和端口预览主场景，同时减少任意 TCP tunnel 带来的鉴权和资源复杂度。
-- Gateway session 使用 TTL、idle timeout 和周期 revalidate。这样既控制长连接资源占用，也能在可预期时间内处理权限变化。
+- Gateway session 使用 TTL、idle timeout 和周期 revalidate。这样既控制长连接资源占用，也能在可预期时间内处理用户登录状态、codespace 状态和 Manager 状态变化。
 - SSH 认证限流与退避由 Gateway 按 source IP、codespace、source IP + codespace 和 public key hash 多维度执行。这样可以降低暴力破解风险，并减少单一维度限流的误伤。
 - Gateway access log 使用结构化 JSON line，并记录模板、hash 和失败分类，不记录 token、cookie、query string 或完整 user agent。这样满足运维排障，同时降低敏感信息泄漏风险。
 - repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中置空 `repo_id`，但不因 repository 删除单独改写主状态。空 `repo_id` 是来源 repository 已不可解析的机器状态；open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定，不依赖已经不存在的 repository row。

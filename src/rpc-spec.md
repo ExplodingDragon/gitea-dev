@@ -29,8 +29,8 @@ service ManagerService {
   // ReportRuntimeMetadata writes a Runtime Metadata snapshot to Gitea's local cache.
   rpc ReportRuntimeMetadata(ReportRuntimeMetadataRequest) returns (ReportRuntimeMetadataResponse);
 
-  // RequestGiteaToken issues or refreshes a Gitea access token for a running codespace,
-  // and can issue the initial token during an active create operation.
+  // RequestGiteaToken returns the current Gitea access token for a creating/running codespace,
+  // issuing one only when the codespace has no token.
   rpc RequestGiteaToken(RequestGiteaTokenRequest) returns (RequestGiteaTokenResponse);
 
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
