@@ -29,7 +29,8 @@ service ManagerService {
   // ReportRuntimeMetadata writes a Runtime Metadata snapshot to Gitea's local cache.
   rpc ReportRuntimeMetadata(ReportRuntimeMetadataRequest) returns (ReportRuntimeMetadataResponse);
 
-  // RequestGiteaToken requests a one-time Gitea access token for an active create/resume operation.
+  // RequestGiteaToken issues or refreshes a Gitea access token for a running codespace,
+  // and can issue the initial token during an active create operation.
   rpc RequestGiteaToken(RequestGiteaTokenRequest) returns (RequestGiteaTokenResponse);
 
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
@@ -101,6 +102,7 @@ message OperationPayload {
   string codespace_uuid = 3;
   int64 lease_deadline_unix = 4;
 
+  // Present for create. Resume uses the already initialized workspace.
   string repo_clone_url = 10;
   string repo_web_url = 11;
   string repo_tag = 12;
@@ -172,13 +174,10 @@ message ReportRuntimeMetadataResponse {
 
 message RequestGiteaTokenRequest {
   string codespace_uuid = 1;
-  int64 operation_rversion = 2;
-  // Must be "create" or "resume".
-  string operation_type = 3;
 }
 
 message RequestGiteaTokenResponse {
-  // The plaintext access token. Returned once; not stored by ManagerService.
+  // The plaintext access token for this codespace.
   string token = 1;
 }
 

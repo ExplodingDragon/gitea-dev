@@ -140,10 +140,10 @@ missing runtime 表示 Gitea 记录中应该存在 Runtime 资源，但 Manager 
 
 | Gitea 状态 | 处理方式 |
 | --- | --- |
-| `creating` | Manager online 且 snapshot complete 后进入 `failed`，清空 active operation。 |
+| `creating` | Manager online 且 snapshot complete 后进入 `failed`，吊销 token，清空 active operation。 |
 | `running` | 进入 `failed`，吊销 token，清空 active operation。 |
 | `stopped` | 进入 `failed`，因为已经无法 resume。 |
-| `deleting` | 视为 cleanup 已完成，物理删除 codespace、日志和绑定数据。 |
+| `deleting` | 视为 cleanup 已完成，物理删除 codespace、token、日志和绑定数据。 |
 | `failed` | 保持 failed。 |
 
 Runtime 缺失说明 Manager 本地没有对应资源。对于 delete，缺失满足目标结果；对于 creating/running/stopped，缺失说明 Gitea 记录和运行侧事实已经无法形成可交互或可恢复的 workspace，因此进入 failed。
@@ -171,10 +171,10 @@ running operation lease 到期时按 Manager 状态判断：
 
 | Manager 状态 | 处理 |
 | --- | --- |
-| online | 按当前 operation failed 处理，清空 active operation。 |
+| online | 按当前 operation failed 处理，吊销 token，清空 active operation。 |
 | recovering | 暂缓失败，等待完整 inventory 或 Manager online。 |
 | offline 且未超过 `MANAGER_RESTART_GRACE` | 暂缓失败。 |
-| offline 超过 `MANAGER_RESTART_GRACE` | 按当前 operation failed 处理，清空 active operation。 |
+| offline 超过 `MANAGER_RESTART_GRACE` | 按当前 operation failed 处理，吊销 token，清空 active operation。 |
 
 维护窗口属于 Manager 可用性事件，不写入每条 codespace。完整 inventory 到达后优先使用运行侧事实，不再等待 operation timeout。
 

@@ -154,11 +154,10 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为初始化入
 环境变量规则：
 
 - `CODESPACE_NAME` 由 `codespace.uuid` 派生（`cs-{short_uuid}`），每次展示时计算。
-- `CODESPACE_NAME` 生成规则固定为 `cs-{short_uuid}`，其中 `short_uuid` 取 `codespace.uuid` 前 12 位。
+- `CODESPACE_NAME` 生成规则固定为 `cs-{short_uuid}`，其中 `short_uuid` 取 UUID 去掉 `-` 后前 20 位。
 - UI 展示名称使用同一派生规则。
 - delete 后 `CODESPACE_NAME` 不复用。
-- Runtime Instance name 由 Manager 用 `codespace_uuid` 本地生成，`CODESPACE_NAME` 作为补充标识。
-- Runtime Instance name 仍由 Manager 用 `codespace_uuid` 本地生成。
+- Runtime Instance name 使用同一 `cs-{short_uuid}` 规则，由 Manager 用 `codespace_uuid` 本地生成。
 - `CODESPACE_WORKSPACE_DIR`、`CODESPACE_MANAGER_BASE_URL` 和 `CODESPACE_RUNTIME_TOKEN` 由 Manager 创建 Runtime 时注入。
 
 Boot 完成条件：
@@ -187,50 +186,42 @@ report-endpoints
 
 ### Repository 删除
 
-Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，进入受限模式：create、resume、open、SSH 返回 repository unavailable 分类；logs、stop、delete 继续按 Administrative Permission 判定。
-
-受限模式的原因是 repository 权限、路径或 git 数据处于不可稳定读取状态，交互入口暂停可以避免 Runtime 继续基于不可靠来源运行；管理入口保留可以让用户或组织管理员查看日志并回收资源。
+Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，只影响 create 的来源校验和后续 Git HTTP(S) 访问。已有 codespace 已经按创建时锁定的 `commit_sha`、Runtime 数据和 Manager binding 初始化完成，open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定。
 
 Repository 删除：
 
-- repository 删除确认 UI 提示会清理或影响的 codespace 数量。
+- repository 删除确认 UI 提示会影响的 codespace 数量。
 - repository 删除成功页或确认摘要展示受影响的 codespace 数量。
 - repository 删除在 `repo_service.DeleteRepository` / `DeleteRepositoryDirectly` 的数据库事务中执行 codespace pre-cleanup。
 - pre-cleanup 放在读取 repository row 和收集删除上下文之后、删除 repository row 之前。
 - pre-cleanup 失败时 repository 删除整体失败并回滚。
 - 对引用该 repository 的关联 codespace，pre-cleanup 在同一事务内：
-  - 吊销 Gitea Token，open/SSH/resume 返回 source repository deleted 分类。
   - 将 `repo_id` 置空；空 `repo_id` 即表示来源 repository 已不可再解析。
-  - codespace 已绑定 Manager 且 Manager 记录存在时创建 delete operation 并进入 `deleting`。
-  - codespace 从未绑定 Manager 或 Manager 记录不存在时进入 `failed`。
-- disabled Manager 也允许领取已绑定给自己的 delete operation。
-- Manager offline 时，只要 Manager 记录仍存在，仍创建 delete operation 并进入 `deleting`，等待 Manager 回来领取。
-- delete operation 在 Manager online 时超过 lease，或 Manager 超过 `MANAGER_RESTART_GRACE` 仍未恢复时进入 `failed`。
-- repository 删除事务创建的 delete operation 使用 `codespace_uuid` 生成返回数据。
-- repository DB 记录删除后，Manager 仍通过 `codespace_uuid` 领取 delete operation 并完成 Runtime cleanup。
+  - 不因 repository 删除单独吊销 Gitea Token；若当前仍有 token，`repo_id` 置空后它对任何 repository 都会被 repo binding 拒绝。后续进入 `stopped`、`failed`、`deleting` 或物理删除时按状态吊销。
+  - 不创建 delete operation，不改变 `status`，不清理 Runtime。
 - source repository 删除后，相关 codespace 列表和详情页根据空 `repo_id` 显示来源 repository 已删除或不可用。
 - repository 删除不发送站点通知。
 
-repository 与 codespace 的关系不是生命周期强关联。repository 删除后，保留悬空 `repo_id` 不能恢复原仓库，反而容易让后续权限和展示逻辑误以为还能解析 repository。将 `repo_id` 置空，可以用一个明确的机器状态表达来源已不可解析，同时让 codespace 继续按自身 UUID 完成日志查看和 Runtime 清理。
+repository 与 codespace 的关系不是生命周期强关联。repository 删除后，保留悬空 `repo_id` 不能恢复原仓库，反而容易让后续 token 绑定和展示逻辑误以为还能解析 repository。将 `repo_id` 置空，可以用一个明确的机器状态表达来源已不可解析，同时让 codespace 继续按自身 UUID、Manager binding 和 Runtime 数据完成 open、SSH、resume、stop、delete、logs 与后续用户主动清理。
 
 ### Owner/User/Org 删除
 
 - owner 删除前，Gitea 现有流程先处理该 owner 下 repositories。
 - 删除该 owner 下 repository 时按 repository 删除规则处理。
 - Manager 和 registration token 的归属与管理独立于 owner 或 organization。owner/org 删除操作不级联删除 Manager 或 registration token。
-- owner/org 删除触发 repository 删除流程，codespace 由 repository 删除规则处理对应的生命周期。
+- owner/org 删除触发 repository 删除流程时，codespace 只执行 repository 删除规则中的弱关联更新和来源展示置空，不级联销毁 Runtime。
 - 某用户只是其他组织仓库 codespace 创建者时，不阻止组织存在。
-- 创建用户删除后 token 被吊销，open/SSH/resume 返回 user deleted 分类。
-- 组织管理员可清理组织仓库下的相关 codespace。
+- 创建用户删除后不因用户删除单独吊销 token；open、SSH 和 resume 返回 user deleted 分类，Git HTTP(S) 访问由 Gitea 现有用户/token 检查自然拒绝。
+- 站点管理员可管理所有 codespace。
 
-用户、组织和 repository 删除都走已有 Gitea 删除流程，再由 repository 删除规则处理 codespace。这样做可以复用 Gitea 已有 owner/repository 生命周期顺序，让 codespace 清理成为 repository 删除的一部分，而不是新增一套并行级联规则。
+用户、组织和 repository 删除都走已有 Gitea 删除流程，再由 repository 删除规则处理 codespace 的弱关联更新。这样做可以复用 Gitea 已有 owner/repository 生命周期顺序，让 codespace 记录清楚表达来源已不可解析，而不是新增一套并行级联销毁规则。
 
 ### Manager 删除
 
 Manager 管理流程分为禁用、清理、注销三步：
 
 - 常规管理操作使用禁用 Manager。
-- 禁用 Manager 后，新的 open/SSH/resume/operation 领取根据 Manager disabled 状态返回 disabled 分类。
+- 禁用 Manager 后，新的 open/SSH/resume/create 领取根据 Manager disabled 状态返回 disabled 分类；已绑定的 stop/delete 领取和上报继续允许。
 - 禁用 Manager 不批量改写 codespace 生命周期状态，已有状态由后续 operation、用户操作和 reconciliation 处理。
 - 引用该 Manager 的 codespace 通过 delete operation 完成 Runtime cleanup。
 - 未删除 codespace 和 active operation 清理完成后，再物理删除 Manager 记录。
@@ -242,5 +233,5 @@ Manager 管理流程分为禁用、清理、注销三步：
 
 - 记录关联以 ID 为准。
 - 名称每次展示时解析。
-- create/resume operation 返回数据使用当时的当前名称重新生成 clone/web URL。
+- create operation 返回数据使用当时的当前名称生成 clone/web URL；resume 基于已初始化 workspace，不重新生成 repository payload。
 - 显示缓存和 runtime 动态数据按需从 cache 或 Manager 获取，每次展示时计算。

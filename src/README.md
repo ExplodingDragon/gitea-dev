@@ -10,7 +10,7 @@ Codespace 是 Gitea 内置的远程开发环境入口。
 | Codespace Manager | Runtime Instance 创建、恢复、停止、删除；Runtime Instance 类型、镜像、资源配置；Runtime Token 生成与校验；Runtime HTTP API；Runtime Metadata 上报；Endpoint upstream 解析与代理 |
 | Codespace Gateway（Manager deployment 内组件） | 用户 Endpoint 接入；用户 SSH 接入；Gateway session 管理；通过 Manager 身份调用 Gitea 校验 Gateway Open Token 与 SSH 认证；到 Runtime Instance 的 SSH channel 转发 |
 
-Gitea 管理生命周期、权限判断和 token 状态，运行时选型和后端（Incus/Docker 等）由 Manager 独立管理。运行时专有配置和 Runtime Token 均由 Manager 维护。
+Gitea 管理生命周期、权限判断和 token 生命周期绑定，运行时选型和后端（Incus/Docker 等）由 Manager 独立管理。运行时专有配置和 Runtime Token 均由 Manager 维护。
 
 ## 架构
 
@@ -115,12 +115,14 @@ sequenceDiagram
 
 - Gitea 只负责授权、状态、日志、token 绑定和跳转入口。
 - Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.Code)` 统一入口）、access token（`models/auth/access_token.go`）、SSH key、登录限制、git、Pull Request 和 Actions task 领取模型。
-- create、open、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一权限判定入口。统一入口让 Web、RPC 和 Gateway 对同一用户状态、repository 状态与 Manager 状态得到一致结论，减少 handler 各自拼接权限条件带来的分歧。
+- create、open、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一权限判定入口。统一入口让 Web、RPC 和 Gateway 对同一用户状态、codespace 状态与 Manager 状态得到一致结论，减少 handler 各自拼接权限条件带来的分歧。
 - 用户拥有 repository code-read 权限就可以创建 codespace。
+- repository 状态只参与 create 阶段的来源校验。codespace 创建完成后，已初始化的 workspace 按 codespace 自身状态继续运行；repository 删除、归档、迁移、ref 移动或创建用户失去 repository 访问权限，只会让后续 Git HTTP(S) 访问被 Gitea 现有权限链路拒绝。
 - codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。
 - Manager 使用 codespace 身份访问 repository，不直接使用自己身份。
-- Runtime git 访问使用基于创建用户当前权限签发的 Gitea access token，只走 Git HTTP(S)。
-- codespace-bound token 继续使用 Gitea access token 和 `write:repository` scope，并通过 repo binding 判定限制到创建时绑定的 repository。这样保留 Gitea 现有 token 体系，同时补足通用 scope 不能表达单仓库边界的问题。
+- Runtime git 访问使用创建用户的 Gitea access token，只走 Git HTTP(S)，每次访问继续经过 Gitea 现有 token、用户、repository、unit 和权限检查。
+- codespace-bound token 继续使用 Gitea access token 和 `write:repository` scope，并在 Gitea 现有检查链路上追加 repo binding 判定：目标 repository 必须是 codespace 绑定的 repository，其他 repository 一律拒绝。这样保留 Gitea 现有 token 体系，同时补足通用 scope 不能表达单仓库边界的问题。
+- Gitea token 只在 `creating/running` 工作状态存在并可用，进入 `stopped`、`failed`、`deleting` 或物理删除时吊销。`creating -> running` 不吊销 token，可直接复用；repository 删除后 `repo_id` 置空，codespace-bound token 对任何 repository 都拒绝。
 - create、resume、stop、delete 必须幂等。
 - 同一 codespace 同一时刻只能有一个 active operation。
 - active operation 完成后清空 operation 字段，不保留 operation 历史；失败诊断通过 codespace 日志读取。
@@ -128,7 +130,7 @@ sequenceDiagram
 - codespace 复用 Gitea 现有 notifier、rate limiter 和 access token 模型。
 - create 失败后在同一 codespace 对象上进入 `failed`，由用户决定 delete 后重新创建。失败时 Runtime、token 和日志可能已部分产生，仅允许 delete 操作保证状态一致。
 - 失败为终态，通过 delete 退出。
-- delete 成功后物理删除 codespace 记录、token 绑定和日志。
+- delete 成功后物理删除 codespace 记录、吊销 token 并删除日志。
 - Manager 的并发容量由 Manager 自行控制并以 `capacity_available` 上报，Gitea 不维护运行容量计数。
 - Manager 使用本地 operation worker pool 执行已领取的 operation，create/resume 使用容量槽位，stop/delete 使用独立 cleanup 队列。这样资源创建与资源回收互不阻塞，Manager 满载时仍能推进清理。
 - Runtime Instance name 由 `codespace_uuid` 确定性派生。这样 create、resume、delete 和本地清理都能找到同一个运行实例，便于幂等执行。
@@ -137,6 +139,6 @@ sequenceDiagram
 - Gateway session 使用 TTL、idle timeout 和周期 revalidate。这样既控制长连接资源占用，也能在可预期时间内处理权限变化。
 - SSH 认证限流与退避由 Gateway 按 source IP、codespace、source IP + codespace 和 public key hash 多维度执行。这样可以降低暴力破解风险，并减少单一维度限流的误伤。
 - Gateway access log 使用结构化 JSON line，并记录模板、hash 和失败分类，不记录 token、cookie、query string 或完整 user agent。这样满足运维排障，同时降低敏感信息泄漏风险。
-- repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中吊销 token 并置空 `repo_id`。空 `repo_id` 是来源 repository 已不可解析的机器状态；Runtime 清理仍通过 `codespace.uuid` 和已绑定 Manager 完成，不依赖已经不存在的 repository row。
+- repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中置空 `repo_id`，但不因 repository 删除单独改写主状态。空 `repo_id` 是来源 repository 已不可解析的机器状态；open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定，不依赖已经不存在的 repository row。
 - codespace 日志第一版存储在 DBFS，使用 byte offset 追加和读取。DBFS 已适合运行中日志 seek/read/write，先不引入对象存储归档可以减少日志 transfer 状态对生命周期状态机的影响。
 - 测试按 models、services、RPC routes、Web routes 和 integration 分层组织。这样可以分别覆盖数据模型、状态事务、权限/token 边界和跨层生命周期流程，让 Gitea 侧测试聚焦数据库状态和服务行为。

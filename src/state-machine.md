@@ -10,7 +10,7 @@ Codespace 生命周期由三类数据共同表达：
 | active operation 字段 | Gitea 当前下发给 Manager 的生命周期指令。 |
 | Manager runtime fact | Manager 通过 inventory、metadata 和 transition 上报的本地运行事实。 |
 
-Gitea 下发动作以 active operation 为准；Manager 本地资源存在性以 Manager 上报为事实来源，但只有 Gitea 校验并写入数据库后才改变主状态。`queued`、`booting`、`stopping`、`resuming`、`metadata_rebuilding` 和 `recovering` 都是派生展示态，不写入 `codespace.status`。
+Gitea 下发动作以 active operation 为准；Manager 本地资源存在性以 Manager 上报为事实来源，但只有 Gitea 校验并写入数据库后才改变主状态。Repository 状态只参与 create 来源校验；codespace 创建完成后，状态机不再因 repository 删除、归档、迁移、ref 变化或访问权限变化而改变主状态。`queued`、`booting`、`stopping`、`resuming`、`metadata_rebuilding` 和 `recovering` 都是派生展示态，不写入 `codespace.status`。
 
 Gitea 负责：
 
@@ -120,7 +120,7 @@ ReportInstances
 ReportRuntimeTransition
 ```
 
-`operation_rversion` 写入 `FetchOperations` 返回数据，并由 `UpdateOperation`、`UpdateLog`、`RequestGiteaToken` 携带。Gitea 按 `codespace_uuid + operation_rversion + manager_id` 校验上报归属。旧版本上报返回 `stale_operation`，主状态不变。
+`operation_rversion` 写入 `FetchOperations` 返回数据，并由 `UpdateOperation`、`UpdateLog` 携带。Gitea 按 `codespace_uuid + operation_rversion + manager_id` 校验 operation 上报归属。旧版本上报返回 `stale_operation`，主状态不变。
 
 ## 用户动作映射
 
@@ -158,7 +158,7 @@ operations:
     operation_type
     codespace_uuid
     lease_deadline_unix
-    create/resume 数据
+    create 数据
 ```
 
 领取优先级：
@@ -222,10 +222,10 @@ operation_status=running
 
 | operation | done | failed |
 | --- | --- | --- |
-| create | `status=running, clear active operation` | `status=failed, clear active operation` |
-| resume | `status=running, clear active operation` | `status=failed, clear active operation` |
-| stop | `status=stopped, stopped_unix=now, clear active operation` | `status=failed, clear active operation` |
-| delete | 物理删除 codespace、日志和绑定数据 | `status=failed, clear active operation` |
+| create | `status=running, keep token, clear active operation` | `status=failed, clear active operation, revoke token` |
+| resume | `status=running, clear active operation` | `status=failed, clear active operation, revoke token` |
+| stop | `status=stopped, stopped_unix=now, clear active operation, revoke token` | `status=failed, clear active operation, revoke token` |
+| delete | 物理删除 codespace、token、日志和绑定数据 | `status=failed, clear active operation, revoke token` |
 
 State Finalization 在同一事务内执行：
 
@@ -233,8 +233,8 @@ State Finalization 在同一事务内执行：
 2. 校验 `operation_rversion`、`manager_id` 和 `operation_status`。
 3. 校验当前主状态、operation 类型和目标结果匹配。
 4. 更新 codespace 主状态。
-5. 更新 token 状态。
-6. 写入 `stopped_unix`、`gitea_token_id` 等状态字段。
+5. 按目标主状态处理 token 生命周期绑定。
+6. 写入 `stopped_unix` 等状态字段。
 7. 清空 active operation 字段。
 8. 封闭当前运行中日志追加窗口。
 
@@ -259,7 +259,7 @@ ReportRuntimeTransition:
 
 | 当前 Gitea 状态 | Manager fact | Gitea 行为 |
 | --- | --- | --- |
-| `running` 且无 active operation | `stopped` | 写 `status=stopped`，吊销 token，写 `stopped_unix=now` |
+| `running` 且无 active operation | `stopped` | 写 `status=stopped`，写 `stopped_unix=now`，吊销 token |
 | `stopped` 且无 active operation | `running` | 写 `status=running`，要求同请求写入 Runtime Metadata |
 | `running/stopped` 且有 active operation | 任意 | 返回 `current_operation_conflict`，主状态不变 |
 | `creating/deleting/failed` | 任意 | 返回 `stale_operation`，主状态不变 |
@@ -321,7 +321,8 @@ Runtime Metadata 是运行时信息，变化频繁，也可以由 Manager 重建
 | Manager 主动报 stopped，但 Gitea 有 active operation | 返回 `current_operation_conflict`，以 active operation 为准 |
 | Manager 主动报 running，但缺失 Runtime Metadata | 拒绝 transition，返回 `metadata_required` |
 | Runtime Metadata 丢失 | 主状态不变，open/SSH 返回 `metadata_rebuilding` |
-| token 与主状态不一致 | reconciliation 按主状态修正 token |
+| `creating/running` token 缺失 | 允许 Manager 通过 `RequestGiteaToken` 获取新 token |
+| `stopped/failed/deleting` token 仍存在 | reconciliation 调用生命周期入口吊销 token |
 
 ## 超时处理
 
@@ -351,7 +352,7 @@ active operation lease 到期时按 Manager 状态判断：
 - 检查 Manager online/offline/recovering。
 - 处理 `ReportInstances` 中的 extra/missing/mismatch。
 - 处理 Runtime Metadata cache miss 对交互入口的影响。
-- 修正 token 与主状态不一致。
+- 检查并收敛 token 生命周期绑定。
 - 通过 State Finalization 写入明确结果。
 
 恢复证据：
