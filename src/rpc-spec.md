@@ -136,11 +136,15 @@ message FinalResult {
 }
 
 message ProgressUpdate {
+  // Current boot stage. May be empty to signal "renew lease" only;
+  // Gitea responds with updated deadline_unix.
   string stage = 1;
 }
 
 message UpdateOperationResponse {
-  string operation_status = 1;
+  // "accepted" | "idempotent_done" | "stale_operation"
+  string result = 1;
+  // Latest lease deadline when result is "accepted".
   int64 deadline_unix = 2;
 }
 
@@ -183,8 +187,10 @@ message RequestGiteaTokenResponse {
 
 // --- ValidateOpenToken ---
 
+// Validates and consumes an OAuth2-style authorization code
+// issued by Gitea for a codespace endpoint open request.
 message ValidateOpenTokenRequest {
-  string open_token = 1;
+  string code = 1;
 }
 
 message ValidateOpenTokenResponse {

@@ -95,7 +95,7 @@ Create operation 领取：
 - 领取同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_started_unix`、`codespace.operation_deadline_unix`。
 - 领取条件包含 caller Manager enabled、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperations` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=creating`、`codespace.operation_type=create`、`codespace.operation_status=queued`。
 - 本次 `FetchOperations` 的 `capacity_available` 大于 0 时才领取 create/resume。
-- Gitea 不在领取、final result 或 timeout 时修改 `last_capacity_total / last_capacity_available`。
+- `capacity_total / capacity_available` 仅用于本次领取判断，不写入数据库。数据库中的容量值由 `DeclareManager` 的 `meta_json` 更新，仅用于管理页面展示。
 - 领取成功后，operation 归属保持为领取它的 Manager。
 - 并发领取失败不是系统错误。
 
@@ -235,10 +235,6 @@ Repository 删除：
 - source repository 删除后，相关 codespace 列表和详情页根据空 `repo_id` 显示来源 repository 已删除或不可用。
 - repository 删除不发送站点通知。
 
-
-Repository 删除：
-
-repository 与 codespace 不是生命周期强关联。将 `repo_id` 置空，用一个明确的机器状态表达来源已不可解析，codespace 继续按自身 UUID、Manager binding 和 Runtime 数据完成 open、SSH、resume、stop、delete、logs 与后续清理。
 
 ### Owner/User/Org 删除
 

@@ -100,7 +100,7 @@ sequenceDiagram
 
     User->>Gitea: POST /codespace/{uuid}/open endpoint_id
     Gitea->>Gitea: 校验状态 / 权限 / Endpoint 元数据
-    Gitea-->>User: 302 Gateway URL 携带 open_token
+    Gitea-->>User: 302 Gateway URL 携带 code
     User->>Gateway: 打开 Endpoint
     Gateway->>Gitea: ValidateOpenToken 通过 Manager 身份
     Gitea-->>Gateway: 允许
@@ -116,7 +116,7 @@ sequenceDiagram
 - Gitea 只负责授权、状态、日志、token 绑定和跳转入口。
 - Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.Code)` 统一入口）、access token（`models/auth/access_token.go`）、SSH key、登录限制、git、Pull Request 和 Actions task 领取模型。
 - create、open、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一权限判定入口。统一入口让 Web、RPC 和 Gateway 对同一用户状态、codespace 状态与 Manager 状态得到一致结论，减少 handler 各自拼接权限条件带来的分歧。
-- 用户拥有 repository code-read 权限就可以创建 codespace。
+- 用户登录后，满足 Gitea 登录限制（`is_active`、`prohibit_login`、`must_change_password`、站点强制 2FA）且拥有 repository code-read 权限，就可在许可的仓库状态下创建 codespace。
 - repository 状态只参与 create 阶段的来源校验。codespace 创建完成后，已初始化的 workspace 按 codespace 自身状态继续运行；repository 删除、归档、迁移、ref 移动或创建用户失去 repository 访问权限，只会让后续 Git HTTP(S) 访问被 Gitea 现有权限链路拒绝。
 - codespace 使用创建用户自己的 access token 访问 repository，是用户私有对象而非 repository 共享资源。
 - Manager 使用 codespace 身份访问 repository，不直接使用自己身份。

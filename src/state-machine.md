@@ -153,6 +153,7 @@ ReportRuntimeTransition
 | 当前主状态 | 用户动作 | 写入结果 |
 | --- | --- | --- |
 | 无记录 | create | `status=creating, operation_type=create, operation_status=queued, manager_id=0` |
+| `running` | open / SSH | 不写入 operation 字段；由 Gitea 校验后直接 302 或转交 Gateway |
 | `running` | stop | `status=running, operation_type=stop, operation_status=queued` |
 | `stopped` | resume | `status=stopped, operation_type=resume, operation_status=queued` |
 | `creating/running/stopped/failed` | delete | `status=deleting, operation_type=delete, operation_status=queued` |
@@ -197,10 +198,10 @@ delete -> stop -> resume -> create
 
 | operation | 条件 |
 | --- | --- |
-| delete | 已绑定当前 Manager，主状态为 `deleting`，`operation_status=queued` |
-| stop | 已绑定当前 Manager，主状态为 `running`，`operation_type=stop`，`operation_status=queued` |
-| resume | 已绑定当前 Manager，主状态为 `stopped`，`operation_type=resume`，`operation_status=queued`，本次声明接受 resume，容量可用 |
-| create | 未绑定 Manager，主状态为 `creating`，`operation_type=create`，`operation_status=queued`，owner scope 匹配，tag 匹配，本次声明接受 create，容量可用 |
+| delete | 已绑定当前 Manager，主状态为 `deleting`，`operation_status=queued`（不要求 `accepted_operation_types` 包含 delete） |
+| stop | 已绑定当前 Manager，主状态为 `running`，`operation_type=stop`，`operation_status=queued`（不要求 `accepted_operation_types` 包含 stop） |
+| resume | 已绑定当前 Manager，主状态为 `stopped`，`operation_type=resume`，`operation_status=queued`，本次声明接受 resume，容量可用，caller Manager enabled 且 `runtime_state=online` |
+| create | 未绑定 Manager，主状态为 `creating`，`operation_type=create`，`operation_status=queued`，owner scope 匹配，tag 匹配，本次声明接受 create，容量可用，caller Manager enabled 且 `runtime_state=online` |
 
 领取成功后同事务写入：
 
@@ -273,7 +274,7 @@ operation_status=running
 | operation | done | failed |
 | --- | --- | --- |
 | create | `status=running, keep token, clear active operation` | `status=failed, clear active operation, revoke token` |
-| resume | `status=running, clear active operation` | `status=failed, clear active operation, revoke token` |
+| resume | `status=running, clear active operation`（`stopped_unix` 不清零，保留最近一次停止时间戳） | `status=failed, clear active operation, revoke token` |
 | stop | `status=stopped, stopped_unix=now, clear active operation, revoke token` | `status=failed, clear active operation, revoke token` |
 | delete | 物理删除 codespace、token、日志和绑定数据 | `status=failed, clear active operation, revoke token` |
 
@@ -375,7 +376,7 @@ Runtime Metadata 变化频繁且可重建，放在 cache 中。cache miss 只影
 | `status=running && operation_type=stop && operation_status in (queued,running)` | `stopping` |
 | `status=stopped && operation_type=resume && operation_status in (queued,running)` | `resuming` |
 | `status=deleting` | `deleting` |
-| `status=running && Manager offline/recovering` | `running_unavailable` / `recovering` |
+| `status=running && Manager offline/recovering` | `recovering` |
 | Runtime Metadata cache miss 且 Manager online/recovering | `metadata_rebuilding` |
 
 这些状态用于 UI 和失败分类，不写入 `codespace.status`。
