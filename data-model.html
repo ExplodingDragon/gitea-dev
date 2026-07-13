@@ -175,6 +175,7 @@
 <tr><td><code>operation_created_unix</code></td><td>operation 创建时间戳</td><td>用户 create/resume/stop/delete 动作创建 operation 时写入</td></tr>
 <tr><td><code>operation_started_unix</code></td><td>operation 被领取时间戳</td><td>Manager 通过 <code>FetchOperations</code> 成功领取时写入</td></tr>
 <tr><td><code>operation_deadline_unix</code></td><td>lease 截止时间戳</td><td>Manager 领取和续租时更新；维护恢复窗口由 Manager 运行态推导，不写入 codespace 行</td></tr>
+<tr><td><code>runtime_generation</code></td><td>Manager 主动运行事实版本</td><td>初始为 0；绑定 Manager 每次主动 stop/resume 时递增，用于拒绝乱序 <code>ReportRuntimeTransition</code>，只保存最新版本</td></tr>
 <tr><td><code>gitea_token_id</code></td><td>当前有效 Gitea access token ID</td><td>为空表示当前没有有效 token；<code>creating/running</code> 可签发，进入 <code>stopped/failed/deleting</code> 或物理删除时吊销并清空</td></tr>
 <tr><td><code>gitea_token</code></td><td>当前有效 Gitea access token 明文</td><td>只供绑定 Manager 通过 <code>RequestGiteaToken</code> 获取；不进入 Web/API/Minimal Info/日志/Runtime Metadata/Gateway Open Token</td></tr>
 <tr><td><code>last_active_unix</code></td><td>最近用户交互时间戳</td><td>成功 open Endpoint/SSH auth/resume 进入 running 后更新；仅用于 UI 排序和清理参考，不用于权限判断</td></tr>
@@ -189,7 +190,7 @@
 </tbody></table>
 </div>
 <p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
-<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。repository 删除后 <code>repo_id</code> 置空，空 <code>repo_id</code> 即来源 repository 已不可解析的机器状态。codespace 创建完成后按 <code>codespace.uuid</code>、<code>user_id</code> 和 <code>manager_id</code> 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库，反而会让展示逻辑多一层不可解析状态。repo-bound token 在 <code>repo_id</code> 为空时拒绝所有 repository 访问。</p>
+<p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。repository 删除后 <code>repo_id</code> 置空，空 <code>repo_id</code> 即来源 repository 已不可解析的机器状态。create operation 完成、workspace 已初始化后，codespace 按 <code>codespace.uuid</code>、<code>user_id</code> 和 <code>manager_id</code> 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库，反而会让展示逻辑多一层不可解析状态。repo-bound token 在 <code>repo_id</code> 为空时拒绝所有 repository 访问。</p>
 <p>endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
@@ -204,6 +205,7 @@
 <tr><td><code>last_online_unix</code></td><td>最近在线时间戳</td><td></td></tr>
 <tr><td><code>last_recovering_unix</code></td><td>最近进入 recovering 时间戳</td><td>Manager 启动恢复、Runtime scan 或 metadata rebuild 开始时更新</td></tr>
 <tr><td><code>last_recovered_unix</code></td><td>最近恢复完成时间戳</td><td>Manager 完成本地 Runtime scan 和 Runtime Metadata 重建后更新</td></tr>
+<tr><td><code>inventory_generation</code></td><td>最近接受的完整 Runtime inventory 版本</td><td>初始为 0；更高版本驱动差异计算，相同版本幂等忽略，更低版本拒绝，避免延迟旧快照触发错误的 missing 判定</td></tr>
 <tr><td><code>created_by</code></td><td>创建者 user ID</td><td></td></tr>
 <tr><td><code>created_unix</code></td><td>创建时间戳</td><td></td></tr>
 <tr><td><code>updated_unix</code></td><td>更新时间戳</td><td></td></tr>
@@ -222,6 +224,12 @@
 </tbody></table>
 </div>
 <p>设计与 <code>action_runner_token</code> 一致：明文存储，唯一索引。token 可复用，支持多个 Manager 用同一 token 注册。<code>owner_id</code> 与 Gitea repository owner 语义一致，组织是 <code>user</code> 表中 <code>type=organization</code> 的 owner 记录。</p>
+<p>实现验收点：</p>
+<ul>
+<li>数据迁移创建文中列出的真实字段、非空默认值和枚举约束。</li>
+<li>active operation 完成后 operation 字段清空，<code>operation_rversion</code> 和最新事实 generation 保留当前值。</li>
+<li>token ID 与明文字段在生命周期事务中同时写入或同时清空。</li>
+</ul>
 <h2 id="manager-metadata-结构"><a class="header" href="#manager-metadata-结构">Manager Metadata 结构</a></h2>
 <p><code>codespace_manager.meta_json</code> 保存 Manager 上报的展示和诊断信息。固定结构：</p>
 <pre><code class="language-json">{
@@ -243,6 +251,12 @@
 <li>Manager 每次 <code>DeclareManager</code> 覆盖写入当前 metadata。</li>
 <li>Gitea 不在普通 codespace 列表接口返回完整 <code>meta_json</code>；需要展示 SSH 连接信息的页面按权限读取必要字段。</li>
 </ul>
+<p>实现验收点：</p>
+<ul>
+<li>Declare metadata 经过固定 key 校验后覆盖写入规范化 JSON。</li>
+<li>管理页面可展示 Gateway SSH algorithm、SHA256 fingerprint 和更新时间。</li>
+<li>容量快照只用于展示与诊断，不参与后续 Fetch 领取判断。</li>
+</ul>
 <h2 id="索引"><a class="header" href="#索引">索引</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
 <tr><td>codespace</td><td><code>uuid</code>（主键）</td></tr>
@@ -256,6 +270,11 @@
 <tr><td>codespace_manager_token</td><td><code>(owner_id, is_active)</code></td></tr>
 </tbody></table>
 </div>
+<p>实现验收点：</p>
+<ul>
+<li>queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。</li>
+<li>token、UUID 的唯一索引阻止重复记录。</li>
+</ul>
 <h2 id="本地-cache"><a class="header" href="#本地-cache">本地 Cache</a></h2>
 <p>Gitea 本地 cache 只保存短期易失数据：</p>
 <ul>
@@ -269,6 +288,11 @@
 <li>一次性 token 校验通过本机锁串行化，使用 get → validate → delete 模式，cache 原生原子操作不是必需依赖。</li>
 <li>cache 内容都是短期、可失效或可由 Manager 重建的数据；丢失不影响 codespace 生命周期、权限、删除处理或 operation 超时判断。</li>
 <li>主状态和权限相关的持久数据都以数据库为准。</li>
+</ul>
+<p>实现验收点：</p>
+<ul>
+<li>清空本地 cache 后 codespace 主状态、active operation、token binding 和日志仍可从数据库恢复。</li>
+<li>open code cache 丢失只使未消费 code 失效，Runtime Metadata cache 丢失只暂时影响交互和展示。</li>
 </ul>
 <h2 id="runtime-metadata-结构"><a class="header" href="#runtime-metadata-结构">Runtime Metadata 结构</a></h2>
 <p><code>ReportRuntimeMetadata</code> 只写当前 Runtime Metadata 快照。允许的结构：</p>
@@ -309,14 +333,21 @@
 <li><code>label</code> 只用于 UI 展示，可以重复，不是路由键。</li>
 <li>Runtime Metadata 保存在 Gitea 本地 cache。</li>
 <li>key：<code>codespace:runtime-meta:{codespace_uuid}</code></li>
-<li>value：当前 <code>endpoints + internal_ssh + boot + last_reported_unix</code></li>
+<li>value：当前 <code>endpoints + internal_ssh + boot + last_reported_unix</code>，以及 request envelope 中的 <code>metadata_generation</code></li>
 <li>ttl：<code>MANAGER_OFFLINE_TIMEOUT * 2</code></li>
 <li>只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。</li>
 <li>Gitea 信任 Runtime Metadata cache 仅表示 Endpoint existence check 和 UI 展示信任当前 cache 内容。</li>
 <li>Gitea 重启或本地 cache 丢失后，Runtime Metadata 由 Manager 重建。</li>
 <li>Manager 离线时，新的 open 和 SSH 需要 Manager online 才能执行授权校验。</li>
 <li>Runtime Metadata 仅记录当前最新快照，cache miss 只影响交互与展示。</li>
+<li><code>metadata_generation</code> 由 Manager 按 codespace 单调递增；相同版本幂等返回且不覆盖 cache，更低版本拒绝。</li>
 <li>Runtime Metadata 是动态运行信息，用于展示和交互入口。主状态由 operation 状态写入和 reconciliation 处理，推进依据来自数据库状态。</li>
+</ul>
+<p>实现验收点：</p>
+<ul>
+<li>metadata generation 相同的重试幂等，更低 generation 不覆盖 cache。</li>
+<li>endpoint ID 在单个 codespace 内唯一，internal SSH 不进入普通 UI/API。</li>
+<li>cache TTL 刷新不改写 <code>last_active_unix</code> 或主状态。</li>
 </ul>
 <h2 id="日志存储"><a class="header" href="#日志存储">日志存储</a></h2>
 <p>Codespace <a href="glossary.html#operation">Operation</a> 日志存储在 DBFS（<code>models/dbfs/</code>，32KB 分块 + 乐观锁）。</p>
@@ -326,6 +357,7 @@
 <p>规则：</p>
 <ul>
 <li>Manager 通过 byte offset 追加，单文件连续写入。</li>
+<li>Gitea 服务层可以在 create 前置校验和最终状态收敛时通过内部入口追加摘要；该入口与 Manager 写入使用同一 offset 事务和日志元数据。</li>
 <li>offset 等于当前大小时追加。</li>
 <li>offset 小于当前大小时，只允许幂等重放同一段内容。</li>
 <li>offset 大于当前大小时返回 offset gap 分类，保持日志文件连续。</li>
@@ -339,6 +371,13 @@
 <li>第一版不归档对象存储，<code>log_storage</code> 固定为 <code>dbfs</code>。</li>
 </ul>
 <p>日志存储在 DBFS 单文件中，<code>codespace</code> 行保存当前日志元数据。只有当前 <code>operation_status=running</code> 且 <code>operation_rversion</code> 匹配时允许追加日志。第一版不引入对象存储归档，避免日志 transfer 状态影响生命周期状态机。</p>
+<p>实现验收点：</p>
+<ul>
+<li><code>runtime_generation</code> 和 <code>inventory_generation</code> 均为非空、初始值为 0 的当前版本字段，不保存历史记录。</li>
+<li>repository 删除后 <code>repo_id</code> 置空，其他持久字段与主状态保持不变。</li>
+<li>Runtime Metadata cache 只接受不低于当前 <code>metadata_generation</code> 的快照。</li>
+<li>codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。</li>
+</ul>
 
                     </main>
 

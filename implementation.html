@@ -167,6 +167,11 @@ modules/codespace/
 </code></pre>
 <p>Web handler 与 ManagerService RPC handler 分别放在 Web 与 API/Connect 入口下。页面交互、Manager RPC 鉴权和服务层状态推进各自清晰，后续测试也能分别覆盖用户请求和 Manager 请求。</p>
 <p>Runtime HTTP API 由 Manager 实现，路由与 Gitea route 分离。</p>
+<p>实现验收点：</p>
+<ul>
+<li>Web handler、Manager RPC handler、服务层和数据模型之间没有反向依赖。</li>
+<li>Runtime HTTP API 不注册到 Gitea router。</li>
+</ul>
 <h2 id="迁移目标"><a class="header" href="#迁移目标">迁移目标</a></h2>
 <p>本文档是最终设计基线。</p>
 <p>实现以本文档描述的 Gitea 内置 codespace 模型为准：</p>
@@ -176,7 +181,7 @@ modules/codespace/
 <li>生命周期入口使用 <code>create / open / resume / stop / delete</code>。这些动作覆盖用户需要的完整生命周期，并与状态机中的 operation 类型保持一致。</li>
 <li>主状态使用 <code>creating / running / stopped / deleting / failed</code>。<code>queued / booting / stopping / resuming / metadata_rebuilding / recovering</code> 由主状态、operation 字段和 Manager 运行态派生，用于 UI 和失败分类，不写入 <code>codespace.status</code>。</li>
 <li>异步生命周期统一称为 operation。统一术语后，领取、lease、状态写入和 reconciliation 可以使用同一套处理逻辑，也能和 task、job 等 CI/CD 术语区分开。</li>
-<li>容量控制由 Manager 通过 <code>capacity_total / capacity_available</code> 上报。Gitea 保存最近容量快照用于 UI、诊断和 <code>FetchOperations</code> 领取判断，真实资源占用由 Manager 控制，因为只有 Manager 能看到本地 Runtime 队列、backend 限制和启动中实例。</li>
+<li>容量控制由 Manager 通过 <code>capacity_total / capacity_available</code> 上报。Declare 中的最近容量快照只用于 UI 和诊断；<code>FetchOperations</code> 只使用本次 request 的容量判断 create/resume 领取。真实资源占用由 Manager 控制，因为只有 Manager 能看到本地 Runtime 队列、backend 限制和启动中实例。</li>
 <li>Gitea 侧复用现有 permission、token、SSH key、setting、cron、routing、DBFS 和测试组织方式。复用现有基础能力减少新的安全边界和重复实现，让 codespace 行为与 Gitea 现有访问模型一致。</li>
 </ul>
 <p>实现完成后的最低验证：</p>
@@ -185,6 +190,11 @@ go test ./...
 make fmt
 make lint-backend
 </code></pre>
+<p>实现验收点：</p>
+<ul>
+<li>实现命名、主状态、operation 类型和路由与最终设计文档一致。</li>
+<li>Gitea 不包含具体 Runtime backend 驱动或本地容量计数。</li>
+</ul>
 <h2 id="测试组织"><a class="header" href="#测试组织">测试组织</a></h2>
 <p>测试按层组织：</p>
 <ul>
@@ -193,6 +203,7 @@ make lint-backend
 <li><code>routers/api/codespace</code>：ManagerService RPC auth、<code>FetchOperations</code> 领取、UpdateOperation 幂等。</li>
 <li><code>routers/web/codespace</code>：create/open/stop/resume/delete 页面行为。</li>
 <li><code>integration</code>：create -&gt; fetch operation -&gt; log -&gt; done -&gt; open token -&gt; delete 完整流程。</li>
+<li><code>integration</code>：覆盖未绑定同步 delete、resume 后 token 轮换、running operation 重发、旧 generation 拒绝和 Gateway session revalidate。</li>
 </ul>
 <p>测试辅助：</p>
 <ul>
@@ -203,6 +214,13 @@ make lint-backend
 <li>State Finalization 覆盖并发和重复终态。</li>
 </ul>
 <p>Codespace 的主要风险集中在权限、状态事务、token 生命周期和异步领取。服务层测试覆盖核心规则，路由测试覆盖 Web/RPC 输入输出，集成测试覆盖跨层事务边界。Manager backend 不进入 Gitea 服务层测试，可以让测试重点保持在 Gitea 数据库状态和服务行为上。</p>
+<p>实现验收点：</p>
+<ul>
+<li>models 测试覆盖非空 generation 默认值、索引和 token binding。</li>
+<li>services 测试覆盖状态事务、repo-bound token、日志 offset 和强制清理。</li>
+<li>RPC 测试覆盖批量 claim、running payload 重发、Connect failure detail 和旧 generation。</li>
+<li>integration 测试覆盖 create、stop、resume token 轮换、session revalidate 和 delete。</li>
+</ul>
 
                     </main>
 

@@ -184,11 +184,10 @@
 <li>Gitea 从 PR 数据读取 <code>base_repo_id</code>、<code>head_repo_id</code>、<code>base_branch</code>、<code>head_branch</code> 和当前 head commit。</li>
 <li><code>commit_sha</code> 固定为 PR 当前 head commit。</li>
 <li><code>start_ref</code> 使用 <code>refs/pull/{index}/head</code> 作为 Manager fetch/checkout 提示。</li>
-<li>operation 返回数据同时包含 base/head clone URL 与 web URL。</li>
-<li>Manager 可以使用 <code>start_ref</code> 加速 fetch，最终 checkout 以 <code>commit_sha</code> 为准，并校验 HEAD 等于 <code>commit_sha</code>。</li>
+<li>operation 使用 base repository clone URL，并以 <code>start_ref=refs/pull/{index}/head</code> fetch PR 当前代码；最终 checkout 以 <code>commit_sha</code> 为准，并校验 HEAD 等于 <code>commit_sha</code>。</li>
 <li>Manager tag matching 和 <code>.gitea/codespace.yaml</code> 使用 base repository。</li>
 </ul>
-<p>PR 页面属于 base repository 但代码来自 head commit。锁定当前 head commit 防止 head branch 移动导致的 workspace 漂移；校验 head repository 可读，防止通过 base repository PR ref 间接访问无权 head repository。</p>
+<p>PR 页面属于 base repository 但代码来自 head commit。锁定当前 head commit 防止 head branch 移动导致 workspace 漂移；校验 head repository 可读，防止通过 base repository PR ref 间接访问无权 head repository。codespace token 只绑定 base repository，因此初始化统一通过 base repository 的 pull ref，不使用 head repository clone URL。</p>
 <h3 id="repository-codespace-配置"><a class="header" href="#repository-codespace-配置">Repository Codespace 配置</a></h3>
 <p>配置文件：</p>
 <pre><code class="language-text">.gitea/codespace.yaml
@@ -219,6 +218,7 @@
 <li>PR 场景使用 base branch，让目标仓库维护者控制运行侧选择；实际代码仍按用户选择的 ref 锁定到具体 commit SHA。</li>
 </ul>
 <p>配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。create 失败时仍创建 codespace 对象并进入 <code>failed</code>，日志写明失败原因，用户可以从同一个对象页看到为什么没有进入队列。</p>
+<p>来源、配置或 Manager 匹配在 operation 创建前失败时，Gitea 写入 <code>status=failed, manager_id=0</code>，operation 字段保持为空，并通过 codespace 内部日志入口写入失败摘要。该对象没有运行侧资源，用户 delete 时由 Gitea 同步物理删除。</p>
 <h3 id="manager-匹配"><a class="header" href="#manager-匹配">Manager 匹配</a></h3>
 <ul>
 <li>create 记录固定 <code>repo_tag</code>。</li>
@@ -251,24 +251,24 @@
 
     U-&gt;&gt;G: create
     G-&gt;&gt;G: 校验来源与配置
-    alt source or manager unavailable
-        G-&gt;&gt;G: status failed
-        G--&gt;&gt;U: show failed state
-    else queued
-        G-&gt;&gt;G: status creating
-        G--&gt;&gt;U: show creating state
+    alt 来源、配置或 Manager 匹配失败
+        G-&gt;&gt;G: 写入 failed 和失败摘要
+        G--&gt;&gt;U: 展示失败状态
+    else 进入队列
+        G-&gt;&gt;G: 写入 creating 和 queued operation
+        G--&gt;&gt;U: 展示创建状态
         M-&gt;&gt;G: FetchOperations
         G--&gt;&gt;M: 下发 create 数据
-        M-&gt;&gt;R: 创建 Runtime 并初始化
         M-&gt;&gt;G: RequestGiteaToken
         G--&gt;&gt;M: 返回 token
+        M-&gt;&gt;R: 创建 Runtime 并初始化
         R-&gt;&gt;M: 上报 boot 结果
-        alt boot failed
+        alt 初始化失败
             M-&gt;&gt;G: UpdateOperation failed
-            G--&gt;&gt;U: show failed state
-        else boot ok
+            G--&gt;&gt;U: 展示失败状态
+        else 初始化完成
             M-&gt;&gt;G: 上报 metadata 与 done
-            G--&gt;&gt;U: show running state
+            G--&gt;&gt;U: 展示运行状态
         end
     end
 </pre>
@@ -291,14 +291,10 @@
 <li>通过 <code>/endpoints/{endpoint_id}</code> 创建、更新或删除 Endpoints</li>
 </ul>
 <h3 id="环境变量"><a class="header" href="#环境变量">环境变量</a></h3>
-<p>必需环境变量：</p>
+<p>create 初始化环境变量：</p>
 <div class="table-wrapper"><table><thead><tr><th>环境变量</th><th>说明</th></tr></thead><tbody>
 <tr><td><code>GITEA_REPO_CLONE_URL</code></td><td>仓库 Git HTTP(S) clone URL</td></tr>
 <tr><td><code>GITEA_REPO_WEB_URL</code></td><td>仓库 Web URL</td></tr>
-<tr><td><code>GITEA_BASE_REPO_CLONE_URL</code></td><td>PR base 仓库 clone URL（非 PR 场景可空）</td></tr>
-<tr><td><code>GITEA_BASE_REPO_WEB_URL</code></td><td>PR base 仓库 Web URL（非 PR 场景可空）</td></tr>
-<tr><td><code>GITEA_HEAD_REPO_CLONE_URL</code></td><td>PR head 仓库 clone URL（非 PR 场景可空）</td></tr>
-<tr><td><code>GITEA_HEAD_REPO_WEB_URL</code></td><td>PR head 仓库 Web URL（非 PR 场景可空）</td></tr>
 <tr><td><code>GITEA_REPO_ID</code></td><td>仓库 ID</td></tr>
 <tr><td><code>GITEA_REPO_FULL_NAME</code></td><td>仓库完整名称（如 <code>owner/repo</code>）</td></tr>
 <tr><td><code>GITEA_OWNER_ID</code></td><td>仓库 owner ID</td></tr>
@@ -308,7 +304,7 @@
 <tr><td><code>GITEA_REF_TYPE</code></td><td>ref 类型（branch/tag/commit/pull）</td></tr>
 <tr><td><code>GITEA_REF_NAME</code></td><td>ref 名称</td></tr>
 <tr><td><code>GITEA_COMMIT_SHA</code></td><td>锁定的 commit SHA</td></tr>
-<tr><td><code>GITEA_TOKEN</code></td><td>Gitea access token，用于 git 操作</td></tr>
+<tr><td><code>GITEA_TOKEN</code></td><td>仅提供给 create init 进程的 Gitea access token，用于首次 clone/checkout</td></tr>
 <tr><td><code>CODESPACE_UUID</code></td><td>codespace UUID</td></tr>
 <tr><td><code>CODESPACE_NAME</code></td><td>派生名称，格式 <code>cs-{short_uuid}</code></td></tr>
 <tr><td><code>CODESPACE_OWNER_NAME</code></td><td>codespace 创建者名称</td></tr>
@@ -327,8 +323,10 @@
 <li>delete 后 <code>CODESPACE_NAME</code> 不复用。</li>
 <li>Runtime Instance name 使用同一 <code>cs-{short_uuid}</code> 规则，由 Manager 用 <code>codespace_uuid</code> 本地生成。</li>
 <li><code>CODESPACE_WORKSPACE_DIR</code>、<code>CODESPACE_MANAGER_BASE_URL</code> 和 <code>CODESPACE_RUNTIME_TOKEN</code> 由 Manager 创建 Runtime 时注入。</li>
+<li>create 阶段的 <code>GITEA_TOKEN</code> 用于首次 clone/checkout；持久 Git 配置使用 Manager 可刷新的 credential 文件或 helper，不把首次 token 固化为永久凭据。</li>
+<li>create init 完成后不把 <code>GITEA_TOKEN</code> 继续暴露给 IDE 或普通用户进程；运行期 Git 只通过可刷新的 credential 文件或 helper 获取当前 token。</li>
 </ul>
-<p>Boot 完成条件：</p>
+<p>Create boot 完成条件：</p>
 <ul>
 <li><code>init.sh</code> 成功。</li>
 <li>workspace checkout 到锁定 commit SHA。</li>
@@ -347,9 +345,18 @@ run-init-script
 start-ide
 report-endpoints
 </code></pre>
+<p>Resume 不重新执行 create 初始化：Manager 启动已有 workspace、恢复 internal SSH 和本地服务，通过本次 <code>operation_rversion</code> 对应的 resume boot session 上报就绪，再调用 <code>UpdateOperation(done)</code>。Gitea 写入 <code>running</code> 后，Manager 调用 <code>RequestGiteaToken</code> 生成新 token、刷新 Runtime Git credential，最后上报包含 Endpoint 的完整 Runtime Metadata。resume 不重新读取 repository payload，也不要求 workspace HEAD 等于创建时的 <code>commit_sha</code>。</p>
+<p>实现验收点：</p>
+<ul>
+<li>create 前置失败形成可查看日志的 failed 对象，但不创建 active operation。</li>
+<li>PR create 只使用 base repository clone URL 和 <code>refs/pull/{index}/head</code>，token 不访问 head repository。</li>
+<li>create payload 提供 Runtime 初始化所需的 repository、owner、创建者和 ref 数据。</li>
+<li>resume 基于已有 workspace，不读取 repository、不 checkout 初始 commit，并在进入 running 后轮换 Git token。</li>
+<li>每个 boot session 以 <code>operation_rversion</code> 标识，<code>POST /boot</code> 对同一版本只接受一次。</li>
+</ul>
 <h2 id="外部变化"><a class="header" href="#外部变化">外部变化</a></h2>
 <h3 id="repository-删除"><a class="header" href="#repository-删除">Repository 删除</a></h3>
-<p>Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，只影响 create 的来源校验和后续 Git HTTP(S) 访问。已有 codespace 已经按创建时锁定的 <code>commit_sha</code>、Runtime 数据和 Manager binding 初始化完成，open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定。</p>
+<p>Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，只影响 create 的来源校验和后续 Git HTTP(S) 访问。已经完成 create 初始化的 codespace 按 Runtime 数据和 Manager binding 继续提供 open、SSH、resume、stop、delete 和 logs。已领取 create 可能因后续 Git HTTP(S) 被拒绝而由 Manager 上报 failed；尚未领取且 <code>repo_id</code> 已置空的 create 不再进入候选 payload，最终由 queued timeout 写入 failed 和来源不可用摘要。repository 删除事务本身仍不直接改写 codespace 主状态。</p>
 <p>Repository 删除：</p>
 <ul>
 <li>repository 删除确认 UI 提示会影响的 codespace 数量。</li>
@@ -387,6 +394,7 @@ report-endpoints
 <li>引用该 Manager 的 codespace 通过 delete operation 完成 Runtime cleanup。</li>
 <li>未删除 codespace 和 active operation 清理完成后，再物理删除 Manager 记录。</li>
 <li>物理删除 Manager 记录表示注销 Gitea 注册身份；后续 ManagerService RPC 返回 unregistered manager 分类。</li>
+<li>Manager 永久不可恢复时，站点管理员可以在确认运行侧无法再执行 cleanup 后强制删除 Gitea codespace 记录、token 和日志；若旧 Manager 后续重新出现，其 Runtime 会在 inventory 中成为 extra runtime 并收到 <code>cleanup_local_runtime</code>。</li>
 </ul>
 <p>Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespace 生命周期操作。分开处理可以避免删除 Manager 记录时隐式触发运行侧破坏性动作，管理员可以先禁用止血再按 codespace 对象逐个清理。</p>
 <h3 id="重命名"><a class="header" href="#重命名">重命名</a></h3>
@@ -395,6 +403,13 @@ report-endpoints
 <li>名称每次展示时解析。</li>
 <li>create operation 返回数据使用当时的当前名称生成 clone/web URL；resume 基于已初始化 workspace，不重新生成 repository payload。</li>
 <li>显示缓存和 runtime 动态数据按需从 cache 或 Manager 获取，每次展示时计算。</li>
+</ul>
+<p>实现验收点：</p>
+<ul>
+<li>repository 删除事务只置空 <code>repo_id</code>，不创建 operation、不吊销 token、不改主状态。</li>
+<li>已初始化 codespace 在 repository 或访问权限变化后仍可 open、SSH、resume、stop、delete 和读取日志。</li>
+<li>创建用户删除后交互入口被拒绝，站点管理员仍可查看、停止和删除 codespace。</li>
+<li>Manager 注销前不存在引用该 Manager 的 codespace；永久失联场景可由站点管理员执行明确的强制清理。</li>
 </ul>
 
                     </main>
