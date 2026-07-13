@@ -170,19 +170,19 @@
 <p>Manager deployment 内的用户 Endpoint 与 SSH 接入组件。</p>
 <p><span id="manager-service"></span></p>
 <h2 id="managerservice"><a class="header" href="#managerservice">ManagerService</a></h2>
-<p>Gitea 实现、Manager 调用的 Connect RPC over HTTP 服务。</p>
+<p>Gitea 实现、Manager 调用的 Connect RPC over HTTP/HTTPS 服务；scheme 由部署配置决定。</p>
 <p><span id="runtime-http-api"></span></p>
 <h2 id="runtime-http-api"><a class="header" href="#runtime-http-api">Runtime HTTP API</a></h2>
-<p>Manager 实现、Runtime Instance 使用 Runtime Token 调用的 HTTP/JSON API。</p>
+<p>Manager 实现、Runtime Instance 使用 Runtime Token 调用的 HTTP(S)/JSON API；是否要求 HTTPS 由 Manager 配置决定。</p>
 <p><span id="operation"></span></p>
 <h2 id="operation"><a class="header" href="#operation">Operation</a></h2>
-<p>Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete。operation 只表示 active 指令，完成后不保留历史状态。</p>
+<p>Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete。operation 只表示 active 指令，完成后不保留历史状态；disabled 后返回的 <code>abort_create|abort_resume</code> 是现有 create/resume 的清理命令，不增加新的 operation 类型。</p>
 <p><span id="manager-matching"></span></p>
 <h2 id="manager-matching"><a class="header" href="#manager-matching">Manager Matching</a></h2>
 <p>Gitea 按 owner scope 和 repository tag 匹配可以领取 create operation 的 Manager。</p>
 <p><span id="manager-capacity"></span></p>
 <h2 id="manager-capacity"><a class="header" href="#manager-capacity">Manager Capacity</a></h2>
-<p>Manager 最近上报到 <code>meta_json</code> 的本地 create/resume 可接收能力快照，用于管理页面展示和诊断。<code>FetchOperations</code> 领取判断以 request 中 <code>capacity_total / capacity_available</code> 声明值为准。</p>
+<p>Manager 通过 Declare 明确字段上报、由 Gitea 规范化写入 <code>meta_json</code> 的本地 create/resume 可接收能力快照，用于管理页面展示和诊断。<code>FetchOperations</code> 领取判断以 request 中 <code>capacity_total / capacity_available</code> 声明值为准。</p>
 <p><span id="endpoint"></span></p>
 <h2 id="endpoint"><a class="header" href="#endpoint">Endpoint</a></h2>
 <p>Runtime 声明的可打开入口，使用 endpoint_id 标识。</p>
@@ -215,7 +215,7 @@
 <p>Gitea 根据 operation 结果推导 codespace 主状态的服务逻辑。</p>
 <p><span id="state-reconciliation"></span></p>
 <h2 id="state-reconciliation"><a class="header" href="#state-reconciliation">State Reconciliation</a></h2>
-<p>Gitea 后台任务处理 operation 超时、过期上报、状态分歧和清理。</p>
+<p>Gitea 将数据库主状态与当前有效事实收敛到明确结果的规则集合。周期任务只处理数据库可判断的 operation 超时、Manager 可用性和 token binding；Runtime inventory 差异在 <code>ReportInstances</code> 请求内处理。</p>
 <p><span id="stale-report"></span></p>
 <h2 id="stale-report"><a class="header" href="#stale-report">Stale Report</a></h2>
 <p>Manager 上报中的 <code>codespace_uuid</code>、<code>operation_rversion</code>、<code>manager_id</code> 或 operation status 与 Gitea 当前 active operation 不匹配。</p>
@@ -227,7 +227,7 @@
 <p>Manager 通过 <code>ReportInstances</code> 上报的本地 Runtime Instance 快照。完整快照使用单调递增的 <code>inventory_generation</code>，Gitea 只用最新版本计算 expected/reported 差异。</p>
 <p><span id="manager-instruction"></span></p>
 <h2 id="manager-instruction"><a class="header" href="#manager-instruction">Manager Instruction</a></h2>
-<p>Gitea 返回给 Manager 的调和指令，例如 cleanup_local_runtime。</p>
+<p>Gitea 返回给 Manager 的互斥调和动作：cleanup local Runtime、上报 Runtime transition、重新获取当前 operation 或停止本地 Runtime。每条 instruction 只设置一个 action。</p>
 <p><span id="minimal-info"></span></p>
 <h2 id="minimal-info"><a class="header" href="#minimal-info">Minimal Info</a></h2>
 <p>面向列表页、站点管理员管理视图和 repository 删除后的弱关联展示的缩略字段集，只包含识别对象、判断状态和发起允许动作所需信息（<code>uuid</code>、<code>status</code>、<code>created_unix</code>、<code>user_id</code>、<code>ref_type</code>、<code>manager_id</code> 等），不含 token、internal SSH、Endpoint upstream 或日志正文。完整字段定义见 <a href="gitea-server.html#minimal-info">Gitea 服务端 - Minimal Info</a>。</p>

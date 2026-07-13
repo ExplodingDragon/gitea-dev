@@ -199,7 +199,7 @@ make lint-backend
 <p>测试按层组织：</p>
 <ul>
 <li><code>models/codespace</code>：状态字段、索引、查询、token binding 反查。</li>
-<li><code>services/codespace</code>：权限判定、State Finalization、repository delete pre-cleanup、repo-bound token、日志 offset。</li>
+<li><code>services/codespace</code>：权限判定、State Finalization、repository delete pre-cleanup、repo-bound token、日志规范化编码和 offset。</li>
 <li><code>routers/api/codespace</code>：ManagerService RPC auth、<code>FetchOperations</code> 领取、UpdateOperation 幂等。</li>
 <li><code>routers/web/codespace</code>：create/open/stop/resume/delete 页面行为。</li>
 <li><code>integration</code>：create -&gt; fetch operation -&gt; log -&gt; done -&gt; open token -&gt; delete 完整流程。</li>
@@ -217,9 +217,11 @@ make lint-backend
 <p>实现验收点：</p>
 <ul>
 <li>models 测试覆盖非空 generation 默认值、索引和 token binding。</li>
-<li>services 测试覆盖状态事务、repo-bound token、日志 offset 和强制清理。</li>
-<li>RPC 测试覆盖批量 claim、running payload 重发、Connect failure detail 和旧 generation。</li>
-<li>integration 测试覆盖 create、stop、resume token 轮换、session revalidate 和 delete。</li>
+<li>services 测试覆盖状态事务、所有 PAT 删除入口的 repo-bound token 保护、损坏 token pair 先删除旧 token row、并发 token 请求/吊销、用户删除后拒绝补签、日志并发 offset、截断摘要幂等、日志行边界读取和强制清理。</li>
+<li>RPC 测试覆盖批量 claim、单条 payload 构造失败后继续、系统错误整批回滚、running payload 重发、disabled abort、deadline/Cron 竞争、<code>resource_absent</code>、访问判定 oneof、日志 next/current offset detail、旧 operation 上下文和 generation 基线恢复。</li>
+<li>integration 测试覆盖 create、stop、resume token 轮换、disabled 时已领取 operation 收敛、session revalidate、用户删除 token 清理且不补签和 delete。</li>
+<li>integration 测试覆盖 repository 删除后的本地 create 恢复、resume 无 repository payload、metadata 同 generation TTL 刷新、inventory instruction 重试、operation 版本不一致时 refetch、无 active operation 时明确清除旧上下文，以及空 Fetch 响应不清除 worker。</li>
+<li>Manager/Gateway 测试覆盖 Runtime HTTP 固定 JSON 和错误状态、<code>/boot</code> 不返回 Gitea token、Runtime Token 三重绑定、当前快照崩溃恢复、Fetch 退避不阻塞续租、Endpoint host 固定到所属 Runtime、HTTP/HTTPS 控制面/用户入口/upstream、gateway base path、可信转发头覆盖、open code 303 清理、session 上限/TTL/idle/cookie 属性和 secret 轮换响应丢失恢复。</li>
 </ul>
 
                     </main>

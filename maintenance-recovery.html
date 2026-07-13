@@ -208,10 +208,11 @@ Runtime Metadata cache
 <h2 id="manager-重启恢复"><a class="header" href="#manager-重启恢复">Manager 重启恢复</a></h2>
 <p>Manager 启动流程：</p>
 <ol>
+<li>取得该 Manager 本地状态目录独占锁；锁已被其他进程持有时退出，不发送 RPC。</li>
 <li><code>DeclareManager(manager_runtime_state=recovering)</code>。</li>
 <li>扫描本地所有 Runtime 资源。</li>
 <li>生成 Runtime inventory 快照。</li>
-<li>递增 <code>inventory_generation</code>，通过 <code>ReportInstances(snapshot_complete=true)</code> 上报完整快照。</li>
+<li>递增 <code>inventory_generation</code>，通过 <code>ReportInstances</code> 上报完整快照。</li>
 <li>使用 <code>FetchOperations(observed_operations=...)</code> 重新获取缺失或版本变化的 active operation payload。</li>
 <li>继续本地仍有效的 operation。</li>
 <li>为 <code>creating/running/stopped</code> 且归属自己的 codespace 重建 Runtime Metadata。</li>
@@ -219,7 +220,7 @@ Runtime Metadata cache
 <li><code>DeclareManager(manager_runtime_state=online)</code>。</li>
 <li>恢复领取新的 create/resume。</li>
 </ol>
-<p>Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回。<code>operation_rversion</code> 相同的 running operation 不需要重复下发完整 payload；版本缺失或不同则由 Gitea 重新下发。</p>
+<p>Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回。<code>operation_rversion</code> 相同且本地上下文完整的 running operation 不需要重复下发完整 payload；版本缺失或不同则由 Gitea 返回当前 operation。Manager disabled 时不恢复 create/resume 执行，只处理 abort、stop、delete 和本地调和指令。</p>
 <p>Manager 重启恢复流程：</p>
 <pre class="mermaid">sequenceDiagram
     participant M as Manager
@@ -230,14 +231,22 @@ Runtime Metadata cache
     M-&gt;&gt;B: 扫描本地 Runtime
     M-&gt;&gt;G: ReportInstances(完整快照)
     G--&gt;&gt;M: 调和指令
-    alt extra runtime
+    alt cleanup_local_runtime
         M-&gt;&gt;B: 清理本地 Runtime
+    else refetch_operation
+        M-&gt;&gt;G: Fetch 当前 operation
+    else clear_operation_context
+        M-&gt;&gt;M: 清除旧 worker 上下文并保留 Runtime
+    else stop_local_runtime
+        M-&gt;&gt;B: 停止本地 Runtime
+    else report_runtime_transition
+        M-&gt;&gt;G: 上报 stopped/running 事实
     else missing runtime
         G-&gt;&gt;G: 收敛主状态
     else matched runtime
         M-&gt;&gt;G: ReportRuntimeMetadata
     end
-    M-&gt;&gt;G: 如有差异则 ReportRuntimeTransition 并 DeclareManager(online)
+    M-&gt;&gt;G: DeclareManager(online)
     G--&gt;&gt;M: online 确认
     M-&gt;&gt;G: FetchOperations(create/resume)
     G--&gt;&gt;M: 返回 operation 或空
@@ -248,25 +257,26 @@ Runtime Metadata cache
 <li>enabled Manager 在 recovering 期间接受 <code>UpdateOperation</code>、<code>UpdateLog</code>、<code>ReportInstances</code>、<code>ReportRuntimeMetadata</code>、<code>ReportRuntimeTransition</code>；disabled Manager 始终按 disabled 能力表处理。</li>
 <li>Manager 完成本地扫描和 metadata 重建后声明 online。</li>
 <li>online 后恢复领取新的 create/resume。</li>
+<li>同一 Manager 身份的第二个本地进程无法越过状态目录独占锁，不支持同身份多进程运行。</li>
+<li>Manager 从原子当前快照恢复 operation payload、generation 和 Runtime 映射；Fetch 空响应不清除 worker，只有明确的 <code>clear_operation_context</code> 指令执行清理。</li>
 </ul>
 <h2 id="runtime-inventory-reconciliation"><a class="header" href="#runtime-inventory-reconciliation">Runtime Inventory Reconciliation</a></h2>
 <p><code>ReportInstances</code> 上报 Manager 本地 Runtime inventory。</p>
+<p>Manager 在启动恢复、每个 <code>inventory_report_interval</code> 和 backend 资源异常事件后提交完整快照；周期上报让运行期间发生的外部 Runtime 删除或未知资源也能收敛，不依赖 Gitea Cron 保存 inventory。</p>
 <p>inventory 语义：</p>
 <ul>
 <li>上报 Manager 持有的所有 Runtime 资源，而不只是 running 进程。</li>
 <li>stopped workspace、volume 或可恢复实例也必须上报。</li>
-<li>snapshot_complete=false 只用于增量诊断，不驱动 missing 判定。</li>
-<li>snapshot_complete=true 表示 Manager 本轮扫描完成，Gitea 可以计算 expected/reported 差异。</li>
-<li><code>inventory_generation</code> 由 Manager 单调递增；Gitea 只使用高于 <code>codespace_manager.inventory_generation</code> 的完整快照计算 missing，相同版本幂等返回且不重复计算，更低版本返回 stale。</li>
+<li>第一版每次请求都是完整快照，不提供增量或 incomplete 模式；单次最多 10000 个实例且 UUID 唯一。</li>
+<li><code>inventory_generation</code> 由 Manager 单调递增；更高版本执行差异写入，相同 generation、相同规范化快照不重复写主状态但重新返回当前 instruction，相同 generation、不同快照返回 conflict，更低版本返回 stale 和当前 generation。</li>
+<li>inventory 规范化按 UUID 排序并包含 runtime state 与 observed operation version；Gitea 将其 SHA-256 与当前 <code>inventory_hash</code> 比较。</li>
 </ul>
 <p>Request：</p>
-<pre><code class="language-text">  inventory_generation
-snapshot_complete
+<pre><code class="language-text">inventory_generation
 instances:
   - codespace_uuid
     runtime_state
     observed_operation_rversion
-    observed_unix
 </code></pre>
 <p>Gitea 计算：</p>
 <pre><code class="language-text">expected = Gitea 中绑定该 Manager 且按主状态应存在 Runtime 资源的 codespace
@@ -288,7 +298,8 @@ missing = expected - reported
 <p>实现验收点：</p>
 <ul>
 <li>expected 集合只按绑定 Manager 和持久主状态计算。</li>
-<li>incomplete snapshot 不驱动 missing，旧完整 generation 不驱动任何差异写入。</li>
+<li>相同 generation 的相同快照可以重获 instruction 而不重复状态写入，旧 generation 不驱动任何差异写入。</li>
+<li>相同 generation、相同快照的重试按当前数据库状态重新计算 instruction，已经完成的条件状态写入保持幂等。</li>
 </ul>
 <h2 id="extra-runtime-处理"><a class="header" href="#extra-runtime-处理">Extra Runtime 处理</a></h2>
 <p>extra runtime 表示 Manager 本地存在一条 Gitea 当前没有记录为应存在的 Runtime。</p>
@@ -333,51 +344,61 @@ missing = expected - reported
 </tbody></table>
 </div>
 <p>Manager 主动 transition 是运行事实上报，不是 Gitea-issued operation，不递增 <code>operation_rversion</code>。</p>
-<p>Manager 每次主动 stop/resume 递增 <code>runtime_generation</code>。Gitea 接受更高版本，相同版本在主状态已匹配时幂等接受，更低版本返回 stale，从而避免重试或网络乱序把旧事实写回主状态。</p>
+<p>Manager 每次主动 stop/resume 递增 <code>runtime_generation</code>，并携带产生事实时观察到的 <code>operation_rversion</code>。Gitea 按 binding、active operation、Manager 状态、operation 版本、runtime generation、状态/fact、metadata 的固定顺序校验；相同 generation 在主状态已匹配时幂等接受，更低版本返回当前已接受 generation。两个版本共同避免延迟事实覆盖较新的 Gitea-issued operation 结果，固定顺序保证相同请求得到稳定失败分类。</p>
+<p><code>ReportRuntimeTransition</code> 只提交当前事实、<code>runtime_generation</code> 和 <code>observed_operation_rversion</code>。Gitea 不保存 transition 历史，因此不提交观察时间或原因字段；运行侧诊断保留在 Manager 本地日志。</p>
 <p>实现验收点：</p>
 <ul>
 <li>主动 transition 只在无 active operation 时生效。</li>
 <li>generation 确保旧 stop/resume 事实不能覆盖新主状态。</li>
+<li><code>observed_operation_rversion</code> 确保旧 operation 上下文产生的事实不能在新 operation final 后生效。</li>
 </ul>
 <h2 id="active-operation-超时"><a class="header" href="#active-operation-超时">Active Operation 超时</a></h2>
-<p><code>operation_created_unix + QUEUE_TIMEOUT</code> 是 queued operation 等待 Manager 领取的最长时间。<code>operation_deadline_unix</code> 是 running operation 的 lease 截止时间。Manager 在截止前通过 <code>UpdateOperation</code> 续租或上报终态。</p>
+<p><code>operation_created_unix + QUEUE_TIMEOUT</code> 是 queued operation 等待 Manager 领取的硬截止时间；<code>now &gt;= deadline</code> 后即使 Cron 尚未扫描也不能再领取。<code>operation_deadline_unix</code> 是 running operation 的 lease 截止时间。online Manager 必须在截止前通过 <code>UpdateOperation</code> 续租或上报终态。</p>
 <p>queued operation 等待超时后按当前 operation failed 处理：写 <code>status=failed</code>、吊销 token、清空 active operation。</p>
 <p>running operation lease 到期时按 Manager 状态判断：</p>
 <div class="table-wrapper"><table><thead><tr><th>Manager 状态</th><th>处理</th></tr></thead><tbody>
 <tr><td>online</td><td>按当前 operation failed 处理，吊销 token，清空 active operation。</td></tr>
-<tr><td>recovering</td><td>暂缓失败，等待完整 inventory 或 Manager online。</td></tr>
-<tr><td>offline 且未超过 <code>MANAGER_RESTART_GRACE</code></td><td>暂缓失败。</td></tr>
-<tr><td>offline 超过 <code>MANAGER_RESTART_GRACE</code></td><td>按当前 operation failed 处理，吊销 token，清空 active operation。</td></tr>
+<tr><td>recovering 且未超过 <code>MANAGER_RESTART_GRACE</code></td><td>暂缓失败，等待完整 inventory 或 Manager online。</td></tr>
+<tr><td>recovering 超过 <code>MANAGER_RESTART_GRACE</code></td><td>不再暂停 lease 超时，按当前 operation failed 处理。</td></tr>
+<tr><td>offline 且 <code>now-(last_online_unix+MANAGER_OFFLINE_TIMEOUT) &lt;= MANAGER_RESTART_GRACE</code></td><td>暂缓失败。</td></tr>
+<tr><td>offline 超过上述 hard deadline</td><td>按当前 operation failed 处理，吊销 token，清空 active operation。</td></tr>
 </tbody></table>
 </div>
-<p>维护窗口属于 Manager 可用性事件，不写入每条 codespace。完整 inventory 到达后优先使用运行侧事实，不再等待 operation timeout。</p>
+<p>维护窗口属于 Manager 可用性事件，不写入每条 codespace。offline 从 <code>last_online_unix+MANAGER_OFFLINE_TIMEOUT</code> 成立的时刻起算 grace；recovering 从首次 <code>last_recovering_unix</code> 起算。有效 grace 内，绑定 Manager 可用当前版本的首次 Fetch、renew 或 final 原子恢复已到期 lease；超过 hard deadline 后不能恢复。Cron、claim、renew 和 final 使用 <code>codespace_uuid + operation_rversion + operation_status</code> 条件更新，第一个成功者生效。完整 inventory 到达后在 <code>ReportInstances</code> 请求内优先使用运行侧事实，不再等待 operation timeout。</p>
 <p>实现验收点：</p>
 <ul>
-<li>online 超时按 operation 失败处理，recovering 和 offline grace 内暂缓。</li>
+<li>online 超时按 operation 失败处理，recovering 和 offline grace 内暂缓；recovering 超过 hard grace 后不再冻结 operation。</li>
 <li>queued timeout 与 running lease 使用不同时间字段。</li>
+<li>deadline 在 claim/renew/final 路径直接校验；grace 恢复与 Cron 并发时只有一个条件更新生效。</li>
 </ul>
 <h2 id="operation-恢复"><a class="header" href="#operation-恢复">Operation 恢复</a></h2>
 <p>Manager 重启后继续处理当前 Gitea-issued operation。</p>
 <div class="table-wrapper"><table><thead><tr><th>operation</th><th>Runtime 状态</th><th>Manager 行为</th></tr></thead><tbody>
+<tr><td>create</td><td>Runtime 与持久 create payload/boot session 完整</td><td>继续当前 create；boot 已成功则上报 metadata 和 done。</td></tr>
+<tr><td>create</td><td><code>repo_id=0</code> 且收到 <code>recover_create_without_source</code></td><td>检查确定性 Runtime、持久 boot 结果和 metadata；确认初始化完成后补齐 <code>ready</code> 快照并 done，否则清理并 failed。</td></tr>
+<tr><td>create</td><td>收到 <code>abort_create</code></td><td>清理本轮 Runtime 工作、上传摘要并 final failed，不重新读取 repository payload。</td></tr>
 <tr><td>stop</td><td>Runtime 仍运行</td><td>继续 stop，完成后上报 done。</td></tr>
 <tr><td>stop</td><td>Runtime 已停止</td><td>上报 done。</td></tr>
 <tr><td>stop</td><td>Runtime 不存在</td><td>上报 failed；Gitea 根据 missing runtime 进入 failed。</td></tr>
 <tr><td>resume</td><td>Runtime 已运行且基础 metadata 完整</td><td>上报基础 Runtime Metadata，再上报 done；进入 running 后申请新 Gitea token、刷新 Git credential 并上报完整 Endpoint metadata。</td></tr>
-<tr><td>resume</td><td>Runtime 正在恢复</td><td>继续 resume 并上报 progress。</td></tr>
+<tr><td>resume</td><td>Runtime 正在恢复</td><td>继续 resume，通过 renew lease 保持 operation，并用 Runtime Metadata 和日志上报阶段。</td></tr>
 <tr><td>resume</td><td>Runtime 仍停止</td><td>继续执行 resume。</td></tr>
 <tr><td>resume</td><td>Runtime 不存在或恢复失败</td><td>上报 failed。</td></tr>
+<tr><td>resume</td><td>收到 <code>abort_resume</code></td><td>停止恢复并清理本轮新建进程，上传摘要后 final failed。</td></tr>
+<tr><td>delete</td><td>Runtime 仍存在</td><td>继续按 <code>codespace_uuid</code> 的确定性映射清理，完成后上报 done。</td></tr>
+<tr><td>delete</td><td>Runtime 已不存在</td><td>直接上报 done；若 Gitea 已物理删除，<code>resource_absent</code> 同样视为完成。</td></tr>
 </tbody></table>
 </div>
 <p>stop 让 running codespace 退出可交互态并保留可恢复资源。Runtime 不存在则无法满足 stopped 可恢复语义，故进入 failed。resume 恢复可交互态，Manager 先重建 Runtime Metadata 再上报 resume done，使状态与交互入口同步可用。</p>
 <p>实现验收点：</p>
 <ul>
-<li>Manager 重启后使用相同 operation_rversion 继续幂等 stop/resume。</li>
+<li>Manager 重启后使用相同 <code>operation_rversion</code> 继续幂等 create/resume/stop/delete；disabled abort 使用同一版本收敛为 failed。</li>
 <li>resume 进入 running 后轮换 Git token 并刷新 credential，不重新初始化 repository。</li>
 </ul>
 <h2 id="reconciliation"><a class="header" href="#reconciliation">Reconciliation</a></h2>
 <p>恢复证据：</p>
 <pre><code class="language-text">DeclareManager(recovering/online)
-ReportInstances(snapshot_complete=true)
+ReportInstances(完整快照)
 ReportInstances 包含 codespace_uuid
 UpdateOperation 携带当前 operation_rversion
 ReportRuntimeMetadata 被接受
@@ -391,25 +412,26 @@ stale_operation
 current_operation_conflict
 metadata_missing
 metadata_required
-snapshot_incomplete
 </code></pre>
+<p><code>ReportInstances</code> response 不把分类和动作拆成可任意组合的字段，而是返回互斥 action：<code>cleanup_local_runtime</code>、<code>report_runtime_transition</code>、<code>refetch_operation(current_operation_rversion)</code>、<code>clear_operation_context(current_operation_rversion)</code> 或 <code>stop_local_runtime</code>。当前存在 active operation 且版本不一致时不使用该实例事实改写主状态，Manager 先 Fetch 当前 payload；当前无 active operation 时明确要求清除旧 worker 上下文。Fetch 未返回某 UUID 不代表服务端已清除 operation。disabled Manager 在 Gitea stopped、Runtime running 时执行本地 stop，在 Gitea running、Runtime stopped 时只上报 stopped，因而不会收到无法执行的 running transition。</p>
 <p>实现验收点：</p>
 <ul>
 <li>Manager recovering/offline grace 内不因 operation deadline 直接失败 active operation。</li>
-<li>snapshot_complete=false 不触发 missing runtime。</li>
-<li>snapshot_complete=true 后计算 expected/reported 差异。</li>
+<li>ReportInstances 始终以完整快照计算 expected/reported 差异。</li>
+<li>inventory 差异只在 <code>ReportInstances</code> 请求内处理，不由 Cron 保存或重放。</li>
 <li>extra runtime 返回 cleanup。</li>
 <li>missing runtime 按当前主状态处理。</li>
 <li>Manager 主动 stopped/running 事实通过 <code>ReportRuntimeTransition</code> 收敛。</li>
 <li><code>running</code> 主状态在 Manager offline/recovering 时保持稳定，交互入口返回 unavailable/recovering 分类。</li>
 <li>旧 <code>inventory_generation</code>、<code>runtime_generation</code> 和 <code>metadata_generation</code> 不覆盖已接受的新事实。</li>
+<li>operation refetch 与上下文清除使用不同 instruction，Manager 不从空 Fetch 响应推导服务端状态。</li>
 </ul>
 <h2 id="gateway-session-恢复"><a class="header" href="#gateway-session-恢复">Gateway Session 恢复</a></h2>
 <p>Gateway session 是 Manager/Gateway 本地连接状态。Gitea 重启不恢复 Gateway session；Manager/Gateway 根据本地 TTL、idle timeout、Runtime 断开和 <code>RevalidateGatewaySession</code> 周期判定关闭或延续连接。新的 open/SSH 入口仍需重新经过 Gitea 权限、主状态、Manager 在线态和 Runtime Metadata 校验。</p>
 <p>实现验收点：</p>
 <ul>
 <li>Gitea 重启不改变持久主状态，Manager 可重发当前 running operation payload 并继续执行。</li>
-<li>完整 inventory 只有在 generation 更新时才驱动 missing 判定。</li>
+<li>新 generation 的完整 inventory 驱动 missing 判定；相同 generation 重试只重发当前 instruction，不重复状态写入。</li>
 <li>active create lease 有效期间，Runtime 暂未出现在完整 inventory 中不会被误判为 failed。</li>
 <li>Gateway 已有 session 通过专用 revalidate RPC 恢复权限检查，不重复消费 open code。</li>
 </ul>
