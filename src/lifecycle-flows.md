@@ -31,11 +31,10 @@ Pull Request 规则：
 - Gitea 从 PR 数据读取 `base_repo_id`、`head_repo_id`、`base_branch`、`head_branch` 和当前 head commit。
 - `commit_sha` 固定为 PR 当前 head commit。
 - `start_ref` 使用 `refs/pull/{index}/head` 作为 Manager fetch/checkout 提示。
-- operation 返回数据同时包含 base/head clone URL 与 web URL。
-- Manager 可以使用 `start_ref` 加速 fetch，最终 checkout 以 `commit_sha` 为准，并校验 HEAD 等于 `commit_sha`。
+- operation 使用 base repository clone URL，并以 `start_ref=refs/pull/{index}/head` fetch PR 当前代码；最终 checkout 以 `commit_sha` 为准，并校验 HEAD 等于 `commit_sha`。
 - Manager tag matching 和 `.gitea/codespace.yaml` 使用 base repository。
 
-PR 页面属于 base repository 但代码来自 head commit。锁定当前 head commit 防止 head branch 移动导致的 workspace 漂移；校验 head repository 可读，防止通过 base repository PR ref 间接访问无权 head repository。
+PR 页面属于 base repository 但代码来自 head commit。锁定当前 head commit 防止 head branch 移动导致 workspace 漂移；校验 head repository 可读，防止通过 base repository PR ref 间接访问无权 head repository。codespace token 只绑定 base repository，因此初始化统一通过 base repository 的 pull ref，不使用 head repository clone URL。
 
 ### Repository Codespace 配置
 
@@ -75,6 +74,8 @@ tag: default
 
 配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。create 失败时仍创建 codespace 对象并进入 `failed`，日志写明失败原因，用户可以从同一个对象页看到为什么没有进入队列。
 
+来源、配置或 Manager 匹配在 operation 创建前失败时，Gitea 写入 `status=failed, manager_id=0`，operation 字段保持为空，并通过 codespace 内部日志入口写入失败摘要。该对象没有运行侧资源，用户 delete 时由 Gitea 同步物理删除。
+
 ### Manager 匹配
 
 - create 记录固定 `repo_tag`。
@@ -110,24 +111,24 @@ sequenceDiagram
 
     U->>G: create
     G->>G: 校验来源与配置
-    alt source or manager unavailable
-        G->>G: status failed
-        G-->>U: show failed state
-    else queued
-        G->>G: status creating
-        G-->>U: show creating state
+    alt 来源、配置或 Manager 匹配失败
+        G->>G: 写入 failed 和失败摘要
+        G-->>U: 展示失败状态
+    else 进入队列
+        G->>G: 写入 creating 和 queued operation
+        G-->>U: 展示创建状态
         M->>G: FetchOperations
         G-->>M: 下发 create 数据
-        M->>R: 创建 Runtime 并初始化
         M->>G: RequestGiteaToken
         G-->>M: 返回 token
+        M->>R: 创建 Runtime 并初始化
         R->>M: 上报 boot 结果
-        alt boot failed
+        alt 初始化失败
             M->>G: UpdateOperation failed
-            G-->>U: show failed state
-        else boot ok
+            G-->>U: 展示失败状态
+        else 初始化完成
             M->>G: 上报 metadata 与 done
-            G-->>U: show running state
+            G-->>U: 展示运行状态
         end
     end
 ```
@@ -155,16 +156,12 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为初始化入
 
 ### 环境变量
 
-必需环境变量：
+create 初始化环境变量：
 
 | 环境变量 | 说明 |
 | --- | --- |
 | `GITEA_REPO_CLONE_URL` | 仓库 Git HTTP(S) clone URL |
 | `GITEA_REPO_WEB_URL` | 仓库 Web URL |
-| `GITEA_BASE_REPO_CLONE_URL` | PR base 仓库 clone URL（非 PR 场景可空） |
-| `GITEA_BASE_REPO_WEB_URL` | PR base 仓库 Web URL（非 PR 场景可空） |
-| `GITEA_HEAD_REPO_CLONE_URL` | PR head 仓库 clone URL（非 PR 场景可空） |
-| `GITEA_HEAD_REPO_WEB_URL` | PR head 仓库 Web URL（非 PR 场景可空） |
 | `GITEA_REPO_ID` | 仓库 ID |
 | `GITEA_REPO_FULL_NAME` | 仓库完整名称（如 `owner/repo`） |
 | `GITEA_OWNER_ID` | 仓库 owner ID |
@@ -174,7 +171,7 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为初始化入
 | `GITEA_REF_TYPE` | ref 类型（branch/tag/commit/pull） |
 | `GITEA_REF_NAME` | ref 名称 |
 | `GITEA_COMMIT_SHA` | 锁定的 commit SHA |
-| `GITEA_TOKEN` | Gitea access token，用于 git 操作 |
+| `GITEA_TOKEN` | 仅提供给 create init 进程的 Gitea access token，用于首次 clone/checkout |
 | `CODESPACE_UUID` | codespace UUID |
 | `CODESPACE_NAME` | 派生名称，格式 `cs-{short_uuid}` |
 | `CODESPACE_OWNER_NAME` | codespace 创建者名称 |
@@ -192,8 +189,10 @@ Codespace Manager 在 Runtime Instance 启动后以 `init.sh` 作为初始化入
 - delete 后 `CODESPACE_NAME` 不复用。
 - Runtime Instance name 使用同一 `cs-{short_uuid}` 规则，由 Manager 用 `codespace_uuid` 本地生成。
 - `CODESPACE_WORKSPACE_DIR`、`CODESPACE_MANAGER_BASE_URL` 和 `CODESPACE_RUNTIME_TOKEN` 由 Manager 创建 Runtime 时注入。
+- create 阶段的 `GITEA_TOKEN` 用于首次 clone/checkout；持久 Git 配置使用 Manager 可刷新的 credential 文件或 helper，不把首次 token 固化为永久凭据。
+- create init 完成后不把 `GITEA_TOKEN` 继续暴露给 IDE 或普通用户进程；运行期 Git 只通过可刷新的 credential 文件或 helper 获取当前 token。
 
-Boot 完成条件：
+Create boot 完成条件：
 
 - `init.sh` 成功。
 - workspace checkout 到锁定 commit SHA。
@@ -215,11 +214,21 @@ start-ide
 report-endpoints
 ```
 
+Resume 不重新执行 create 初始化：Manager 启动已有 workspace、恢复 internal SSH 和本地服务，通过本次 `operation_rversion` 对应的 resume boot session 上报就绪，再调用 `UpdateOperation(done)`。Gitea 写入 `running` 后，Manager 调用 `RequestGiteaToken` 生成新 token、刷新 Runtime Git credential，最后上报包含 Endpoint 的完整 Runtime Metadata。resume 不重新读取 repository payload，也不要求 workspace HEAD 等于创建时的 `commit_sha`。
+
+实现验收点：
+
+- create 前置失败形成可查看日志的 failed 对象，但不创建 active operation。
+- PR create 只使用 base repository clone URL 和 `refs/pull/{index}/head`，token 不访问 head repository。
+- create payload 提供 Runtime 初始化所需的 repository、owner、创建者和 ref 数据。
+- resume 基于已有 workspace，不读取 repository、不 checkout 初始 commit，并在进入 running 后轮换 Git token。
+- 每个 boot session 以 `operation_rversion` 标识，`POST /boot` 对同一版本只接受一次。
+
 ## 外部变化
 
 ### Repository 删除
 
-Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，只影响 create 的来源校验和后续 Git HTTP(S) 访问。已有 codespace 已经按创建时锁定的 `commit_sha`、Runtime 数据和 Manager binding 初始化完成，open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定。
+Repository archived、migrating、pending transfer、broken、deleted、git 不可读或 ref 不可解析时，只影响 create 的来源校验和后续 Git HTTP(S) 访问。已经完成 create 初始化的 codespace 按 Runtime 数据和 Manager binding 继续提供 open、SSH、resume、stop、delete 和 logs。已领取 create 可能因后续 Git HTTP(S) 被拒绝而由 Manager 上报 failed；尚未领取且 `repo_id` 已置空的 create 不再进入候选 payload，最终由 queued timeout 写入 failed 和来源不可用摘要。repository 删除事务本身仍不直接改写 codespace 主状态。
 
 Repository 删除：
 
@@ -258,6 +267,7 @@ Manager 管理流程分为禁用、清理、注销三步：
 - 引用该 Manager 的 codespace 通过 delete operation 完成 Runtime cleanup。
 - 未删除 codespace 和 active operation 清理完成后，再物理删除 Manager 记录。
 - 物理删除 Manager 记录表示注销 Gitea 注册身份；后续 ManagerService RPC 返回 unregistered manager 分类。
+- Manager 永久不可恢复时，站点管理员可以在确认运行侧无法再执行 cleanup 后强制删除 Gitea codespace 记录、token 和日志；若旧 Manager 后续重新出现，其 Runtime 会在 inventory 中成为 extra runtime 并收到 `cleanup_local_runtime`。
 
 Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespace 生命周期操作。分开处理可以避免删除 Manager 记录时隐式触发运行侧破坏性动作，管理员可以先禁用止血再按 codespace 对象逐个清理。
 
@@ -267,3 +277,10 @@ Manager 记录代表 Gitea 注册身份，Runtime Instance 清理代表 codespac
 - 名称每次展示时解析。
 - create operation 返回数据使用当时的当前名称生成 clone/web URL；resume 基于已初始化 workspace，不重新生成 repository payload。
 - 显示缓存和 runtime 动态数据按需从 cache 或 Manager 获取，每次展示时计算。
+
+实现验收点：
+
+- repository 删除事务只置空 `repo_id`，不创建 operation、不吊销 token、不改主状态。
+- 已初始化 codespace 在 repository 或访问权限变化后仍可 open、SSH、resume、stop、delete 和读取日志。
+- 创建用户删除后交互入口被拒绝，站点管理员仍可查看、停止和删除 codespace。
+- Manager 注销前不存在引用该 Manager 的 codespace；永久失联场景可由站点管理员执行明确的强制清理。
