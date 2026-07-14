@@ -46,6 +46,8 @@ enum RuntimeState {
   RUNTIME_STATE_CREATING = 1;
   RUNTIME_STATE_RUNNING = 2;
   RUNTIME_STATE_STOPPED = 3;
+  // Runtime identity exists, but Manager has confirmed it cannot be recovered.
+  RUNTIME_STATE_FAILED = 4;
 }
 
 enum GenerationKind {
@@ -91,7 +93,7 @@ service ManagerService {
   // ReportInstances reports the complete set of local Runtime Instances at startup and periodically.
   rpc ReportInstances(ReportInstancesRequest) returns (ReportInstancesResponse);
 
-  // ReportRuntimeTransition reports a Manager-initiated stop/resume fact.
+  // ReportRuntimeTransition reports a Manager-initiated running, stopped, or failed fact.
   rpc ReportRuntimeTransition(ReportRuntimeTransitionRequest) returns (ReportRuntimeTransitionResponse);
 
   // RevalidateGatewaySession checks an existing Endpoint or SSH session.
@@ -116,6 +118,7 @@ message RegisterManagerResponse {
 
 message DeclareManagerRequest {
   reserved 4;
+  // Gateway scheme, DNS base domain, and optional port; no business path.
   string gateway_url = 1;
   string gateway_ssh_addr = 2;
   repeated string tags = 3;
@@ -309,6 +312,7 @@ message ValidateOpenTokenResponse {
 message OpenTokenBinding {
   int64 user_id = 1;
   string codespace_uuid = 2;
+  // Always set. The default open route uses the logical "workspace" endpoint.
   string endpoint_id = 3;
   int64 manager_id = 4;
 }
@@ -346,6 +350,7 @@ message ReportInstancesRequest {
 message RuntimeInstanceRef {
   string codespace_uuid = 1;
   RuntimeState runtime_state = 2;
+  // Zero means that Manager has no local active-operation context.
   int64 observed_operation_rversion = 3;
   reserved 4;
 }
@@ -369,8 +374,14 @@ message InstanceInstruction {
 }
 
 message CleanupLocalRuntime {}
-message ReportRuntimeTransitionInstruction {}
-message StopLocalRuntime {}
+message ReportRuntimeTransitionInstruction {
+  // Use this value as observed_operation_rversion for the requested fact.
+  int64 current_operation_rversion = 1;
+}
+message StopLocalRuntime {
+  // The latest operation version known by Gitea when this instruction was made.
+  int64 current_operation_rversion = 1;
+}
 message RefetchOperation { int64 current_operation_rversion = 1; }
 message ClearOperationContext { int64 current_operation_rversion = 1; }
 
@@ -386,6 +397,7 @@ message ReportRuntimeTransitionRequest {
   oneof fact {
     RuntimeRunningFact running = 10;
     RuntimeStoppedFact stopped = 11;
+    RuntimeFailedFact failed = 12;
   }
 }
 
@@ -397,6 +409,7 @@ message RuntimeRunningFact {
 }
 
 message RuntimeStoppedFact {}
+message RuntimeFailedFact {}
 
 // --- RevalidateGatewaySession ---
 
@@ -469,12 +482,19 @@ x-codespace-manager-secret: <manager secret>
 输入边界：
 
 - 所有 enum 的 `UNSPECIFIED` 和未知数值均作为参数错误拒绝，不能回退为默认行为。
+- 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0，只有 inventory item 允许用 `observed_operation_rversion=0` 表示本地没有 active operation 上下文。
+- 所有版本递增使用 checked increment；达到 `int64` 上限时拒绝产生新版本并记录服务端错误，不允许回绕到 0 或负数。
+- `DeclareManager.capacity_total` 为 `1..10000`；单个 Manager 管理的 Runtime 总数不得超过 10000。
 - `FetchOperations.max_operations` 为 `1..256`，`observed_operations` 最多 10000 条且 UUID 唯一。Manager 每次提交全部本地上下文完整的 running operation，省略只表示本地缺少可继续执行的上下文。
-- `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整快照。
+- `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整快照；`RUNTIME_STATE_CREATING` 只表示具有稳定 identity 的资源存在，`RUNTIME_STATE_FAILED` 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed fact；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。
 - inventory item 只携带 UUID、Runtime state 和 observed operation version；SSH 验证只携带 UUID 和公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。
-- `DeclareManager.tags` 和 `backend_capabilities` 各最多 64 项，单项长度和字符集经过校验。
+- `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 running/stopped 分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。failed fact 为空结构，失败详情只进入 Manager 本地日志。
+- `DeclareManager` 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、管理态、secret 或 Codespace binding。
+- `DeclareManager.tags` 和 `backend_capabilities` 各最多 64 项，单项 lower-case 后使用 `[a-z0-9_-]+`、长度为 1-64，并规范化去重。
+- `gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一；冲突不产生部分声明更新。
 - `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
-- Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一。
+- Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 使用 1 到 30 位 DNS-safe 小写字母、数字或连字符。
+- `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
 - 所有 request 解码后不超过 `CONTROL_PLANE_MAX_REQUEST_SIZE`；`UpdateLog.lines` 单行另受 `LOG_MAX_LINE_SIZE` 限制。
 
 实现验收点：
@@ -483,7 +503,10 @@ x-codespace-manager-secret: <manager secret>
 - Manager 身份认证成功后，handler 从 request context 读取同一 Manager 记录。
 - 命令拒绝与访问判定使用文中规定的两种响应方式，不混合表达。
 - stale generation 错误携带 generation 类型和 Gitea 当前已接受值，本地版本丢失的 Manager 可以恢复单调上报。
+- Manager 丢失本地 operation 版本基线后，running/stopped 分歧或无 active operation 的 failed inventory 可使 Gitea 返回 `report_runtime_transition.current_operation_rversion`；有 active operation 的 failed inventory 通过 refetch 恢复版本和 payload。
+- 所有版本字段拒绝负数和不允许的 0，递增永不发生回绕。
 - Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。
+- 默认 workspace 与普通 Endpoint 使用同一个 Open Token binding 结构，不增加 Web SSH 专用 RPC 分支。
 
 ## 传输
 
@@ -499,8 +522,8 @@ x-codespace-manager-secret: <manager secret>
 - `UpdateLog` 成功返回服务端规范化写入后的 `next_offset`；offset conflict/gap 返回当前服务端 offset。
 - Runtime transition、完整 inventory 和 Runtime Metadata 分别携带自己的单调版本。
 - Runtime transition 同时携带产生该事实时观察到的 `operation_rversion`，旧 operation 上下文的事实不能覆盖新 operation 结果。
-- Gateway 可以通过 `RevalidateGatewaySession` 周期检查已有 Endpoint 和 SSH session。
-- inventory instruction 通过互斥 action 表达 cleanup、transition、operation refetch、清除旧 operation 上下文或本地 stop，不组合无意义的 enum/字段。
-- final result 携带原 operation 类型；active operation 清空后仍可在不保存历史的前提下判断重复 final。
-- 命令拒绝统一返回 `CodespaceFailureDetail`；generation stale 和日志 offset 错误分别增加专用 detail，访问判定不组合无意义的成功与失败字段。
+- Gateway 通过 `RevalidateGatewaySession` 复检已有 session：普通 HTTP 在间隔到期后的下一次请求转发前调用，WebSocket 和 SSH 按固定定时器调用。
+- inventory instruction 通过互斥 action 表达 cleanup、transition、operation refetch、清除旧 operation 上下文或本地 stop；transition action 携带生成事实所需的当前 operation 版本。
+- final result 携带 Manager 本地保存的原 operation 类型；active operation 存在时严格校验，清空后只按相同版本和目标主状态判断重复 final。
+- 普通命令拒绝返回 `CodespaceFailureDetail`；generation stale 和日志 offset 错误分别增加专用 detail。`UpdateOperation` 的五种正常收敛结果和访问判定分别使用自身 response oneof。
 - HTTP 和 HTTPS transport 下生成的 handler、认证 header、failure detail 和幂等行为一致。
