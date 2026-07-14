@@ -164,7 +164,7 @@
 <p>Manager 创建的 VM、容器或工作负载。</p>
 <p><span id="codespace-manager"></span></p>
 <h2 id="codespace-manager"><a class="header" href="#codespace-manager">Codespace Manager</a></h2>
-<p>运行侧 worker，负责注册、领取 operation、管理 Runtime Instance、上传日志、上报 Runtime Metadata。</p>
+<p>运行侧 worker，负责注册、领取 operation、管理 Runtime Instance、上传日志、上报 Runtime Metadata。删除 Manager 表示删除 Gitea 注册身份及其绑定的 Gitea 资源，不表示远程 Runtime 已回收。</p>
 <p><span id="codespace-gateway"></span></p>
 <h2 id="codespace-gateway"><a class="header" href="#codespace-gateway">Codespace Gateway</a></h2>
 <p>Manager deployment 内的用户 Endpoint 与 SSH 接入组件。</p>
@@ -185,7 +185,7 @@
 <p>Manager 通过 Declare 明确字段上报、由 Gitea 规范化写入 <code>meta_json</code> 的本地 create/resume 可接收能力快照，用于管理页面展示和诊断。<code>FetchOperations</code> 领取判断以 request 中 <code>capacity_total / capacity_available</code> 声明值为准。</p>
 <p><span id="endpoint"></span></p>
 <h2 id="endpoint"><a class="header" href="#endpoint">Endpoint</a></h2>
-<p>Runtime 声明的可打开入口，使用 endpoint_id 标识。</p>
+<p>使用 <code>endpoint_id</code> 标识的可打开入口。普通 Endpoint 来自 Runtime Metadata；每个 running Codespace 另有稳定的 <code>workspace</code> 逻辑入口，Manager 在 Runtime 声明同名 Endpoint 时连接该 upstream，否则连接默认 Web SSH。</p>
 <p><span id="gateway-open-token"></span></p>
 <h2 id="gateway-open-token"><a class="header" href="#gateway-open-token">Gateway Open Token</a></h2>
 <p>Gitea 为打开 Endpoint 签发的一次性短期 opaque token。采用 OAuth2 Authorization Code 模式：Gitea 作为 Authorization Server 签发 authorization code（<code>hex(CryptoRandomBytes(32))</code>），Gateway 作为 Client 以 Manager 身份提交 code 换取 open binding。完整流程见 <a href="gitea-server.html#gateway-open-token">Gitea 服务端 - Gateway Open Token</a>。</p>
@@ -212,7 +212,7 @@
 <p>查看最小信息、日志、stop、delete。</p>
 <p><span id="state-finalization"></span></p>
 <h2 id="state-finalization"><a class="header" href="#state-finalization">State Finalization</a></h2>
-<p>Gitea 根据 operation 结果推导 codespace 主状态的服务逻辑。</p>
+<p>Gitea 根据 operation 结果、timeout、missing Runtime 或 failed fact 写入 codespace 主状态、token 和 active operation 结果的服务逻辑。物理删除路径直接删除记录与日志，不追加内部状态摘要。</p>
 <p><span id="state-reconciliation"></span></p>
 <h2 id="state-reconciliation"><a class="header" href="#state-reconciliation">State Reconciliation</a></h2>
 <p>Gitea 将数据库主状态与当前有效事实收敛到明确结果的规则集合。周期任务只处理数据库可判断的 operation 超时、Manager 可用性和 token binding；Runtime inventory 差异在 <code>ReportInstances</code> 请求内处理。</p>
@@ -224,10 +224,10 @@
 <p>Gitea 记录状态与 Manager 上报的 Runtime Instance 实际状态不一致。</p>
 <p><span id="runtime-inventory"></span></p>
 <h2 id="runtime-inventory"><a class="header" href="#runtime-inventory">Runtime Inventory</a></h2>
-<p>Manager 通过 <code>ReportInstances</code> 上报的本地 Runtime Instance 快照。完整快照使用单调递增的 <code>inventory_generation</code>，Gitea 只用最新版本计算 expected/reported 差异。</p>
+<p>Manager 通过 <code>ReportInstances</code> 上报的本地 Runtime Instance 快照。完整快照使用单调递增的 <code>inventory_generation</code>，Gitea 只用最新版本计算 expected/reported 差异。inventory 中的 failed 表示 Runtime identity 仍存在但 Manager 已确认不可恢复：无 active operation 时用它取得 transition 版本，有 active operation 时用它取得 refetch 指令；两种情况都不由 inventory 直接改写持久主状态。</p>
 <p><span id="manager-instruction"></span></p>
 <h2 id="manager-instruction"><a class="header" href="#manager-instruction">Manager Instruction</a></h2>
-<p>Gitea 返回给 Manager 的互斥调和动作：cleanup local Runtime、上报 Runtime transition、重新获取当前 operation 或停止本地 Runtime。每条 instruction 只设置一个 action。</p>
+<p>Gitea 返回给 Manager 的互斥调和动作：cleanup local Runtime、上报 Runtime transition、重新获取当前 operation、清除旧 operation 上下文或停止本地 Runtime。每条 instruction 只设置一个 action；transition action 携带 Gitea 当前 operation 版本。cleanup 只针对 Gitea 中仍存在且能确认 Manager binding 冲突或主状态为 failed 的记录；用户、组织、Manager、Codespace 或 failed retention 已直接删除后，未知 UUID 不返回 instruction。</p>
 <p><span id="minimal-info"></span></p>
 <h2 id="minimal-info"><a class="header" href="#minimal-info">Minimal Info</a></h2>
 <p>面向列表页、站点管理员管理视图和 repository 删除后的弱关联展示的缩略字段集，只包含识别对象、判断状态和发起允许动作所需信息（<code>uuid</code>、<code>status</code>、<code>created_unix</code>、<code>user_id</code>、<code>ref_type</code>、<code>manager_id</code> 等），不含 token、internal SSH、Endpoint upstream 或日志正文。完整字段定义见 <a href="gitea-server.html#minimal-info">Gitea 服务端 - Minimal Info</a>。</p>
@@ -244,6 +244,7 @@
 <ul>
 <li>operation、Runtime fact、inventory 和 metadata 使用不同术语及版本，不混用 <code>operation_rversion</code>。</li>
 <li>文档中的 Codespace、Manager、Gateway、Runtime Instance 和 token 名称与接口定义一致。</li>
+<li>“删除 Manager”与“Codespace delete operation 清理 Runtime”是两个不同动作，不混用。</li>
 </ul>
 
                     </main>
