@@ -483,7 +483,7 @@ x-codespace-manager-secret: <manager secret>
 
 - 所有 enum 的 `UNSPECIFIED` 和未知数值均作为参数错误拒绝，不能回退为默认行为。
 - 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0，只有 inventory item 允许用 `observed_operation_rversion=0` 表示本地没有 active operation 上下文。
-- 所有版本递增使用 checked increment；达到 `int64` 上限时拒绝产生新版本并记录服务端错误，不允许回绕到 0 或负数。
+- 所有版本递增使用 checked increment；Gitea 需要产生新 `operation_rversion` 但当前值已到 `int64` 上限时返回 `state_unavailable`，不产生部分状态写入。Manager 本地 inventory/runtime/metadata generation 已到上限时，停止该对象的新事实或快照上报，保留现有值、进入 recovering 并记录本地错误；相同 generation 的幂等重试仍可继续。任何一方都不允许回绕到 0 或负数。
 - `DeclareManager.capacity_total` 为 `1..10000`；单个 Manager 管理的 Runtime 总数不得超过 10000。
 - `FetchOperations.max_operations` 为 `1..256`，`observed_operations` 最多 10000 条且 UUID 唯一。Manager 每次提交全部本地上下文完整的 running operation，省略只表示本地缺少可继续执行的上下文。
 - `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整快照；`RUNTIME_STATE_CREATING` 只表示具有稳定 identity 的资源存在，`RUNTIME_STATE_FAILED` 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed fact；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。
@@ -505,6 +505,7 @@ x-codespace-manager-secret: <manager secret>
 - stale generation 错误携带 generation 类型和 Gitea 当前已接受值，本地版本丢失的 Manager 可以恢复单调上报。
 - Manager 丢失本地 operation 版本基线后，running/stopped 分歧或无 active operation 的 failed inventory 可使 Gitea 返回 `report_runtime_transition.current_operation_rversion`；有 active operation 的 failed inventory 通过 refetch 恢复版本和 payload。
 - 所有版本字段拒绝负数和不允许的 0，递增永不发生回绕。
+- Gitea 的 operation 版本耗尽返回 `state_unavailable` 且不写部分状态；Manager generation 耗尽时停止新上报并进入 recovering。
 - Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。
 - 默认 workspace 与普通 Endpoint 使用同一个 Open Token binding 结构，不增加 Web SSH 专用 RPC 分支。
 
