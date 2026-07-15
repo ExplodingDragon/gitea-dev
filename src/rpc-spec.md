@@ -77,11 +77,11 @@ service ManagerService {
   // UpdateLog appends sanitized log lines at a given offset for an active operation.
   rpc UpdateLog(UpdateLogRequest) returns (UpdateLogResponse);
 
-  // ReportRuntimeMetadata writes a Runtime Metadata snapshot to Gitea's local cache.
+  // ReportRuntimeMetadata writes a Runtime Metadata snapshot to Gitea's configured cache adapter.
   rpc ReportRuntimeMetadata(ReportRuntimeMetadataRequest) returns (ReportRuntimeMetadataResponse);
 
-  // RequestGiteaToken returns the current Gitea access token for a creating/running codespace,
-  // issuing one only when the codespace has no token.
+  // RequestGiteaToken returns or issues the current token in an enabled working state.
+  // During feature drain, only active running stop may read an existing complete token pair.
   rpc RequestGiteaToken(RequestGiteaTokenRequest) returns (RequestGiteaTokenResponse);
 
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
@@ -163,6 +163,13 @@ message ObservedOperation {
 
 message FetchOperationsResponse {
   repeated OperationPayload operations = 1;
+  repeated RenewedOperationLease renewed_leases = 2;
+}
+
+message RenewedOperationLease {
+  string codespace_uuid = 1;
+  int64 operation_rversion = 2;
+  int64 lease_deadline_unix = 3;
 }
 
 message OperationPayload {
@@ -477,7 +484,7 @@ x-codespace-manager-secret: <manager secret>
 
 `RegisterManager` 使用 registration token 认证，token 通过 request body 传递。
 
-业务命令因状态、版本、容量或参数被拒绝时，Gitea 返回 Connect error，并附带 `CodespaceFailureDetail`；category、Connect code 和 retryable 的固定映射见 [统一失败分类](gitea-server.md#统一失败分类)。generation 过旧时额外附带 `StaleGenerationDetail`，Manager 以 `current_generation + 1` 重新生成并持久化对应事实；该 detail 只用于恢复版本基线，不代表 Gitea 接受了旧事实。`UpdateLog` 的 offset conflict/gap 额外附带 `LogOffsetDetail`，使 Manager 以服务端实际文件末尾恢复追加。`ValidateOpenToken`、`VerifySSHPublicKey`、`RevalidateGatewaySession` 属于访问判定，通过 response `oneof outcome` 返回 binding 或 denied；`UpdateOperation` 的幂等结果也由 response `oneof outcome` 穷尽表达。
+业务命令因状态、版本、容量或参数被拒绝时，Gitea 返回 Connect error，并附带 `CodespaceFailureDetail`；category、Connect code 和 retryable 的固定映射见 [统一失败分类](gitea-server.md#统一失败分类)。generation 过旧时额外附带 `StaleGenerationDetail`，Manager 以 `current_generation + 1` 重新生成并持久化对应事实；该 detail 只用于恢复版本基线，不代表 Gitea 接受了旧事实。相同 generation 对应不同内容时返回 `generation_conflict`，不附 stale detail，因为请求 generation 已经是双方共同的当前基线；Manager 对该已知值做 checked increment，重新读取 backend 当前事实或快照后再提交。`UpdateLog` 的 offset conflict/gap 额外附带 `LogOffsetDetail`，使 Manager 以服务端实际文件末尾恢复追加。`ValidateOpenToken`、`VerifySSHPublicKey`、`RevalidateGatewaySession` 属于访问判定，通过 response `oneof outcome` 返回 binding 或 denied；`UpdateOperation` 的幂等结果也由 response `oneof outcome` 穷尽表达。
 
 输入边界：
 
@@ -486,6 +493,7 @@ x-codespace-manager-secret: <manager secret>
 - 所有版本递增使用 checked increment；Gitea 需要产生新 `operation_rversion` 但当前值已到 `int64` 上限时返回 `state_unavailable`，不产生部分状态写入。Manager 本地 inventory/runtime/metadata generation 已到上限时，停止该对象的新事实或快照上报，保留现有值、进入 recovering 并记录本地错误；相同 generation 的幂等重试仍可继续。任何一方都不允许回绕到 0 或负数。
 - `DeclareManager.capacity_total` 为 `1..10000`；单个 Manager 管理的 Runtime 总数不得超过 10000。
 - `FetchOperations.max_operations` 为 `1..256`，`observed_operations` 最多 10000 条且 UUID 唯一。Manager 每次提交全部本地上下文完整的 running operation，省略只表示本地缺少可继续执行的上下文。
+- `FetchOperationsResponse.renewed_leases` 最多与 request 的 `observed_operations` 等长；同一 UUID 不能同时出现在 `operations` 和 `renewed_leases`。
 - `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整快照；`RUNTIME_STATE_CREATING` 只表示具有稳定 identity 的资源存在，`RUNTIME_STATE_FAILED` 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed fact；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。
 - inventory item 只携带 UUID、Runtime state 和 observed operation version；SSH 验证只携带 UUID 和公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。
 - `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 running/stopped 分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。failed fact 为空结构，失败详情只进入 Manager 本地日志。
@@ -495,6 +503,7 @@ x-codespace-manager-secret: <manager secret>
 - `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
 - Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 使用 1 到 30 位 DNS-safe 小写字母、数字或连字符。
 - `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
+- `RequestGiteaToken` 在功能启用时按 creating/running 工作状态返回或签发 token；排空时仅 active running stop 可读取已有完整 pair 以恢复日志脱敏，不能签发或修复。
 - 所有 request 解码后不超过 `CONTROL_PLANE_MAX_REQUEST_SIZE`；`UpdateLog.lines` 单行另受 `LOG_MAX_LINE_SIZE` 限制。
 
 实现验收点：
@@ -508,6 +517,7 @@ x-codespace-manager-secret: <manager secret>
 - Gitea 的 operation 版本耗尽返回 `state_unavailable` 且不写部分状态；Manager generation 耗尽时停止新上报并进入 recovering。
 - Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。
 - 默认 workspace 与普通 Endpoint 使用同一个 Open Token binding 结构，不增加 Web SSH 专用 RPC 分支。
+- RequestGiteaToken 的正常工作态、排空 stop 只读和其他排空请求拒绝三类行为可由现有 request 与服务端状态确定，不增加 mode 字段。
 
 ## 传输
 
@@ -519,6 +529,7 @@ x-codespace-manager-secret: <manager secret>
 实现验收点：
 
 - 每个 operation envelope 的 `command` 必须设置一个分支；普通 create 携带完整 payload，resume/stop/delete 使用各自分支，无来源 create 恢复使用 `recover_create_without_source`，disabled 后已领取的 create/resume 使用对应 abort 分支。
+- observed-only 续租通过 `renewed_leases` 返回 UUID、版本和新 deadline，不为避免重发 payload 而丢失 Manager 本地续租回执。
 - 每个 operation payload 返回当前 `log_offset`，Manager 从该 offset 继续追加日志。
 - `UpdateLog` 成功返回服务端规范化写入后的 `next_offset`；offset conflict/gap 返回当前服务端 offset。
 - Runtime transition、完整 inventory 和 Runtime Metadata 分别携带自己的单调版本。
@@ -526,5 +537,5 @@ x-codespace-manager-secret: <manager secret>
 - Gateway 通过 `RevalidateGatewaySession` 复检已有 session：普通 HTTP 在间隔到期后的下一次请求转发前调用，WebSocket 和 SSH 按固定定时器调用。
 - inventory instruction 通过互斥 action 表达 cleanup、transition、operation refetch、清除旧 operation 上下文或本地 stop；transition action 携带生成事实所需的当前 operation 版本。
 - final result 携带 Manager 本地保存的原 operation 类型；active operation 存在时严格校验，清空后只按相同版本和目标主状态判断重复 final。
-- 普通命令拒绝返回 `CodespaceFailureDetail`；generation stale 和日志 offset 错误分别增加专用 detail。`UpdateOperation` 的五种正常收敛结果和访问判定分别使用自身 response oneof。
+- 普通命令拒绝返回 `CodespaceFailureDetail`；只有 generation stale 和日志 offset 错误增加对应专用 detail，generation conflict 不附 stale detail。`UpdateOperation` 的五种正常收敛结果和访问判定分别使用自身 response oneof。
 - HTTP 和 HTTPS transport 下生成的 handler、认证 header、failure detail 和幂等行为一致。

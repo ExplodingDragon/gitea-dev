@@ -62,7 +62,7 @@ Manager 调用 ManagerService RPC 的长期凭据。
 
 <span id="runtime-metadata"></span>
 ## Runtime Metadata
-Manager 上报到 Gitea 本地 cache 的动态运行时信息。每个 codespace 使用单调递增的 `metadata_generation`，旧快照不能覆盖新快照。
+Manager 上报到 Gitea cache 的动态运行时信息。cache miss 后由 Manager 重建，外部 adapter 在 TTL 内保留的合法快照可以继续使用；每个 codespace 使用单调递增的 `metadata_generation`，旧快照不能覆盖新快照。
 
 <span id="interactive-access"></span>
 ## Interactive Access
