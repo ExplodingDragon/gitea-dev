@@ -629,7 +629,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <ul>
 <li>所有 enum 的 <code>UNSPECIFIED</code> 和未知数值均作为参数错误拒绝，不能回退为默认行为。</li>
 <li>数据库中的 operation/generation <code>0</code> 只表示尚未产生版本；<code>operation_rversion</code>、<code>inventory_generation</code>、<code>runtime_generation</code> 和 <code>metadata_generation</code> 的有效新值从 <code>1</code> 开始。operation-bound RPC 和 <code>ReportRuntimeTransition.observed_operation_rversion</code> 必须大于 0，只有 inventory item 允许用 <code>observed_operation_rversion=0</code> 表示本地没有 active operation 上下文。</li>
-<li>所有版本递增使用 checked increment；达到 <code>int64</code> 上限时拒绝产生新版本并记录服务端错误，不允许回绕到 0 或负数。</li>
+<li>所有版本递增使用 checked increment；Gitea 需要产生新 <code>operation_rversion</code> 但当前值已到 <code>int64</code> 上限时返回 <code>state_unavailable</code>，不产生部分状态写入。Manager 本地 inventory/runtime/metadata generation 已到上限时，停止该对象的新事实或快照上报，保留现有值、进入 recovering 并记录本地错误；相同 generation 的幂等重试仍可继续。任何一方都不允许回绕到 0 或负数。</li>
 <li><code>DeclareManager.capacity_total</code> 为 <code>1..10000</code>；单个 Manager 管理的 Runtime 总数不得超过 10000。</li>
 <li><code>FetchOperations.max_operations</code> 为 <code>1..256</code>，<code>observed_operations</code> 最多 10000 条且 UUID 唯一。Manager 每次提交全部本地上下文完整的 running operation，省略只表示本地缺少可继续执行的上下文。</li>
 <li><code>ReportInstances.instances</code> 最多 10000 条且 UUID 唯一，每次都是完整快照；<code>RUNTIME_STATE_CREATING</code> 只表示具有稳定 identity 的资源存在，<code>RUNTIME_STATE_FAILED</code> 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed fact；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。</li>
@@ -651,6 +651,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>stale generation 错误携带 generation 类型和 Gitea 当前已接受值，本地版本丢失的 Manager 可以恢复单调上报。</li>
 <li>Manager 丢失本地 operation 版本基线后，running/stopped 分歧或无 active operation 的 failed inventory 可使 Gitea 返回 <code>report_runtime_transition.current_operation_rversion</code>；有 active operation 的 failed inventory 通过 refetch 恢复版本和 payload。</li>
 <li>所有版本字段拒绝负数和不允许的 0，递增永不发生回绕。</li>
+<li>Gitea 的 operation 版本耗尽返回 <code>state_unavailable</code> 且不写部分状态；Manager generation 耗尽时停止新上报并进入 recovering。</li>
 <li>Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。</li>
 <li>默认 workspace 与普通 Endpoint 使用同一个 Open Token binding 结构，不增加 Web SSH 专用 RPC 分支。</li>
 </ul>

@@ -486,7 +486,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <tr><td><code>observed_operations</code></td><td>Manager 已持有的 <code>codespace_uuid + operation_rversion</code></td></tr>
 </tbody></table>
 </div>
-<p>Fetch 先处理已绑定当前 Manager 的 running operation：enabled Manager 上报相同 <code>observed_operations</code> 版本时只刷新 lease，不下发 payload；未观察到或版本不同则重新下发并刷新 lease。disabled Manager 的 running stop/delete 仍按该规则恢复，running create/resume 则始终返回对应的 <code>abort_create|abort_resume</code> 空命令，不重发来源数据、不刷新 lease。然后再按以下优先级领取 queued operation：</p>
+<p>Fetch 先处理已绑定当前 Manager 的 running operation，并先按下文规则检查 deadline 与 restart grace。允许继续处理时，enabled Manager 上报相同 <code>observed_operations</code> 版本只刷新 lease、不下发 payload，未观察到或版本不同则重新下发并刷新 lease；disabled Manager 的 running stop/delete 仍按该规则恢复，running create/resume 只返回对应的 <code>abort_create|abort_resume</code> 空命令，不重发来源数据、不刷新 lease。然后再按以下优先级领取 queued operation：</p>
 <pre><code class="language-text">delete -&gt; stop -&gt; resume -&gt; create
 </code></pre>
 <p>领取条件：</p>
@@ -505,12 +505,13 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li><code>log_offset</code></li>
 <li>create 所需 repository/ref/commit 字段；resume 不包含 repository payload</li>
 <li><code>repo_id=0</code> 的 running create 只返回 <code>recover_create_without_source</code> 命令，不包含 repository payload</li>
-<li>disabled 后已领取的 running create/resume 只返回对应 abort 命令，用于本地清理和 <code>final failed</code></li>
+<li>disabled 后已领取且未超过可恢复边界的 running create/resume 只返回对应 abort 命令，用于本地清理和 <code>final failed</code></li>
 </ul>
 <p>delete 和 stop 是资源回收动作，优先推进可以释放运行侧资源。resume 和 create 会占用容量，由 Manager 当前容量决定领取时机。resume 基于已初始化 workspace 和绑定 Manager 执行，不重新解析 repository。<code>operation_rversion</code> 绑定本次 Gitea 下发的 operation 版本，Manager 后续 operation-bound RPC 都用它校验归属。</p>
 <p>Manager matching 沿用 Actions <code>runs-on</code> 的分层方式。Gitea 从认证后的当前 <code>codespace_manager.tags_json</code> 解析规范化标量列表，Fetch request 不重复提交 tags；create 候选查询按 operation 字段、<code>repo_tag IN manager.tags</code> 和 repository 当前 owner scope 筛选，global Manager 不加 owner 限制。<code>accepted_operation_types</code>、capacity 和最终状态在 Go 中判断。</p>
 <p>最终 create claim 使用单条条件更新重新确认未绑定 queued create、当前 Manager enabled/online、<code>repo_tag</code> 仍属于最新 tags，并要求 <code>repo_id&gt;0</code> 且 repository 记录仍存在；owner-scoped Manager 还要求该 repository 当前 <code>owner_id</code> 等于 Manager owner，global Manager 不限制 owner。并发 repository transfer 与 claim 以该语句看到的数据库顺序为准：claim 先成立时 binding 固定，transfer 先成立时旧 owner Manager affected rows 为 0。这样不需要跨服务复用 repository 工作锁，也不会让候选查询与条件更新之间的 owner 变化产生错误 binding。</p>
 <p><code>max_operations</code> 范围为 <code>1..256</code>；<code>observed_operations</code> 最多 10000 条且 UUID 不得重复。每种优先级使用 <code>operation_created_unix, uuid</code> keyset 分页，按升序处理；单次 Fetch 在稳定 scope/tag 筛选后合计最多检查 1024 个 queued 候选，防止每增加一种 operation 类型都线性放大数据库读取。Manager 调用 Fetch 或续租的周期不超过 <code>OPERATION_LEASE_TIMEOUT / 3</code>。disabled Manager 不领取 queued create/resume；queued 和 running stop/delete 继续正常处理。abort create/resume 不续租，lease 先超时时 Gitea 已写入的 failed 与 Manager 随后提交的 <code>final failed</code> 幂等收敛到同一结果。</p>
+<p>Fetch 在处理每条 running operation 时，于 Codespace lock 内先检查 <code>operation_deadline_unix</code> 和 Manager restart grace，再决定 observed 续租或 payload 重发。deadline 未到期时按普通规则处理；deadline 已到期但仍在有效 grace 时先条件写入新 deadline；Manager online 或 hard grace 已结束时执行 timeout State Finalization，不返回 payload 也不计入 <code>max_operations</code>。disabled create/resume 在 deadline 未到期或到期后仍处于有效 grace 时可返回一次性 abort 命令，但不写新 deadline；超过可恢复边界后同样直接 timeout。这与 UpdateOperation 和 Cron 使用同一条件更新边界，observed 批量续租不能恢复本应超时的 operation。</p>
 <p>Fetch 对每个 queued 候选在 claim 前检查 <code>operation_created_unix + QUEUE_TIMEOUT</code>。已到硬截止时间的候选不得领取；handler 在 Codespace lock 内按 <code>codespace_uuid + operation_rversion + operation_status=queued</code> 条件执行 timeout State Finalization，然后继续本批其他候选。该项不计入 <code>max_operations</code>，未被 Fetch 遇到的过期记录仍由 reconciliation Cron 处理。</p>
 <p>单次 Fetch 不持有覆盖整批操作的事务。running lease 刷新和每条 queued claim 都在各自短事务中条件更新；claim 提交后再构造 payload。create repository/user 数据加载或 payload 构造失败时，服务在单独短事务中按当前 <code>codespace_uuid + operation_rversion + manager_id + operation_status=running</code> 条件释放该 claim：恢复 queued 和 operation 时间字段，create 同时恢复 <code>manager_id=0</code>。该候选失败会写服务端日志并继续处理同批后续候选。数据库连接等系统性错误终止本次 RPC 且不返回 response；已经提交的 claim 保持 running，下一次 Fetch 通过 running payload 重发恢复。每条 claim 独立提交与 Actions 领取任务的事务边界一致，也让响应丢失和中途故障使用同一种恢复路径。</p>
 <p>实现验收点：</p>
@@ -520,7 +521,8 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>本次新领取的 queued create/resume 数量不超过 <code>capacity_available</code>；running 恢复和 abort 不占新容量。</li>
 <li>running operation 重发不占 create/resume capacity，但计入 <code>max_operations</code>。</li>
 <li>enabled Manager 和 disabled stop/delete 已上报相同 <code>observed_operations</code> 版本时不重复下发完整 payload。</li>
-<li>上述已观察 operation 由 Fetch 刷新 lease，且不计入 response 的 <code>max_operations</code>；disabled create/resume 始终返回 abort 并计入 response。</li>
+<li>上述仍在有效执行边界内的已观察 operation 由 Fetch 刷新 lease，且不计入 response 的 <code>max_operations</code>；disabled create/resume 在 deadline 未到期或到期后仍处于有效 grace 时返回 abort 并计入 response，超过可恢复边界时直接 timeout。</li>
+<li>running operation 在 observed 续租或 payload 重发前检查 deadline；非 grace 的过期项直接 timeout，不进入 response。</li>
 <li>领取通过数据库条件更新完成；affected rows 为 0 时继续尝试下一个候选。</li>
 <li>遇到过期 queued 候选时条件写入 timeout 结果，不领取、不计入 <code>max_operations</code>，且不阻断同批其他候选。</li>
 <li>Fetch tags 只来自认证 Manager 最新 <code>tags_json</code>；客户端修改 tags 并成功 Declare 后，下一次候选查询和 claim 使用新值。</li>
@@ -528,7 +530,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>每条领取在自己的短事务中写入 <code>operation_status=running</code>、<code>operation_started_unix</code>、<code>operation_deadline_unix</code>；create 领取额外写入 <code>manager_id</code>。</li>
 <li>领取不递增 <code>operation_rversion</code>。</li>
 <li>普通 running operation 重发不执行 claim、不递增版本，但刷新 <code>operation_deadline_unix</code>；abort 不刷新。</li>
-<li>disabled 后已领取的 create/resume 返回 abort 命令且不刷新 lease，不会重新启动初始化或恢复。</li>
+<li>disabled 后已领取且未超过可恢复边界的 create/resume 返回 abort 命令且不刷新 lease，不会重新启动初始化或恢复；超过边界时不再返回命令。</li>
 <li>stop/delete 在 Manager 满载时仍可领取。</li>
 <li>并发领取时只有一个 Manager 成功。</li>
 <li>payload 构造失败的 operation 会被条件释放，且不会覆盖已经被替换的 operation；系统故障留下的 running claim 由下一次 Fetch 重发。</li>
@@ -668,6 +670,7 @@ operation_status=running
 <p>主动 running 被接受后，绑定 Manager 才可通过 <code>RequestGiteaToken</code> 取得 stopped 阶段已经吊销的新 token，刷新 Runtime credential，再用同一 boot 版本和更高 metadata generation 上报 <code>ready</code>。ready 前交互返回 <code>runtime_not_ready</code>；credential 确认失败时停止 Runtime，并以更高 runtime generation 上报 stopped。该过程不创建 operation，也不更新 <code>last_active_unix</code>。</p>
 <p>Manager 主动 transition 不更新 <code>last_active_unix</code>；该字段只记录用户 resume final、成功消费 open code 和成功 SSH 认证。failed fact 不表示 Runtime 已停止，因此从 running 进入 failed 时不写 <code>stopped_unix</code>。</p>
 <p>Manager 在 failed fact 前关闭 session，取消 pending metadata/Endpoint mutation 和后置 worker。请求被首次接受或按目标状态幂等成功后，Manager 可立即停止并删除本地 Runtime；清理失败时继续在 inventory 中上报 failed，由 failed 主状态返回 <code>cleanup_local_runtime</code>。未知 UUID 和 <code>resource_absent</code> 仍不构成本地删除授权。</p>
+<p>Manager 处理 transition Connect error 时不重试无法成立的原请求：<code>current_operation_conflict</code> 转为 Fetch 当前 operation；<code>stale_operation</code> 转为完整 inventory 调和；<code>stale_generation</code> 按 detail 的当前值加一并重新读取 backend 事实；<code>generation_conflict</code> 在已知的相同 generation 上加一，仅重报仍为当前值的事实；<code>manager_disabled</code> 拒绝 running fact 时停止 Runtime 并改报 stopped；<code>manager_offline</code> 先 Declare recovering 后重建当前事实；<code>codespace_not_found</code> 停止该 Codespace 的后续上报，<code>manager_unregistered</code> 停止全部 Gitea 通信，两者都不清理 Runtime。这些分支只使用现有 error category、Fetch、Declare 和 inventory，不增加响应字段。</p>
 <p>实现验收点：</p>
 <ul>
 <li>transition 请求不携带不参与判定的观察时间和原因字段。</li>
@@ -679,15 +682,17 @@ operation_status=running
 <li>running fact 重试可修复丢失的 metadata cache；stopped/failed 重试可补做 cache 与 Open Token 清理。</li>
 <li>failed fact 只从无 active operation 的 running/stopped 生效，吊销 token 且相同请求重试不刷新 failed retention 起点。</li>
 <li>failed fact 成功后本地 Runtime 可立即清理，未完成清理由 failed inventory instruction 继续收敛。</li>
+<li>transition 被 operation conflict、stale operation、generation stale/conflict、Manager disabled/offline 或 Codespace/Manager 记录缺失拒绝时，Manager 按固定分支转入 Fetch、inventory、Declare、新 generation、stopped 或停止上报。</li>
 <li>多个条件同时不满足时仍按固定校验顺序返回同一失败分类。</li>
 </ul>
 <h3 id="requestgiteatoken"><a class="header" href="#requestgiteatoken">RequestGiteaToken</a></h3>
 <ul>
 <li>允许绑定 Manager 在 <code>status=creating|running</code> 工作状态申请当前 Git 凭据。</li>
-<li>调用方 Manager 必须与 <code>codespace.manager_id</code> 匹配、enabled，且已声明为 online 或处于有效 recovering 窗口；recovering 只用于恢复已绑定 operation 的当前凭据，不允许领取新 create/resume。</li>
+<li>调用方 Manager 必须与 <code>codespace.manager_id</code> 匹配、enabled，且已声明为 online 或处于有效 recovering 窗口。recovering 允许恢复已绑定 Codespace 的当前凭据，既包括 active create，也包括 resume final 或主动 running fact 后已无 active operation 的 <code>credential-refresh</code>；它不允许领取新 create/resume。</li>
 <li><code>codespace.user_id</code> 必须解析到创建用户；正常账户删除事务会先物理删除关联 codespace，若发现悬空引用则按数据库一致性错误拒绝并交由服务端日志排查，不签发 token。</li>
 <li><code>creating</code> 要求 create operation 已被该 Manager 领取，用于首次 clone/checkout。</li>
 <li><code>running</code> 在没有 active operation 或当前是绑定 Manager 已领取的 stop operation 时允许；stop worker 只可重新取得已经存在的 token 明文以恢复日志 mask set，token binding 为空时返回 <code>state_unavailable</code> 而不在停止过程中签发新 token。delete 已把主状态改为 <code>deleting</code> 并吊销 token，因此不会通过该分支取回凭据。</li>
+<li><code>credential-refresh</code> worker 收到 <code>manager_disabled</code> 时把它视为确定性不可继续：取消后置工作、停止 Runtime，递增 runtime generation 并上报 stopped；停止确认失败时改报 failed。<code>manager_offline</code> 要求先 Declare recovering 再重试；<code>codespace_not_found|manager_unregistered</code> 终止后置通信但不删除 Runtime；更高 stop/delete operation 已存在时由 active operation 接管。</li>
 <li><code>status=stopped|failed|deleting</code> 返回状态不可用。</li>
 <li><code>repo_id=0</code> 时仍可签发 token；后续 Git HTTP(S) 访问因 repo binding 不匹配而拒绝所有 repository。</li>
 <li><code>gitea_token_id&gt;0</code> 时直接返回保存的 <code>gitea_token</code> 明文。</li>
@@ -698,6 +703,8 @@ operation_status=running
 <p>实现验收点：</p>
 <ul>
 <li>creating/running 且创建用户存在时返回当前 token 或在空 binding 上签发一个新 token；running stop 只可读取现有 token，不会签发或轮换。</li>
+<li>recovering Manager 可为已绑定 Codespace 的 active create 或无 active operation <code>credential-refresh</code> 恢复凭据，不因 resume operation 已清空而拒绝。</li>
+<li>credential-refresh 的 disabled、offline、记录缺失和更高 operation 分别收敛到 stopped/failed、Declare recovering、停止通信或 active operation 接管。</li>
 <li>悬空 <code>user_id</code> 不创建 access token row；账户删除正常路径不会留下可调用该 RPC 的 codespace。</li>
 <li>损坏 pair 修复后旧 token row 不存在，codespace 最多绑定一个新 token。</li>
 <li>并发 Request、stop/delete 和 reconciliation 后，数据库中至多存在一个被该 codespace 引用的有效 token，字段 pair 不出现半写入。</li>
@@ -845,7 +852,7 @@ runtime_state_mismatch
 <tr><td><code>command.create</code></td><td>create</td><td>create 专属结构</td></tr>
 <tr><td><code>command.resume/stop/delete</code></td><td>对应类型</td><td>不携带 repository 数据的明确命令分支</td></tr>
 <tr><td><code>command.recover_create_without_source</code></td><td><code>repo_id=0</code> 的 running create 恢复</td><td>不重发 repository payload，Manager 检查本地 workspace、boot 结果和 <code>ready</code> metadata 后 final done 或 failed</td></tr>
-<tr><td><code>command.abort_create/abort_resume</code></td><td>Manager disabled 后已领取的 running create/resume</td><td>不重发执行数据；Manager 清理本轮 Runtime 工作并 final failed</td></tr>
+<tr><td><code>command.abort_create/abort_resume</code></td><td>Manager disabled 后已领取且未超过可恢复边界的 running create/resume</td><td>不重发执行数据；Manager 清理本轮 Runtime 工作并 final failed</td></tr>
 <tr><td><code>create.repo_id</code></td><td>create</td><td>base/route repository ID</td></tr>
 <tr><td><code>create.repo_full_name</code></td><td>create</td><td>repository 完整名称</td></tr>
 <tr><td><code>create.repo_name</code></td><td>create</td><td>repository 名称</td></tr>

@@ -353,6 +353,7 @@ ready
 </code></pre>
 <p><code>ready</code> 是 create 的终态阶段；只有 token、internal SSH 和已声明服务均可用后才上报，Gitea 接受该快照后才允许 create final done。</p>
 <p>Resume 不重新执行 create 初始化：Manager 启动已有 workspace、恢复 internal SSH 和本地服务，以高于此前快照的 metadata generation 上报 <code>credential-refresh</code>，再调用 <code>UpdateOperation(done)</code>；Gitea 不接受旧 <code>ready</code> 快照直接完成 resume。Gitea 写入 <code>running</code> 后，Manager 保留该 boot 上下文，调用 <code>RequestGiteaToken</code> 生成新 token、刷新 Runtime Git credential，最后以更高 metadata generation 上报 <code>ready</code>；ready 被接受后结束后置 worker，但最新 boot 终态结果继续保留以支持 <code>/boot</code> 响应丢失重试。Manager 重启时若发现 running Runtime 仍处于 <code>credential-refresh</code>，继续这些后置步骤而不恢复已完成的 operation。临时错误持续退避，确认无法写入 credential 时停止 Runtime 并主动上报 stopped。resume 不重新读取 repository payload，也不要求 workspace HEAD 等于创建时的 <code>commit_sha</code>；ready 前 open/SSH 返回 <code>runtime_not_ready</code>。</p>
+<p>credential-refresh 在 active operation 已清空后仍属于已绑定 Codespace 的恢复工作，Manager online 或处于有效 recovering 窗口时可继续申请 token。期间 Manager 被 disabled 时，取消后置 worker、停止 Runtime 并上报 stopped，停止确认失败时上报 failed；Manager 已派生 offline 时先 Declare recovering；Codespace 或 Manager 记录已删除时停止通信但不据此清理 Runtime。</p>
 <p>如果 ready 前收到更高 <code>operation_rversion</code> 的 stop/delete，Manager 先原子持久化取消旧 credential-refresh worker，再执行新 operation；被取消的旧 worker 不再申请 token、写 Runtime credential 或上报 ready。stop final 会吊销可能已经签发的 token，delete 则按物理删除路径收敛。该优先级让新的 Gitea 指令稳定覆盖旧的 post-final 工作，而不需要增加 boot 状态字段。</p>
 <p>实现验收点：</p>
 <ul>
@@ -365,6 +366,7 @@ ready
 <li>resume final 后的 <code>credential-refresh</code> boot session 可跨 Manager 重启继续，ready 接受前不会因 active operation 已清空而丢失。</li>
 <li>最新 boot 终态结果保留到更高 boot 版本或 Runtime 删除，相同 POST 在 operation final 后仍可幂等重试。</li>
 <li>更高版本 stop/delete 会先取消旧 credential-refresh worker，旧 boot 上下文不再产生 token、credential 或 ready 写入。</li>
+<li>credential-refresh 可在 recovering 且无 active operation 时恢复；disabled 收敛到 stopped/failed，offline 先 Declare recovering，记录删除只停止通信。</li>
 <li>Manager 主动启动 stopped Runtime 时也使用 <code>credential-refresh -&gt; running fact -&gt; token -&gt; ready</code>，但不创建 operation 或更新用户活跃时间。</li>
 </ul>
 <h2 id="外部变化"><a class="header" href="#外部变化">外部变化</a></h2>

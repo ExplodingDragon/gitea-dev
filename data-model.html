@@ -190,7 +190,7 @@
 </div>
 <p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
 <p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。repository 删除后 <code>repo_id</code> 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 <code>codespace.uuid</code>、<code>user_id</code> 和 <code>manager_id</code> 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。repo-bound token 在 <code>repo_id=0</code> 时拒绝所有 repository 访问。用户或组织删除是账户级事务，在 repository row 消失前通过现有 <code>user_id</code>、<code>repo_id -&gt; repository.owner_id</code> 和 <code>manager_id -&gt; codespace_manager.owner_id</code> 收集并删除关联 Codespace，因此不需要为删除再增加一个冗余 owner 字段。</p>
-<p><code>operation_rversion</code>、<code>runtime_generation</code> 和 <code>inventory_generation</code> 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 <code>BIGINT</code> 时使用 checked increment，达到上限时拒绝新版本写入并记录错误，不回绕到 0 或负数。<code>runtime_generation</code> 仅保存当前值；相同 generation 的幂等以 fact 目标主状态是否已成立判定，不需要再增加历史 fact 类型字段。</p>
+<p><code>operation_rversion</code>、<code>runtime_generation</code> 和 <code>inventory_generation</code> 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 <code>BIGINT</code> 时使用 checked increment，不回绕到 0 或负数。Gitea 在 <code>operation_rversion</code> 已到上限时以 <code>state_unavailable</code> 拒绝新 operation，不写主状态或 active operation 的部分结果。Manager 本地 generation 已到上限时保留当前值并进入 recovering，不产生新版本；已持久化的相同 generation 幂等重试仍可继续。<code>runtime_generation</code> 仅保存当前值；相同 generation 的幂等以 fact 目标主状态是否已成立判定，不需要再增加历史 fact 类型字段。</p>
 <p>endpoint、boot、resource usage、internal SSH 和 last_reported 保存在本地 cache。</p>
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
@@ -232,6 +232,7 @@
 <li>数据迁移创建文中列出的真实字段和非空默认值；模型校验只允许文中列出的状态、operation 类型和运行态值。</li>
 <li>active operation 完成后 operation 字段清空，<code>operation_rversion</code> 和最新事实 generation 保留当前值。</li>
 <li>operation 与 generation 的 0 值只用于未初始化，有效版本从 1 开始，递增不会溢出回绕。</li>
+<li>operation 版本耗尽时不产生部分写入，Manager generation 耗尽时不产生新版本，两者都保留当前值。</li>
 <li>token ID 与明文字段在生命周期事务中同时写入或同时清空。</li>
 <li><code>gitea_token_id=0</code> 时 <code>gitea_token</code> 必须为空字符串；非零 token ID 只能被一个 codespace 绑定。</li>
 <li><code>inventory_generation/inventory_hash</code> 同事务更新；相同 generation 只有 hash 相同时才作为幂等重试。</li>

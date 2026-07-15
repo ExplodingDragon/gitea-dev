@@ -221,7 +221,7 @@ Runtime Metadata cache
 <li><code>DeclareManager(manager_runtime_state=online)</code>。</li>
 <li>恢复领取新的 create/resume。</li>
 </ol>
-<p>Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回。<code>operation_rversion</code> 相同且本地上下文完整的 running operation 不需要重复下发完整 payload；版本缺失或不同则由 Gitea 返回当前 operation。Manager disabled 时不恢复 create/resume 执行，只处理 abort、stop、delete 和本地调和指令。</p>
+<p>Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，可以让 Gitea 中已有 codespace 平稳接回。<code>operation_rversion</code> 相同且本地上下文完整的 running operation 不需要重复下发完整 payload；版本缺失或不同则由 Gitea 返回当前 operation。Manager disabled 时不恢复 create/resume 执行；未超过可恢复边界时只处理 abort、stop、delete 和本地调和指令，超过边界的 operation 由 Gitea timeout。</p>
 <p>Manager 重启恢复流程：</p>
 <pre class="mermaid">sequenceDiagram
     participant M as Manager
@@ -381,14 +381,16 @@ missing = expected - reported
 <tr><td>offline 超过上述 hard deadline</td><td>按当前 operation failed 处理，吊销 token，清空 active operation。</td></tr>
 </tbody></table>
 </div>
-<p>维护窗口属于 Manager 可用性事件，不写入每条 codespace。offline 从 <code>last_online_unix+MANAGER_OFFLINE_TIMEOUT</code> 成立的时刻起算 grace；recovering 从首次 <code>last_recovering_unix</code> 起算。有效 grace 内，绑定 Manager 可用当前版本的首次 Fetch、renew 或 final 原子恢复已到期 lease；超过 hard deadline 后不能恢复。当前版本 UpdateOperation 在非 grace 情况发现 deadline 已过而 Cron 尚未处理时，直接执行 timeout State Finalization：<code>final failed</code> 返回 <code>idempotent_done</code>，renew/final done 返回 <code>stale_operation</code>。Cron、claim、renew 和 final 使用 <code>codespace_uuid + operation_rversion + operation_status</code> 条件更新，第一个成功者生效。完整 inventory 到达后在 <code>ReportInstances</code> 请求内优先使用运行侧事实，不再等待 operation timeout。</p>
+<p>维护窗口属于 Manager 可用性事件，不写入每条 codespace。offline 从 <code>last_online_unix+MANAGER_OFFLINE_TIMEOUT</code> 成立的时刻起算 grace；recovering 从首次 <code>last_recovering_unix</code> 起算。有效 grace 内，绑定 Manager 可用当前版本的首次 Fetch、renew 或 final 原子恢复已到期 lease；超过 hard deadline 后不能恢复。Fetch 在 observed 续租或 running payload 重发前执行该判定：有效 grace 内先写新 deadline，非 grace 过期时直接 timeout 且不返回 payload。disabled create/resume 在 deadline 未到期或到期后仍处于有效 grace 时只返回不续租的 abort 命令。当前版本 UpdateOperation 在非 grace 情况发现 deadline 已过而 Cron 尚未处理时，直接执行 timeout State Finalization：<code>final failed</code> 返回 <code>idempotent_done</code>，renew/final done 返回 <code>stale_operation</code>。Cron、claim、Fetch、renew 和 final 使用相同条件更新边界，第一个成功者生效。完整 inventory 到达后在 <code>ReportInstances</code> 请求内优先使用运行侧事实，不再等待 operation timeout。</p>
+<p>Manager 在本地单调时钟到达已保存 deadline 时暂停普通 worker 的新 backend 变更，保留 operation 上下文并请求 Fetch 或 renew。restart grace 只允许 Gitea 恢复 deadline，Manager 不在未收到新 deadline 时自行继续。abort 命令只允许停止本轮执行、清理新建工作并 final failed。</p>
 <p>实现验收点：</p>
 <ul>
 <li>online 超时按 operation 失败处理，recovering 和 offline grace 内暂缓；recovering 超过 hard grace 后不再冻结 operation。</li>
 <li>queued timeout 与 running lease 使用不同时间字段。</li>
 <li>Fetch 对遇到的过期 queued 候选直接写入 timeout 结果并继续本批，不等待 Cron。</li>
-<li>deadline 在 claim/renew/final 路径直接校验；grace 恢复与 Cron 并发时只有一个条件更新生效。</li>
+<li>deadline 在 claim/Fetch/renew/final 路径直接校验；grace 恢复与 Cron 并发时只有一个条件更新生效。</li>
 <li>非 grace 的过期 UpdateOperation 不等待 Cron，直接写 failed 并返回确定 outcome。</li>
+<li>非 grace 的过期 running operation 不会被 Fetch observed 续租或重发；Manager 普通 worker 在本地 deadline 后也不继续 backend 变更。</li>
 </ul>
 <h2 id="operation-恢复"><a class="header" href="#operation-恢复">Operation 恢复</a></h2>
 <p>Manager 重启后继续处理当前 Gitea-issued operation；已经 final done 的 resume 不恢复 operation，而是根据本地 boot 上下文的 <code>credential-refresh</code> 阶段继续后置凭据刷新。最新 boot 终态结果不是历史，保留到更高 create/resume 版本或 Runtime 删除，以支持 Runtime API 重试。</p>
@@ -409,6 +411,7 @@ missing = expected - reported
 </tbody></table>
 </div>
 <p>stop 让 running codespace 退出可交互态并保留可恢复资源。Runtime 不存在则无法满足 stopped 可恢复语义，故进入 failed。resume 先用 <code>credential-refresh</code> metadata 完成主状态切换，再以同一 boot session 刷新 token 和 credential；临时错误可在 operation 清空后继续重试，确认无法写入 credential 时停止 Runtime 并主动上报 stopped。</p>
+<p>resume final 或主动 running fact 后的 credential-refresh 可在 Manager online 或有效 recovering 期间申请 token，不要求 active operation 仍存在。<code>manager_disabled</code> 使 Manager 取消后置 worker、停止 Runtime 并上报 stopped，停止确认失败时上报 failed；<code>manager_offline</code> 先 Declare recovering；<code>codespace_not_found|manager_unregistered</code> 停止通信但不清理 Runtime；更高 stop/delete operation 取消后置 worker 并接管。</p>
 <p>Manager 收到高于当前 boot 版本的 stop/delete payload 时，先持久化取消旧 credential-refresh worker，再执行 operation；旧 worker 不再申请 token、写 credential 或上报 ready。该规则同样适用于重启后恢复出来的 post-final worker。</p>
 <p><code>UpdateOperation</code> 返回 <code>lease_renewed</code> 时 worker 使用新 deadline 继续；<code>final_accepted</code> 和 <code>idempotent_done</code> 清除同一版本的 operation 上下文，其中 resume done 继续保留 credential-refresh 后置上下文。<code>stale_operation</code> 停止旧 worker 并等待 Fetch 或 inventory instruction，不能覆盖本地更高版本上下文；<code>resource_absent</code> 只清除通信上下文并停止上报，不要求 Manager 删除 Runtime。</p>
 <p>实现验收点：</p>
@@ -417,6 +420,7 @@ missing = expected - reported
 <li>resume 进入 running 后轮换 Git token 并刷新 credential，不重新初始化 repository；<code>ready</code> 被接受前不清除后置 worker，完成后仍保留最新 boot 结果供幂等重试。</li>
 <li>最新 boot 结果使 final 后的相同 POST 重试保持幂等；更高版本 stop/delete 取消旧 credential-refresh 后置工作。</li>
 <li>stale outcome 保留 Runtime 和更高版本上下文；resource absent 不触发额外运行侧清理。</li>
+<li>credential-refresh 在 recovering 无 active operation 时仍可恢复 token，并对 disabled、offline、记录缺失和更高 operation 作确定收敛。</li>
 </ul>
 <h2 id="reconciliation"><a class="header" href="#reconciliation">Reconciliation</a></h2>
 <p>恢复依据：</p>
