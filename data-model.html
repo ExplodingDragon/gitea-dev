@@ -157,10 +157,10 @@
                     <main>
                         <h1 id="数据模型"><a class="header" href="#数据模型">数据模型</a></h1>
 <h2 id="数据表"><a class="header" href="#数据表">数据表</a></h2>
-<p>Gitea 数据库保存 Codespace/Manager binding、生命周期结果和当前 Git token；Gitea cache 保存 Runtime Metadata 与 Gateway Open Token；Endpoint port、Runtime Token、backend 状态和实时容量由 Manager 管理。当前设计不增加 Gitea quota 或运行容量计数表。</p>
+<p>Gitea 数据库保存 Codespace/Manager binding、生命周期结果和当前 Gitea token；Gitea cache 保存 Runtime Metadata 与 Gateway Open Token；Endpoint port、Runtime Token、backend 状态和实时容量由 Manager 管理。当前设计不增加 Gitea quota 或运行容量计数表。</p>
 <h3 id="codespace"><a class="header" href="#codespace">codespace</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
-<tr><td><code>uuid</code></td><td><code>CHAR(36)</code>，主键</td><td>全局唯一持久 ID；Web 路由、RPC、日志路径和 Manager 本地 Runtime 映射都使用该值</td></tr>
+<tr><td><code>uuid</code></td><td><code>CHAR(36)</code>，主键</td><td>Gitea 生成的规范小写 RFC 4122 UUID v4；Web 路由、RPC、日志路径和 Manager 本地 Runtime 映射都使用该值</td></tr>
 <tr><td><code>user_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>创建者 user ID；有效 codespace 创建时必须大于 0，用户删除事务会物理删除关联记录</td></tr>
 <tr><td><code>repo_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>大于 0 时用于 create 来源展示和 token repo binding；repository 删除 pre-cleanup 时写为 0</td></tr>
 <tr><td><code>ref_type</code></td><td><code>VARCHAR(16) NOT NULL DEFAULT ''</code></td><td>有效记录只允许 <code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td></tr>
@@ -177,7 +177,7 @@
 <tr><td><code>operation_deadline_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>running lease 截止时间；其他状态为 0</td></tr>
 <tr><td><code>runtime_generation</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>Manager 主动运行事实版本，只保存最新值</td></tr>
 <tr><td><code>gitea_token_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>当前有效 Gitea access token ID；0 表示当前没有有效 token；<code>creating/running</code> 可签发，进入 <code>stopped/failed/deleting</code> 或物理删除时吊销并写回 0</td></tr>
-<tr><td><code>gitea_token</code></td><td><code>TEXT NOT NULL</code></td><td>当前有效 Gitea access token 明文；迁移默认写入空字符串，只供绑定 Manager 通过 <code>RequestGiteaToken</code> 获取；空字符串表示无 token，不进入 Web/API/Minimal Info/日志/Runtime Metadata/Gateway Open Token</td></tr>
+<tr><td><code>gitea_token</code></td><td><code>TEXT NOT NULL</code></td><td>当前有效 Gitea access token 明文；迁移默认写入空字符串，只供绑定 Manager 通过 <code>RequestGiteaToken</code> 获取并写入 Runtime credential；空字符串表示无 token，不进入 Web、Minimal Info、日志、Runtime Metadata 或 Gateway Open Token</td></tr>
 <tr><td><code>last_active_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>最近成功记录的用户交互；仅用于 UI 排序和清理参考，写入失败不阻断访问</td></tr>
 <tr><td><code>created_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>创建时间戳</td></tr>
 <tr><td><code>updated_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>最近一次持久生命周期结果变化时间；进入 failed 时作为 retention 起点</td></tr>
@@ -190,6 +190,7 @@
 </div>
 <p>日志元数据字段参考 Actions <code>ActionTask</code>（<code>models/actions/task.go</code>）。</p>
 <p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。repository 删除后 <code>repo_id</code> 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 <code>codespace.uuid</code>、<code>user_id</code> 和 <code>manager_id</code> 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。repo-bound token 在 <code>repo_id=0</code> 时拒绝所有 repository 访问。用户或组织删除在任何 owner repository 删除前，通过现有 <code>user_id</code>、<code>repo_id -&gt; repository.owner_id</code> 和 <code>manager_id -&gt; codespace_manager.owner_id</code> 收集关联 Codespace，并在独立前置清理事务中删除 Gitea 资源，因此不需要增加冗余 owner 字段。repository 此前已单独删除时，<code>repo_id=0</code> 表示与原 repository owner 的关系已经有意丢弃，后续只按创建者和 Manager owner 关系处理。</p>
+<p>Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUID v4，数据库、Web 路径、RPC 和 Manager 持久状态统一使用 36 字符小写带连字符形式。外部输入先做严格格式校验，大小写不同、无连字符或其他非规范形式返回 <code>invalid_argument</code>，不能在规范化前参与查询或构造 lock key。<code>uuid32</code> 只表示从规范 UUID 删除四个连字符后的 32 字符结果；需要 UUID 的 helper 参数统一命名为 <code>codespaceUUID</code>，避免与数字数据库 ID 混淆。单一表达保证同一对象只对应一个数据库键、一个 <code>codespace_{uuid}</code> lock key 和一组 Gateway host。</p>
 <p><code>operation_rversion</code>、<code>runtime_generation</code> 和 <code>inventory_generation</code> 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 <code>BIGINT</code> 时使用 checked increment，不回绕到 0 或负数。Gitea 在 <code>operation_rversion</code> 已到上限时以 <code>state_unavailable</code> 拒绝新 operation，不写主状态或 active operation 的部分结果。Manager 本地 generation 已到上限时保留当前值并进入 recovering，不产生新版本；已持久化的相同 generation 幂等重试仍可继续。<code>runtime_generation</code> 仅保存当前值；相同 generation 的幂等以 fact 目标主状态是否已成立判定，不需要再增加历史 fact 类型字段。</p>
 <p><code>updated_unix</code> 只表示数据库中的生命周期结果发生变化。创建记录时与 <code>created_unix</code> 同值；创建或替换 active operation、首次 final/timeout/missing/transition 改变主状态时写为当前时间。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、open、SSH、相同结果的幂等重试，以及 repository 删除时仅把 <code>repo_id</code> 写为 0，都不更新该字段。这样 failed retention 有稳定起点，调度和交互活动也不会被误解为生命周期变化；用户活动继续只写 <code>last_active_unix</code>。</p>
 <p>endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gitea cache。</p>
@@ -208,7 +209,6 @@
 <tr><td><code>last_recovered_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>最近恢复完成时间</td></tr>
 <tr><td><code>inventory_generation</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>最近接受的完整 inventory 版本</td></tr>
 <tr><td><code>inventory_hash</code></td><td><code>VARCHAR(64) NOT NULL DEFAULT ''</code></td><td>最近接受的规范化 inventory SHA-256</td></tr>
-<tr><td><code>created_by</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>创建者 user ID，允许后续悬空</td></tr>
 <tr><td><code>created_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>创建时间</td></tr>
 <tr><td><code>meta_json</code></td><td><code>TEXT NOT NULL</code></td><td>Gitea 生成的规范化 Manager metadata JSON</td></tr>
 </tbody></table>
@@ -219,25 +219,28 @@
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td></td></tr>
 <tr><td><code>token</code></td><td><code>VARCHAR(64) NOT NULL</code>，唯一索引</td><td>32 随机字节的 hex 编码明文</td></tr>
-<tr><td><code>owner_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>Registration Token owner scope</td></tr>
-<tr><td><code>is_active</code></td><td><code>BOOLEAN NOT NULL DEFAULT true</code></td><td>同一 <code>owner_id</code> 同一时间只能有一个 active token</td></tr>
+<tr><td><code>owner_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code>，唯一索引</td><td>Registration Token owner scope；每个 scope 最多一行</td></tr>
 <tr><td><code>created</code></td><td>创建时间戳</td><td>xorm auto（与 <code>action_runner_token</code> 一致，不使用 <code>_unix</code> 后缀）</td></tr>
 <tr><td><code>updated</code></td><td>更新时间戳</td><td>xorm auto</td></tr>
-<tr><td><code>deleted</code></td><td>软删除时间戳</td><td>xorm auto</td></tr>
 </tbody></table>
 </div>
-<p>设计与 <code>action_runner_token</code> 一致：明文存储，唯一索引。token 可复用，支持多个 Manager 用同一 token 注册。<code>owner_id</code> 与 Gitea repository owner 语义一致，组织是 <code>user</code> 表中 <code>type=organization</code> 的 owner 记录。</p>
+<p>Registration Token 明文存储并可复用，支持同一 owner 用当前 token 注册多个 Manager。<code>owner_id</code> 与 Gitea repository owner 语义一致，组织是 <code>user</code> 表中 <code>type=organization</code> 的 owner 记录。GetOrCreate 在行不存在时插入，Rotate 原地替换随机 token，Deactivate 和 owner 删除物理删除该行。</p>
+<p>**设计说明（有意如此）：Registration Token 只表示当前有效的注册入口，不保存 inactive、软删除或轮换历史。**系统不提供凭据审计，保留旧行不会参与认证或恢复，只会增加 retention、索引和并发语义；单行模型让“行存在即有效、行不存在即停用”成为唯一判断。</p>
 <p>实现验收点：</p>
 <ul>
+<li>新 UUID 由 Gitea 生成且始终为规范小写 UUID v4；非规范外部 UUID 在查询和加锁前拒绝，同一 UUID 只有一个 lock key 和 <code>uuid32</code>。</li>
 <li>数据迁移创建文中列出的真实字段和非空默认值；模型校验只允许文中列出的状态、operation 类型和运行态值。</li>
 <li>active operation 完成后 operation 字段清空，<code>operation_rversion</code> 和最新事实 generation 保留当前值。</li>
 <li>operation 与 generation 的 0 值只用于未初始化，有效版本从 1 开始，递增不会溢出回绕。</li>
 <li>operation 版本耗尽时不产生部分写入，Manager generation 耗尽时不产生新版本，两者都保留当前值。</li>
 <li>token ID 与明文字段在生命周期事务中同时写入或同时清空。</li>
 <li><code>gitea_token_id=0</code> 时 <code>gitea_token</code> 必须为空字符串；非零 token ID 只能被一个 codespace 绑定。</li>
+<li>非零 token pair 只有在 access token row 存在、UID 等于 <code>user_id</code>、规范化 scope 严格等于 <code>write:issue,write:repository,read:user</code> 且明文 hash 匹配时有效；名称不参与安全判定。</li>
 <li><code>inventory_generation/inventory_hash</code> 同事务更新；相同 generation 只有 hash 相同时才作为幂等重试。</li>
 <li>inventory 规范化按 <code>codespace_uuid</code> 排序，hash 包含 UUID、runtime state 和 observed operation version。</li>
 <li>Manager secret 的长度、hex 格式和 <code>SHA-256(salt_bytes || secret_bytes)</code> 计算在注册、认证和轮换路径一致。</li>
+<li>Manager 归属只由 <code>owner_id</code> 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。</li>
+<li>每个 owner 最多存在一行 registration token；轮换更新该行，停用和 owner 删除后该行物理不存在。</li>
 <li>用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 <code>repo_id</code> 不保留原 owner 历史，也不需要新增冗余 owner 字段。</li>
 <li>Manager 删除物理清理绑定 Codespace 和 Manager row，不新增删除状态、墓碑或远端确认字段。</li>
 </ul>
@@ -285,23 +288,22 @@
 <tr><td>codespace</td><td><code>(user_id, status)</code></td></tr>
 <tr><td>codespace</td><td><code>(repo_id, status)</code>，查询 repository 关联记录时使用 <code>repo_id &gt; 0</code></td></tr>
 <tr><td>codespace</td><td><code>(gitea_token_id)</code>，用于 token binding 反查；查询时使用 <code>gitea_token_id &gt; 0</code></td></tr>
-<tr><td>codespace</td><td><code>(status, operation_type, operation_status, manager_id, repo_tag)</code>，用于 create 批量领取</td></tr>
-<tr><td>codespace</td><td><code>(manager_id, operation_type, operation_status, status)</code>，用于 stop/resume/delete 领取和 active operation 扫描</td></tr>
-<tr><td>codespace</td><td><code>(operation_status, operation_created_unix)</code>，用于 queued operation 超时扫描</td></tr>
-<tr><td>codespace</td><td><code>(operation_status, operation_deadline_unix)</code>，用于 running lease 超时扫描</td></tr>
-<tr><td>codespace</td><td><code>(status, updated_unix)</code>，用于 failed retention 清理；<code>updated_unix</code> 在进入 failed 时写入且 token reconciliation 不刷新</td></tr>
+<tr><td>codespace</td><td><code>(status, operation_type, operation_status, manager_id, repo_tag, operation_created_unix, uuid)</code>，用于 create 批量领取和稳定排序</td></tr>
+<tr><td>codespace</td><td><code>(manager_id, operation_type, operation_status, status, operation_created_unix, uuid)</code>，用于 stop/resume/delete 领取和 active operation 扫描</td></tr>
+<tr><td>codespace</td><td><code>(operation_status, operation_created_unix, uuid)</code>，用于 queued operation 超时 keyset 扫描</td></tr>
+<tr><td>codespace</td><td><code>(operation_status, operation_deadline_unix, uuid)</code>，用于 running lease 超时 keyset 扫描</td></tr>
+<tr><td>codespace</td><td><code>(status, updated_unix, uuid)</code>，用于 failed retention keyset 清理；<code>updated_unix</code> 在进入 failed 时写入且 token reconciliation 不刷新</td></tr>
 <tr><td>codespace_manager</td><td><code>(owner_id, admin_state)</code></td></tr>
 <tr><td>codespace_manager</td><td><code>(owner_id, runtime_state)</code></td></tr>
 <tr><td>codespace_manager</td><td><code>(admin_state, last_online_unix)</code>，用于派生 offline 和 reconciliation 扫描</td></tr>
 <tr><td>codespace_manager_token</td><td><code>token</code>（唯一）</td></tr>
-<tr><td>codespace_manager_token</td><td><code>(owner_id, is_active)</code></td></tr>
-<tr><td>codespace_manager_token</td><td><code>(is_active, updated)</code>，用于 inactive token retention 清理；<code>updated</code> 在停用时成为保留期起点</td></tr>
+<tr><td>codespace_manager_token</td><td><code>owner_id</code>（唯一）</td></tr>
 </tbody></table>
 </div>
 <p>实现验收点：</p>
 <ul>
 <li>queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。</li>
-<li>operation 超时和 failed/inactive retention 扫描使用时间字段复合索引，不做全表逐行判断。</li>
+<li>Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。</li>
 <li>token、UUID 的唯一索引阻止重复记录。</li>
 </ul>
 <h2 id="gitea-cache-与-keyed-lock"><a class="header" href="#gitea-cache-与-keyed-lock">Gitea Cache 与 Keyed Lock</a></h2>
@@ -314,9 +316,26 @@
 <p>memory/twoqueue adapter 的内容随进程退出而丢失；Redis/memcache 可在各项 TTL 内跨 Gitea 重启保留。两种结果都符合 cache 语义：Open Code 交换始终重新校验数据库、用户、Manager 和 Endpoint，Runtime Metadata 也不能替代数据库主状态与 Manager 在线判定。Codespace 的明确 TTL 不使用通用 <code>[cache] ITEM_TTL</code>：Open Code 和 index 使用 <code>OPEN_TOKEN_EXPIRE</code>，Runtime Metadata 使用 <code>MANAGER_OFFLINE_TIMEOUT * 2</code>。<code>ITEM_TTL=-1</code> 只关闭使用通用 TTL 的查询缓存，不关闭这些具有协议生命周期的 Codespace 项。</p>
 <p>Codespace 不实现 Locker、mutex pool 或 lock backend。需要 keyed serialization 的路径直接调用 Gitea <code>modules/globallock.Lock(ctx, key)</code>；默认 <code>[global_lock] SERVICE_TYPE=memory</code> 时锁位于当前进程，站点配置 Redis 时沿用同一个 Gitea lock backend。两种配置都只服务当前单活动 Gitea 进程模型，不表示支持多实例。Codespace 不读取 Session Provider，也不增加专用 cache、lock 或 Redis 配置。</p>
 <p>锁 key 只由纯格式化 helper 构造：全局 Manager Gateway/SSH 地址唯一性使用 <code>codespace_manager_addresses</code>，owner 使用 <code>codespace_owner_{owner_id}</code>，Manager 使用 <code>codespace_manager_{manager_id}</code>，Codespace 使用完整规范化小写 UUID 构造 <code>codespace_{uuid}</code>。现有 repository transfer 的 <code>repo_working_{repo_id}</code> helper 移到 <code>modules/repository/lock.go</code> 并导出为 <code>WorkingLockKey(repoID)</code>；transfer、repository delete 和 <code>CreateCodespace</code> 记录插入事务都直接把该 key 传给 <code>globallock.Lock</code>，不增加 repository lock wrapper。</p>
-<p>明确取得 keyed lock 的路径：地址首次声明或变更取得地址 lock；registration token 创建/轮换、owner-scoped Manager 注册/删除、用户/组织删除和 <code>CreateCodespace</code> 记录插入事务取得相关 owner lock；repository 删除和 <code>CreateCodespace</code> 记录插入事务取得 repository lock；创建、取消或拒绝 pending repository transfer 只取得 repository lock，接受 transfer 或其他实际修改 <code>owner_id</code> 的路径取得原/新 owner lock 后再取得 repository lock；Declare 写入、Manager secret 轮换、inventory generation 接受、Manager 删除和完整 <code>FetchOperations</code> 请求取得 Manager lock；Fetch/UpdateOperation 对 running operation 的续租、重发和收敛、State Finalization、timeout、主动 transition、Gitea token 签发/修复/吊销、Runtime Metadata 写入、operation 日志追加、Open Code 签发/消费、单 Codespace 物理删除和 reconciliation 取得 Codespace lock。Fetch 的 queued 条件 claim 已受调用方 Manager lock 保护，但不额外取得 repository 或 Codespace lock；纯读取和未修改地址的 heartbeat 不增加 lock；repository 数据库删除已经由 repository lock 串行，不额外取得 Codespace lock；Fetch 遇到过期 queued 项并执行 timeout 时按 timeout 路径取得 Codespace lock。</p>
+<p>keyed lock 只用于下表列出的写路径；每项只取得表中需要的层级，不存在覆盖其他 Gitea 功能的“全部业务锁”：</p>
+<div class="table-wrapper"><table><thead><tr><th>写路径</th><th>取得的 lock</th></tr></thead><tbody>
+<tr><td>registration token GetOrCreate、轮换、停用；全部 Manager 注册（包括 <code>owner_id=0</code>）</td><td>owner</td></tr>
+<tr><td>Declare 首次设置或变更 Gateway/SSH 地址</td><td>地址、Manager</td></tr>
+<tr><td>Declare 普通快照写入、Manager secret 轮换、Manager enable/disable</td><td>Manager</td></tr>
+<tr><td>完整 <code>FetchOperations</code> 请求</td><td>Manager；处理 running operation 或 queued timeout 时再取得对应 Codespace</td></tr>
+<tr><td><code>ReportInstances</code></td><td>整个请求持有 Manager；逐项需要写 Codespace 时再取得对应 Codespace</td></tr>
+<tr><td><code>UpdateOperation</code>、<code>UpdateLog</code>、<code>ReportRuntimeMetadata</code>、<code>ReportRuntimeTransition</code>、<code>RequestGiteaToken</code></td><td>Codespace</td></tr>
+<tr><td>State Finalization、用户生命周期动作、Open Code 签发/消费、SSH 校验、token 签发/修复/吊销、单 Codespace 物理删除、reconciliation</td><td>Codespace</td></tr>
+<tr><td>Manager 删除</td><td>owner、Manager、全部绑定 Codespace</td></tr>
+<tr><td>用户或组织删除</td><td>owner、所需 repository、Manager、Codespace</td></tr>
+<tr><td><code>CreateCodespace</code> 记录插入</td><td>创建者和 repository owner、repository</td></tr>
+<tr><td>repository 删除</td><td>当前 repository owner、repository</td></tr>
+<tr><td>pending transfer 创建、取消或拒绝</td><td>repository</td></tr>
+<tr><td>接受 transfer 或其他实际修改 repository owner</td><td>原 owner、新 owner、repository</td></tr>
+</tbody></table>
+</div>
+<p>Fetch 的 queued 条件 claim 已受调用方 Manager lock 保护，不额外取得 repository 或 Codespace lock；只有遇到过期 queued 项并执行 timeout 时按 timeout 路径取得 Codespace lock。repository 数据库删除已经由 repository lock 串行，不额外取得 Codespace lock。只取得 Codespace lock 的 Manager RPC 在锁内事务中重新读取 Manager 是否仍存在、<code>manager_id</code> binding 和 operation/version，不能依赖认证阶段加载的旧记录；这样它可以先完成并由随后取得 Codespace lock 的删除事务清理，或者在删除提交后复检失败，不需要反向取得 Manager lock。</p>
 <p>同一操作需要多个 lock 时，代码按地址、owner、repository、Manager、Codespace 直接多次调用 <code>globallock.Lock</code>；同层多个 ID 去重并升序取得，完整 UUID 按字符串升序，后一个取得失败或操作完成时逆序释放。所有 lock 在数据库事务前取得，已持锁内部函数不重复取得相同 key，锁内不调用 Manager、Gateway 或其他网络服务。</p>
-<p>owner lock 只串行化参与 Codespace 关系集合的明确写路径：Codespace 记录创建、owner-scoped Manager 注册/删除、registration token 变更、repository 实际 owner 变更或删除，以及用户/组织删除。普通 repository、package、membership 等 Gitea 写入继续沿用各自现有事务和前置检查，不因 Codespace 增加 owner lock。这个边界让 Codespace 删除能稳定收集自身关系，同时不把 owner lock 扩展成所有 Gitea 业务写入的总锁。</p>
+<p>owner lock 只串行化参与 Codespace 关系集合的明确写路径：Codespace 记录创建、全部 Manager 注册、owner-scoped Manager 删除、registration token 变更、repository 实际 owner 变更或删除，以及用户/组织删除。global Manager 注册使用 <code>codespace_owner_0</code>，使注册与 global token 轮换/停用也有确定先后。普通 repository、package、membership 等 Gitea 写入继续沿用各自现有事务和前置检查，不因 Codespace 增加 owner lock。这个边界让 Codespace 删除能稳定收集自身关系，同时不把 owner lock 扩展成所有 Gitea 业务写入的总锁。</p>
 <p>规则：</p>
 <ul>
 <li>cache 只保存交互所需的动态数据和页面展示快照；数据库主状态始终是授权与生命周期结果的权威来源。</li>
@@ -339,6 +358,7 @@
 <li>文档明确列出的 keyed serialization 路径直接调用 Gitea <code>globallock.Lock</code>；代码中没有 Codespace Locker、mutex pool、lock wrapper、专用 cache/lock 配置或失败后的后端回退。</li>
 <li>repository transfer/delete 与 <code>CreateCodespace</code> 记录插入事务通过 <code>modules/repository.WorkingLockKey</code> 使用同一个 <code>repo_working_{repo_id}</code>；实际修改 owner 的 transfer 对原/新 owner ID 去重升序加锁，pending transfer 的创建、取消和拒绝只使用 repository lock。多对象路径按地址、owner、repository、Manager、Codespace 和各层稳定升序取得，事务前完成加锁，内部已持锁实现不重复取得同一 key。</li>
 <li><code>FetchOperations</code> 在调用方 Manager lock 内重新读取 Manager 并完成 running 处理、queued claim、payload 构造或条件释放；Manager/owner 删除取得相同 Manager lock 后重新查询 binding 集合。</li>
+<li><code>ReportInstances</code> 在整个请求持有 Manager lock 并按 UUID 逐项取得 Codespace lock；单 Codespace command RPC 只取得 Codespace lock，并在事务内重新检查 Manager 记录、binding 和版本。</li>
 <li>owner lock 的保证范围只覆盖文中列出的 Codespace 关系写路径；普通 Gitea repository/package/membership 写入仍按现有服务事务收敛。</li>
 </ul>
 <h2 id="runtime-metadata-结构"><a class="header" href="#runtime-metadata-结构">Runtime Metadata 结构</a></h2>
@@ -428,7 +448,7 @@
 <li><code>UpdateLog</code> 成功响应返回规范化、脱敏并写入后的 <code>next_offset</code>；Manager 以该服务端值推进下一次追加。</li>
 <li>message 包含换行时，Manager 在提交前按换行拆成多条物理日志行；存储层每个 <code>lines[]</code> 元素只接受一行，渲染器按物理行顺序展示。</li>
 <li>按 <code>log_indexes</code> 提供的行号到 byte offset 映射进行 seek 读取。</li>
-<li><code>GET /codespace/{uuid}/logs</code> 使用 byte offset 分页读取，返回 <code>offset / next_offset / eof / lines / truncated</code>。</li>
+<li><code>GET /codespaces/{uuid}/logs</code> 使用 byte offset 分页读取，返回 <code>offset / next_offset / eof / lines / truncated</code>。</li>
 <li>读取 offset 必须为 0、文件末尾或 <code>log_indexes</code> 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。</li>
 <li>第一条完整物理行超过请求 <code>limit</code> 时仍单独返回该行并推进 <code>next_offset</code>，避免客户端因过小 limit 永远无法前进；单次响应始终不超过 <code>LOG_READ_MAX_BYTES</code>，配置要求 <code>LOG_MAX_LINE_SIZE &lt;= LOG_READ_MAX_BYTES</code>。</li>
 <li>delete 成功后删除 codespace 日志。</li>
@@ -449,6 +469,7 @@
 <li>达到普通日志上限后只出现一条截断摘要，最终文件大小不超过 <code>LOG_MAX_SIZE</code>。</li>
 <li>内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。</li>
 <li>codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。</li>
+<li>物理删除调用 DBFS Remove 时把 <code>fs.ErrNotExist</code> 视为幂等成功；其他 DBFS 错误回滚当前本地删除事务。尚未写入日志的合法 Codespace 因此不会阻塞资源清理。</li>
 <li>offset conflict/gap 返回服务端当前 offset，Manager 不通过本地编码结果猜测恢复位置。</li>
 </ul>
 

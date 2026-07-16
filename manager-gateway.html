@@ -219,22 +219,22 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <p>registration token 设计：</p>
 <ul>
 <li>registration token 存放在 <code>codespace_manager_token</code> 表。</li>
-<li>页面进入 Codespace 管理界面时，Gitea 按当前 scope 查询 active registration token。</li>
-<li>当前 scope 没有 active registration token 时，Gitea 创建新的 token 并展示给管理员。</li>
-<li>数据库保存明文 <code>token</code>、<code>owner_id</code>、<code>is_active</code>。明文 token 使用唯一索引，查找方式与 <code>action_runner_token</code> 一致。</li>
-<li><code>RegisterManager</code> 使用 registration token 时校验 <code>is_active=true</code>。</li>
-<li>active registration token 可用于注册多个 Manager。</li>
+<li>页面进入 Codespace 管理界面时，Gitea 按当前 scope 查询 registration token 行。</li>
+<li>当前 scope 没有记录时，Gitea 创建新的 token 并展示给管理员。</li>
+<li>数据库保存明文 <code>token</code> 和唯一 <code>owner_id</code>；token 也使用唯一索引，使 <code>RegisterManager</code> 可以直接定位当前入口。</li>
+<li>registration token 行存在且提交明文匹配时有效，可用于注册多个 Manager。</li>
 <li>registration token 负责创建 Manager 身份，manager secret 负责证明已注册 Manager 身份。</li>
-<li>创建或轮换 registration token 时，Gitea 单实例按 owner scope 使用 keyed lock，并在同一事务把旧 token 设为 inactive、插入新 active token；并发请求最终只留下一个 active token。</li>
-<li>inactive token 按 <code>REGISTRATION_TOKEN_RETENTION_DAYS</code> 清理。</li>
+<li>GetOrCreate、轮换、停用和 RegisterManager 都按 owner scope 使用 keyed lock，包括 global scope 的 <code>owner_id=0</code>。轮换在同一行原地替换随机 token，停用物理删除该行；并发注册与凭据变更因此只有明确的事务先后。</li>
+<li>RegisterManager 先按唯一 token 索引读取候选 owner，只用来选择 owner lock；锁内再次读取同一 token 行并匹配明文后才认证成功。锁前读取与锁内复读之间发生的轮换、停用或 owner 删除会使注册返回 unauthenticated。</li>
 </ul>
 <p>Registration Token 明文保存——它是管理员复制给 Manager 完成首次注册的入口凭据。唯一索引用于让 <code>RegisterManager</code> 通过提交 token 直接定位注册入口。Registration Token 和 Manager Secret 承担不同职责，注册入口和已注册 Manager 通信身份分别管理。</p>
+<p>**设计说明（有意如此）：Registration Token 不保存 inactive 或轮换历史。**项目不提供凭据审计，旧 token 在轮换或停用后没有恢复用途；每个 owner 一行让记录存在性直接表示当前入口有效，并避免额外 retention 任务。</p>
 <p>实现验收点：</p>
 <ul>
-<li>global Codespace 管理页读取或创建 <code>owner_id=0</code> 的 active token。</li>
-<li>用户 Codespace 管理页读取或创建 <code>owner_id=ctx.Doer.ID</code> 的 active token。</li>
-<li>组织 Codespace 管理页读取或创建 <code>owner_id=ctx.Org.Organization.ID</code> 的 active token。</li>
-<li><code>codespace_manager_token.token</code> 具备唯一索引。</li>
+<li>global Codespace 管理页读取或创建 <code>owner_id=0</code> 的当前 token。</li>
+<li>用户 Codespace 管理页读取或创建 <code>owner_id=ctx.Doer.ID</code> 的当前 token。</li>
+<li>组织 Codespace 管理页读取或创建 <code>owner_id=ctx.Org.Organization.ID</code> 的当前 token。</li>
+<li><code>codespace_manager_token.token</code> 和 <code>owner_id</code> 分别具备唯一索引。</li>
 <li>使用 global token 注册出的 Manager 记录 <code>owner_id=0</code>。</li>
 <li>使用用户 token 注册出的 Manager 记录 <code>owner_id=该用户 user.id</code>。</li>
 <li>使用组织 token 注册出的 Manager 记录 <code>owner_id=该组织 user.id</code>。</li>
@@ -242,7 +242,9 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>注册成功后数据库保存 <code>secret_hash / secret_salt</code>。</li>
 <li>注册响应不确定时 CLI 不自动重试，管理页可以识别并删除从未 Declare 的注册记录。</li>
 <li>ManagerService 认证成功后 request context 中可取得 Manager 记录。</li>
-<li>同一 owner scope 的并发 token 创建最终只有一个 active registration token。</li>
+<li>同一 owner scope 的并发 GetOrCreate 最终只有一行；Rotate 原地替换，Deactivate 物理删除且不保留历史行。</li>
+<li>RegisterManager 与 token 变更使用同一 owner lock，global scope 也使用 <code>codespace_owner_0</code>。</li>
+<li>RegisterManager 只以 owner lock 内复读作为 token 认证线性化点，锁前查询不能创建 Manager。</li>
 <li>同一 Manager 状态目录启动第二个 <code>serve</code> 进程时，第二个进程在发出任何 RPC 前因独占锁失败而退出。</li>
 <li>同一 Manager 凭据复制到另一目录或主机并发运行属于不支持的部署方式，不作为故障切换或高可用方案。</li>
 </ul>
@@ -552,7 +554,7 @@ Content-Type: application/json
 <li>create boot 信息由 Manager 根据 <code>CreateOperationPayload</code> 和 Manager 本地配置组合生成，包含完整 repository/ref/commit、owner 和创建者数据，但不通过该可重复查询接口返回 Gitea token。</li>
 <li>resume boot 只返回 <code>codespace_uuid</code>、<code>operation_rversion</code>、<code>operation_type</code>、<code>server_time_unix</code>、<code>workspace_dir</code> 和派生名称；它基于已初始化 workspace，不返回 repository payload，也不在 stopped 状态申请 Gitea token。</li>
 <li><code>workspace_dir</code> 由 Manager 本地决策生成。</li>
-<li>create token 由 Manager 通过 <code>RequestGiteaToken</code> 获取后直接注入一次性 init 进程环境，不保存在通用 <code>/boot</code> 响应；resume 在 operation done、主状态进入 running 后由 Manager 直接刷新 Runtime credential 文件。</li>
+<li>create token 和 <code>server_url</code> 由 Manager 通过 <code>RequestGiteaToken</code> 获取，不放入通用 <code>/boot</code> 响应。Manager 把 token 原子写入 Runtime 用户可读的 <code>0600</code> credential 文件，注入稳定的 <code>GITEA_TOKEN_FILE</code> 和 <code>GITEA_SERVER_URL</code>，并在启动 init、Shell、IDE 或其他 Manager 控制进程时从文件设置 <code>GITEA_TOKEN</code> 快照；resume 在 operation done、主状态进入 running 后替换同一文件并刷新受控服务凭据。持久 Git helper 启用等价于 <code>credential.useHttpPath=true</code> 的完整 URL path 匹配，只对 binding repository 的规范化 clone URL 返回 token；同一 Gitea host 的其他 repository URL 返回无凭据。API 客户端读取同一 token 文件，服务端再执行单 repository route adapter。</li>
 <li><code>codespace_name</code> 使用 <code>cs-{short_uuid}</code> 派生规则，<code>short_uuid</code> 取 UUID 去掉 <code>-</code> 后前 20 位。</li>
 <li><code>repo_tag</code> 只参与 Gitea 与 Manager 的领取匹配，不下发给 Runtime；Runtime 不需要知道调度标签。</li>
 </ul>
@@ -648,6 +650,8 @@ Content-Type: application/json
 <p>实现验收点：</p>
 <ul>
 <li>create boot 返回完整初始化数据；resume boot 不包含 repository payload 和 stopped 状态 token。</li>
+<li>create/resume 原子写入当前 token 文件；Git credential 只匹配 binding repository 的规范化 clone URL，API 客户端使用 <code>server_url</code> 和同一 credential，访问同 host 的其他 repository 时 helper 不返回 Codespace token，且服务端拒绝跨 repository API。</li>
+<li>resume 的 <code>ready</code> 只在 token 文件、Git helper 和 Manager 控制的 IDE/API 凭据已经刷新后上报；旧环境快照失效时可从 <code>GITEA_TOKEN_FILE</code> 读取当前值。</li>
 <li><code>POST /boot</code> 以 <code>operation_rversion</code> 隔离不同 create/resume session。</li>
 <li>resume 保留用户当前 workspace HEAD，不执行 create checkout 校验。</li>
 <li>Manager 重启后可以从本地持久数据恢复 Endpoint upstream 并重新上报 metadata。</li>
@@ -668,8 +672,8 @@ Content-Type: application/json
 <p>Gateway 通过 Manager 身份调用 Gitea <a href="rpc-spec.html">ManagerService RPC</a> 完成 Open Token 校验和 SSH 认证。</p>
 <h3 id="endpoint-打开流程"><a class="header" href="#endpoint-打开流程">Endpoint 打开流程</a></h3>
 <p>Gitea 提供两个明确的打开路由：</p>
-<pre><code class="language-text">POST /codespace/{uuid}/open
-POST /codespace/{uuid}/open/{endpoint_id}
+<pre><code class="language-text">POST /codespaces/{uuid}/open
+POST /codespaces/{uuid}/open/{endpoint_id}
 </code></pre>
 <p>无 <code>endpoint_id</code> 的路由始终打开 <code>workspace</code>，不接收可选表单字段；带 <code>endpoint_id</code> 的路由打开用户选择的普通 Endpoint，并拒绝保留值 <code>workspace</code>。两个路由都签发包含非空 <code>endpoint_id</code> 的 Open Token binding，因此 Gateway 不需要根据缺失字段推断默认值。</p>
 <p><code>workspace</code> 是每个 running Codespace 都有的有效逻辑入口：Runtime Metadata 声明同名 Endpoint 时，Manager 把它路由到该 Runtime upstream；未声明时，Manager 把同一个入口路由到默认 Web SSH。Web SSH 不占用另一个 Endpoint ID，也不增加 Endpoint 类型、RPC 分支或 metadata 字段，最终目标完全由 Manager 当前本地路由表决定。这样 Gitea 的授权对象和用户书签保持稳定，Runtime 只需声明它实际提供的 HTTP 服务。</p>
