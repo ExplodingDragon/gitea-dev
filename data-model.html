@@ -192,14 +192,13 @@
 <p>repository owner 通过 <code>repository.owner_id</code> 表示，不在 codespace 表中重复存 <code>owner_id</code>。repository 删除后 <code>repo_id</code> 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 <code>codespace.uuid</code>、<code>user_id</code> 和 <code>manager_id</code> 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。repo-bound token 在 <code>repo_id=0</code> 时拒绝所有 repository 访问。用户或组织删除在任何 owner repository 删除前，通过现有 <code>user_id</code>、<code>repo_id -&gt; repository.owner_id</code> 和 <code>manager_id -&gt; codespace_manager.owner_id</code> 收集关联 Codespace，并在独立前置清理事务中删除 Gitea 资源，因此不需要增加冗余 owner 字段。repository 此前已单独删除时，<code>repo_id=0</code> 表示与原 repository owner 的关系已经有意丢弃，后续只按创建者和 Manager owner 关系处理。</p>
 <p>Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUID v4，数据库、Web 路径、RPC 和 Manager 持久状态统一使用 36 字符小写带连字符形式。外部输入先做严格格式校验，大小写不同、无连字符或其他非规范形式返回 <code>invalid_argument</code>，不能在规范化前参与查询或构造 lock key。<code>uuid32</code> 只表示从规范 UUID 删除四个连字符后的 32 字符结果；需要 UUID 的 helper 参数统一命名为 <code>codespaceUUID</code>，避免与数字数据库 ID 混淆。单一表达保证同一对象只对应一个数据库键、一个 <code>codespace_{uuid}</code> lock key 和一组 Gateway host。</p>
 <p><code>operation_rversion</code>、<code>runtime_generation</code> 和 <code>inventory_generation</code> 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 <code>BIGINT</code> 时使用 checked increment，不回绕到 0 或负数。Gitea 在 <code>operation_rversion</code> 已到上限时以 <code>state_unavailable</code> 拒绝新 operation，不写主状态或 active operation 的部分结果。Manager 本地 generation 已到上限时保留当前值并进入 recovering，不产生新版本；已持久化的相同 generation 幂等重试仍可继续。<code>runtime_generation</code> 仅保存当前值；相同 generation 的幂等以 fact 目标主状态是否已成立判定，不需要再增加历史 fact 类型字段。</p>
-<p><code>updated_unix</code> 只表示数据库中的生命周期结果发生变化。创建记录时与 <code>created_unix</code> 同值；创建或替换 active operation、首次 final/timeout/missing/transition 改变主状态时写为当前时间。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、open、SSH、相同结果的幂等重试，以及 repository 删除时仅把 <code>repo_id</code> 写为 0，都不更新该字段。这样 failed retention 有稳定起点，调度和交互活动也不会被误解为生命周期变化；用户活动继续只写 <code>last_active_unix</code>。</p>
+<p><code>updated_unix</code> 只表示数据库中的生命周期结果发生变化。创建记录时与 <code>created_unix</code> 同值；创建或替换 active operation、首次 final/timeout/missing/transition 收敛时写为当前时间。queued resume/stop timeout 即使保持原稳定主状态，也因 active operation 首次结束而更新时间；相同 timeout 或 final 的幂等重试不刷新。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、open、SSH，以及 repository 删除时仅把 <code>repo_id</code> 写为 0，都不更新该字段。这样 failed retention 有稳定起点，调度和交互活动也不会被误解为生命周期变化；用户活动继续只写 <code>last_active_unix</code>。</p>
 <p>endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gitea cache。</p>
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td></td></tr>
 <tr><td><code>name</code></td><td><code>VARCHAR(255) NOT NULL DEFAULT ''</code></td><td>展示名称，不要求唯一</td></tr>
 <tr><td><code>owner_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>Manager owner scope</td></tr>
-<tr><td><code>admin_state</code></td><td><code>VARCHAR(16) NOT NULL DEFAULT 'enabled'</code></td><td><code>enabled</code> / <code>disabled</code></td></tr>
 <tr><td><code>secret_hash</code></td><td><code>VARCHAR(64) NOT NULL DEFAULT ''</code></td><td>SHA-256 hex verifier</td></tr>
 <tr><td><code>secret_salt</code></td><td><code>VARCHAR(32) NOT NULL DEFAULT ''</code></td><td>16 随机字节的 hex 编码</td></tr>
 <tr><td><code>tags_json</code></td><td><code>TEXT NOT NULL</code></td><td>规范化、去重后的 tags JSON 数组</td></tr>
@@ -214,6 +213,7 @@
 </tbody></table>
 </div>
 <p>Manager secret 固定为 32 个随机字节的 64 位小写十六进制字符串，salt 为 16 个随机字节的 32 位小写十六进制字符串；<code>secret_hash</code> 固定保存 <code>hex(SHA-256(salt_bytes || secret_bytes))</code>。明确按解码后的字节计算，可以让注册、认证和轮换使用同一算法，避免实现分别拼接文本得到不同 verifier。</p>
+<p><strong>设计说明（有意如此）：Manager 不提供 enable、disable、pause 或 quarantine 管理状态，现在和以后都不增加对应字段。</strong> Manager row 存在表示注册身份有效，<code>runtime_state + heartbeat</code> 表示当前可用性，<code>capacity_available + accepted_operation_types</code> 表示本次是否接收 create/resume，删除 row 表示永久撤销身份。把这些职责拆开可以避免一个可逆开关同时改变 operation、Token、Gateway session 和 Runtime transition；计划排空由 Manager 上报零容量，维护中断由 recovering/offline 处理，身份不可信时直接删除 Manager。</p>
 <p>Manager 删除由服务层先按 <code>codespace.manager_id</code> 收集并删除绑定 Codespace，再删除 Manager row；不保留 Manager tombstone、删除中字段或远端回收状态。这样数据库只表达 Gitea 当前仍管理的对象，运行侧残留不会反向成为 Gitea 数据模型的一部分。</p>
 <h3 id="codespace_manager_token"><a class="header" href="#codespace_manager_token">codespace_manager_token</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
@@ -240,6 +240,7 @@
 <li>inventory 规范化按 <code>codespace_uuid</code> 排序，hash 包含 UUID、runtime state 和 observed operation version。</li>
 <li>Manager secret 的长度、hex 格式和 <code>SHA-256(salt_bytes || secret_bytes)</code> 计算在注册、认证和轮换路径一致。</li>
 <li>Manager 归属只由 <code>owner_id</code> 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。</li>
+<li>Manager 表不包含 enable、disable、pause 或 quarantine 字段；身份有效性、运行可用性、领取能力和永久撤销分别由记录存在性、runtime state、Fetch 容量声明和直接删除表达。</li>
 <li>每个 owner 最多存在一行 registration token；轮换更新该行，停用和 owner 删除后该行物理不存在。</li>
 <li>用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 <code>repo_id</code> 不保留原 owner 历史，也不需要新增冗余 owner 字段。</li>
 <li>Manager 删除物理清理绑定 Codespace 和 Manager row，不新增删除状态、墓碑或远端确认字段。</li>
@@ -293,9 +294,8 @@
 <tr><td>codespace</td><td><code>(operation_status, operation_created_unix, uuid)</code>，用于 queued operation 超时 keyset 扫描</td></tr>
 <tr><td>codespace</td><td><code>(operation_status, operation_deadline_unix, uuid)</code>，用于 running lease 超时 keyset 扫描</td></tr>
 <tr><td>codespace</td><td><code>(status, updated_unix, uuid)</code>，用于 failed retention keyset 清理；<code>updated_unix</code> 在进入 failed 时写入且 token reconciliation 不刷新</td></tr>
-<tr><td>codespace_manager</td><td><code>(owner_id, admin_state)</code></td></tr>
 <tr><td>codespace_manager</td><td><code>(owner_id, runtime_state)</code></td></tr>
-<tr><td>codespace_manager</td><td><code>(admin_state, last_online_unix)</code>，用于派生 offline 和 reconciliation 扫描</td></tr>
+<tr><td>codespace_manager</td><td><code>(runtime_state, last_online_unix)</code>，用于派生 offline 和 reconciliation 扫描</td></tr>
 <tr><td>codespace_manager_token</td><td><code>token</code>（唯一）</td></tr>
 <tr><td>codespace_manager_token</td><td><code>owner_id</code>（唯一）</td></tr>
 </tbody></table>
@@ -320,7 +320,7 @@
 <div class="table-wrapper"><table><thead><tr><th>写路径</th><th>取得的 lock</th></tr></thead><tbody>
 <tr><td>registration token GetOrCreate、轮换、停用；全部 Manager 注册（包括 <code>owner_id=0</code>）</td><td>owner</td></tr>
 <tr><td>Declare 首次设置或变更 Gateway/SSH 地址</td><td>地址、Manager</td></tr>
-<tr><td>Declare 普通快照写入、Manager secret 轮换、Manager enable/disable</td><td>Manager</td></tr>
+<tr><td>Declare 普通快照写入、Manager secret 轮换</td><td>Manager</td></tr>
 <tr><td>完整 <code>FetchOperations</code> 请求</td><td>Manager；处理 running operation 或 queued timeout 时再取得对应 Codespace</td></tr>
 <tr><td><code>ReportInstances</code></td><td>整个请求持有 Manager；逐项需要写 Codespace 时再取得对应 Codespace</td></tr>
 <tr><td><code>UpdateOperation</code>、<code>UpdateLog</code>、<code>ReportRuntimeMetadata</code>、<code>ReportRuntimeTransition</code>、<code>RequestGiteaToken</code></td><td>Codespace</td></tr>
