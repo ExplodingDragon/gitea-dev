@@ -43,7 +43,7 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 `operation_rversion`、`runtime_generation` 和 `inventory_generation` 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 `BIGINT` 时使用 checked increment，不回绕到 0 或负数。Gitea 在 `operation_rversion` 已到上限时以 `state_unavailable` 拒绝新 operation，不写主状态或 active operation 的部分结果。Manager 本地 generation 已到上限时保留当前值并进入 recovering，不产生新版本；已持久化的相同 generation 幂等重试仍可继续。`runtime_generation` 仅保存当前值；相同 generation 的幂等以 fact 目标主状态是否已成立判定，不需要再增加历史 fact 类型字段。
 
-`updated_unix` 只表示数据库中的生命周期结果发生变化。创建记录时与 `created_unix` 同值；创建或替换 active operation、首次 final/timeout/missing/transition 改变主状态时写为当前时间。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、open、SSH、相同结果的幂等重试，以及 repository 删除时仅把 `repo_id` 写为 0，都不更新该字段。这样 failed retention 有稳定起点，调度和交互活动也不会被误解为生命周期变化；用户活动继续只写 `last_active_unix`。
+`updated_unix` 只表示数据库中的生命周期结果发生变化。创建记录时与 `created_unix` 同值；创建或替换 active operation、首次 final/timeout/missing/transition 收敛时写为当前时间。queued resume/stop timeout 即使保持原稳定主状态，也因 active operation 首次结束而更新时间；相同 timeout 或 final 的幂等重试不刷新。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、open、SSH，以及 repository 删除时仅把 `repo_id` 写为 0，都不更新该字段。这样 failed retention 有稳定起点，调度和交互活动也不会被误解为生命周期变化；用户活动继续只写 `last_active_unix`。
 
 endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gitea cache。
 
@@ -54,7 +54,6 @@ endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gite
 | `id` | `BIGINT` 自增主键 | |
 | `name` | `VARCHAR(255) NOT NULL DEFAULT ''` | 展示名称，不要求唯一 |
 | `owner_id` | `BIGINT NOT NULL DEFAULT 0` | Manager owner scope |
-| `admin_state` | `VARCHAR(16) NOT NULL DEFAULT 'enabled'` | `enabled` / `disabled` |
 | `secret_hash` | `VARCHAR(64) NOT NULL DEFAULT ''` | SHA-256 hex verifier |
 | `secret_salt` | `VARCHAR(32) NOT NULL DEFAULT ''` | 16 随机字节的 hex 编码 |
 | `tags_json` | `TEXT NOT NULL` | 规范化、去重后的 tags JSON 数组 |
@@ -68,6 +67,8 @@ endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gite
 | `meta_json` | `TEXT NOT NULL` | Gitea 生成的规范化 Manager metadata JSON |
 
 Manager secret 固定为 32 个随机字节的 64 位小写十六进制字符串，salt 为 16 个随机字节的 32 位小写十六进制字符串；`secret_hash` 固定保存 `hex(SHA-256(salt_bytes || secret_bytes))`。明确按解码后的字节计算，可以让注册、认证和轮换使用同一算法，避免实现分别拼接文本得到不同 verifier。
+
+**设计说明（有意如此）：Manager 不提供 enable、disable、pause 或 quarantine 管理状态，现在和以后都不增加对应字段。** Manager row 存在表示注册身份有效，`runtime_state + heartbeat` 表示当前可用性，`capacity_available + accepted_operation_types` 表示本次是否接收 create/resume，删除 row 表示永久撤销身份。把这些职责拆开可以避免一个可逆开关同时改变 operation、Token、Gateway session 和 Runtime transition；计划排空由 Manager 上报零容量，维护中断由 recovering/offline 处理，身份不可信时直接删除 Manager。
 
 Manager 删除由服务层先按 `codespace.manager_id` 收集并删除绑定 Codespace，再删除 Manager row；不保留 Manager tombstone、删除中字段或远端回收状态。这样数据库只表达 Gitea 当前仍管理的对象，运行侧残留不会反向成为 Gitea 数据模型的一部分。
 
@@ -99,6 +100,7 @@ Registration Token 明文存储并可复用，支持同一 owner 用当前 token
 - inventory 规范化按 `codespace_uuid` 排序，hash 包含 UUID、runtime state 和 observed operation version。
 - Manager secret 的长度、hex 格式和 `SHA-256(salt_bytes || secret_bytes)` 计算在注册、认证和轮换路径一致。
 - Manager 归属只由 `owner_id` 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。
+- Manager 表不包含 enable、disable、pause 或 quarantine 字段；身份有效性、运行可用性、领取能力和永久撤销分别由记录存在性、runtime state、Fetch 容量声明和直接删除表达。
 - 每个 owner 最多存在一行 registration token；轮换更新该行，停用和 owner 删除后该行物理不存在。
 - 用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 `repo_id` 不保留原 owner 历史，也不需要新增冗余 owner 字段。
 - Manager 删除物理清理绑定 Codespace 和 Manager row，不新增删除状态、墓碑或远端确认字段。
@@ -158,9 +160,8 @@ Registration Token 明文存储并可复用，支持同一 owner 用当前 token
 | codespace | `(operation_status, operation_created_unix, uuid)`，用于 queued operation 超时 keyset 扫描 |
 | codespace | `(operation_status, operation_deadline_unix, uuid)`，用于 running lease 超时 keyset 扫描 |
 | codespace | `(status, updated_unix, uuid)`，用于 failed retention keyset 清理；`updated_unix` 在进入 failed 时写入且 token reconciliation 不刷新 |
-| codespace_manager | `(owner_id, admin_state)` |
 | codespace_manager | `(owner_id, runtime_state)` |
-| codespace_manager | `(admin_state, last_online_unix)`，用于派生 offline 和 reconciliation 扫描 |
+| codespace_manager | `(runtime_state, last_online_unix)`，用于派生 offline 和 reconciliation 扫描 |
 | codespace_manager_token | `token`（唯一） |
 | codespace_manager_token | `owner_id`（唯一） |
 
@@ -190,7 +191,7 @@ keyed lock 只用于下表列出的写路径；每项只取得表中需要的层
 | --- | --- |
 | registration token GetOrCreate、轮换、停用；全部 Manager 注册（包括 `owner_id=0`） | owner |
 | Declare 首次设置或变更 Gateway/SSH 地址 | 地址、Manager |
-| Declare 普通快照写入、Manager secret 轮换、Manager enable/disable | Manager |
+| Declare 普通快照写入、Manager secret 轮换 | Manager |
 | 完整 `FetchOperations` 请求 | Manager；处理 running operation 或 queued timeout 时再取得对应 Codespace |
 | `ReportInstances` | 整个请求持有 Manager；逐项需要写 Codespace 时再取得对应 Codespace |
 | `UpdateOperation`、`UpdateLog`、`ReportRuntimeMetadata`、`ReportRuntimeTransition`、`RequestGiteaToken` | Codespace |

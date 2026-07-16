@@ -26,7 +26,7 @@ Manager 实现、Runtime Instance 使用 Runtime Token 调用的 HTTP(S)/JSON AP
 
 <span id="operation"></span>
 ## Operation
-Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete。operation 只表示 active 指令，完成后不保留历史状态；disabled 后返回的 `abort_create|abort_resume` 是现有 create/resume 的清理命令，不增加新的 operation 类型。
+Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete。operation 只表示 active 指令，完成后不保留历史状态；站点进入排空模式后返回的 `abort_create|abort_resume` 是现有 create/resume 的清理命令，不增加新的 operation 类型。
 
 <span id="manager-matching"></span>
 ## Manager Matching

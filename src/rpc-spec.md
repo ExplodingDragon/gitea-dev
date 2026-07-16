@@ -15,12 +15,6 @@ enum ManagerRuntimeState {
   MANAGER_RUNTIME_STATE_RECOVERING = 2;
 }
 
-enum ManagerAdminState {
-  MANAGER_ADMIN_STATE_UNSPECIFIED = 0;
-  MANAGER_ADMIN_STATE_ENABLED = 1;
-  MANAGER_ADMIN_STATE_DISABLED = 2;
-}
-
 enum AcceptedOperationType {
   ACCEPTED_OPERATION_TYPE_UNSPECIFIED = 0;
   ACCEPTED_OPERATION_TYPE_CREATE = 1;
@@ -80,7 +74,7 @@ service ManagerService {
   // ReportRuntimeMetadata writes a Runtime Metadata snapshot to Gitea's configured cache adapter.
   rpc ReportRuntimeMetadata(ReportRuntimeMetadataRequest) returns (ReportRuntimeMetadataResponse);
 
-  // RequestGiteaToken returns or issues the current token in an enabled working state.
+  // RequestGiteaToken returns or issues the current token for a creating or running Codespace.
   // During feature drain, only active running stop may read an existing complete token pair.
   rpc RequestGiteaToken(RequestGiteaTokenRequest) returns (RequestGiteaTokenResponse);
 
@@ -133,9 +127,7 @@ message DeclareManagerRequest {
   repeated string backend_capabilities = 13;
 }
 
-message DeclareManagerResponse {
-  ManagerAdminState admin_state = 1;
-}
+message DeclareManagerResponse {}
 
 // --- RotateManagerSecret ---
 
@@ -504,13 +496,13 @@ x-codespace-manager-secret: <manager secret>
 - `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整快照；`RUNTIME_STATE_CREATING` 只表示具有稳定 identity 的资源存在，`RUNTIME_STATE_FAILED` 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed fact；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。
 - inventory item 只携带 UUID、Runtime state 和 observed operation version；SSH 验证只携带 UUID 和公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。
 - `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 running/stopped 分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。failed fact 为空结构，失败详情只进入 Manager 本地日志。
-- `DeclareManager` 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、管理态、secret 或 Codespace binding。
+- `DeclareManager` 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret 或 Codespace binding。
 - `DeclareManager.tags` 和 `backend_capabilities` 各最多 64 项，单项 lower-case 后使用 `[a-z0-9_-]+`、长度为 1-64，并规范化去重。
 - `gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一；冲突不产生部分声明更新。
 - `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
 - Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 使用 1 到 30 位 DNS-safe 小写字母、数字或连字符。
 - `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
-- `RequestGiteaToken` 在功能启用时按 creating/running 工作状态返回或签发 token，并始终返回规范化 `server_url`；排空时仅 active running stop 可读取已有完整 pair 以恢复日志脱敏，不能签发或修复。
+- `RequestGiteaToken` 在功能启用、Manager online 或处于有效 recovering 窗口且 Codespace 为 creating/running 时返回或签发 token，并始终返回规范化 `server_url`；站点排空时仅 active running stop 可读取已有完整 pair 以恢复日志脱敏，不能签发或修复。
 - 所有 request 解码后不超过 `CONTROL_PLANE_MAX_REQUEST_SIZE`；`UpdateLog.lines` 单行另受 `LOG_MAX_LINE_SIZE` 限制。
 
 实现验收点：
@@ -537,7 +529,7 @@ x-codespace-manager-secret: <manager secret>
 
 实现验收点：
 
-- 每个 operation envelope 的 `command` 必须设置一个分支；普通 create 携带完整 payload，resume/stop/delete 使用各自分支，无来源 create 恢复使用 `recover_create_without_source`，disabled 后已领取的 create/resume 使用对应 abort 分支。
+- 每个 operation envelope 的 `command` 必须设置一个分支；普通 create 携带完整 payload，resume/stop/delete 使用各自分支，无来源 create 恢复使用 `recover_create_without_source`，站点排空后已领取的 create/resume 使用对应 abort 分支。
 - observed-only 续租通过 `renewed_leases` 返回 UUID、版本和新 deadline，不为避免重发 payload 而丢失 Manager 本地续租回执。
 - 每个 operation payload 返回当前 `log_offset`，Manager 从该 offset 继续追加日志。
 - `UpdateLog` 成功返回服务端规范化写入后的 `next_offset`；offset conflict/gap 返回当前服务端 offset。
