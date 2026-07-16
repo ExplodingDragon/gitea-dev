@@ -46,11 +46,11 @@ Gitea 为打开 Endpoint 签发的一次性短期 opaque token。采用 OAuth2 A
 
 <span id="gitea-token"></span>
 ## Gitea Token
-Gitea 签发给 Runtime Instance 做 git 访问的 access token。
+Gitea 签发给 Runtime Instance 的短生命周期 access token，代表 Codespace 创建用户，用于绑定 repository 的 Git/LFS 和开发协作 API。
 
 <span id="registration-token"></span>
 ## Registration Token
-管理员创建的明文凭据，存储在 `codespace_manager_token` 表。Manager 通过 `RegisterManager` 注册并获得 manager secret。设计与 `action_runner_token` 一致。
+管理员为 owner scope 创建的当前明文注册凭据，存储在 `codespace_manager_token` 表，每个 owner 最多一行。Manager 通过 `RegisterManager` 注册并获得 manager secret；轮换原地替换，停用物理删除，不保存历史。
 
 <span id="runtime-token"></span>
 ## Runtime Token

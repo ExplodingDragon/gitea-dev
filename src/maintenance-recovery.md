@@ -320,7 +320,7 @@ Manager 收到高于当前 boot 版本的 stop/delete payload 时，先持久化
 实现验收点：
 
 - Manager 重启后使用相同 `operation_rversion` 继续幂等 create/resume/stop/delete；disabled abort 使用同一版本收敛为 failed。
-- resume 进入 running 后轮换 Git token 并刷新 credential，不重新初始化 repository；`ready` 被接受前不清除后置 worker，完成后仍保留最新 boot 结果供幂等重试。
+- resume 进入 running 后轮换 Gitea token 并刷新 credential，不重新初始化 repository；`ready` 被接受前不清除后置 worker，完成后仍保留最新 boot 结果供幂等重试。
 - 最新 boot 结果使 final 后的相同 POST 重试保持幂等；更高版本 stop/delete 取消旧 credential-refresh 后置工作。
 - stale outcome 保留 Runtime 和更高版本上下文；resource absent 不触发额外运行侧清理。
 - credential-refresh 在 recovering 无 active operation 时仍可恢复 token，并对 disabled、offline、记录缺失和更高 operation 作确定收敛。
@@ -354,7 +354,7 @@ metadata_required
 
 Gitea 对同一 Manager 使用 keyed lock 串行处理 inventory generation。请求先在短事务中校验并接受 `inventory_generation/inventory_hash`，随后按 UUID 分别执行条件状态事务；相同 generation、相同 hash 的重试从当前数据库状态继续计算尚需返回的 instruction。单个 codespace 失败不回滚其他已提交项，handler 记录内部错误并返回可重试错误，Manager 使用同一 generation 和快照重试。每个 UUID 最多返回一个 action，优先级固定为 `cleanup > refetch > clear > stop > report transition`，避免同一轮给出互相冲突的动作。
 
-Codespace Cron 使用单活动 Gitea 进程中的现有调度器。queued、running、failed 和 inactive registration token 分别按对应时间字段与 UUID/ID 使用 100 条 keyset 批次；Codespace 候选逐条取得 Codespace lock 并使用短事务。单条错误记录日志后继续并在下一轮重试，候选查询或数据库级错误终止本轮。该边界避免一条损坏记录阻塞其他生命周期结果，也不增加任务队列或持久扫描游标。
+Codespace Cron 使用单活动 Gitea 进程中的现有调度器。queued、running 和 failed 分别按对应时间字段与 UUID 使用 100 条 keyset 批次；Codespace 候选逐条取得 Codespace lock 并使用短事务。单条错误记录日志后继续并在下一轮重试，候选查询或数据库级错误终止本轮。Registration Token 停用时已经物理删除，不进入 Cron。该边界避免一条损坏记录阻塞其他生命周期结果，也不增加任务队列或持久扫描游标。
 
 超过 `FAILED_RETENTION_DAYS` 的 failed Codespace 由 Gitea 定时任务取得 Codespace lock 后，在本地事务中直接物理删除其 token、日志和记录；提交并释放 lock 后尽力清理 cache，不查询 Manager 状态、不创建 operation 或 instruction。failed 已经不能 resume，保留期结束只表示 Gitea 不再保留该终态及诊断日志；运行侧若仍有同 UUID Runtime，后续完整 inventory 将其视为未知 UUID 并忽略，不借此恢复记录或要求 Manager 清理。
 

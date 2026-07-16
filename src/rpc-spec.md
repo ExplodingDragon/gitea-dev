@@ -59,7 +59,7 @@ enum GenerationKind {
 
 // ManagerService is implemented by Gitea and called by Codespace Manager.
 service ManagerService {
-  // RegisterManager exchanges an active registration token for a Manager identity.
+  // RegisterManager exchanges the owner scope's current registration token for a Manager identity.
   rpc RegisterManager(RegisterManagerRequest) returns (RegisterManagerResponse);
 
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
@@ -205,7 +205,9 @@ message CreateOperationPayload {
   int64 repo_id = 1;
   string repo_full_name = 2;
   string repo_name = 3;
+  // Absolute URL built from Gitea ROOT_URL, including AppSubURL.
   string repo_clone_url = 4;
+  // Absolute URL built from Gitea ROOT_URL, including AppSubURL.
   string repo_web_url = 5;
   string repo_tag = 6;
   int64 owner_id = 7;
@@ -299,6 +301,8 @@ message RequestGiteaTokenRequest {
 message RequestGiteaTokenResponse {
   // The plaintext access token for this codespace.
   string token = 1;
+  // Gitea's externally reachable ROOT_URL, including AppSubURL.
+  string server_url = 2;
 }
 
 // --- ValidateOpenToken ---
@@ -484,11 +488,14 @@ x-codespace-manager-secret: <manager secret>
 
 `RegisterManager` 使用 registration token 认证，token 通过 request body 传递。
 
+`CONTROL_PLANE_TIMEOUT` 到期返回 Connect `DeadlineExceeded`，caller 取消返回 `Canceled`；这两类传输终止不附 `CodespaceFailureDetail`。已提交的短事务结果保持有效，除 `RegisterManager` 外的调用方按 operation、generation 或 offset 幂等规则重试；`RegisterManager` 的不确定结果由管理员先检查未 Declare 的记录。
+
 业务命令因状态、版本、容量或参数被拒绝时，Gitea 返回 Connect error，并附带 `CodespaceFailureDetail`；category、Connect code 和 retryable 的固定映射见 [统一失败分类](gitea-server.md#统一失败分类)。generation 过旧时额外附带 `StaleGenerationDetail`，Manager 以 `current_generation + 1` 重新生成并持久化对应事实；该 detail 只用于恢复版本基线，不代表 Gitea 接受了旧事实。相同 generation 对应不同内容时返回 `generation_conflict`，不附 stale detail，因为请求 generation 已经是双方共同的当前基线；Manager 对该已知值做 checked increment，重新读取 backend 当前事实或快照后再提交。`UpdateLog` 的 offset conflict/gap 额外附带 `LogOffsetDetail`，使 Manager 以服务端实际文件末尾恢复追加。`ValidateOpenToken`、`VerifySSHPublicKey`、`RevalidateGatewaySession` 属于访问判定，通过 response `oneof outcome` 返回 binding 或 denied；`UpdateOperation` 的幂等结果也由 response `oneof outcome` 穷尽表达。
 
 输入边界：
 
 - 所有 enum 的 `UNSPECIFIED` 和未知数值均作为参数错误拒绝，不能回退为默认行为。
+- 所有 `codespace_uuid` 使用 Gitea 生成的 36 字符小写带连字符 UUID v4；大小写不同、无连字符或其他非规范形式返回 `invalid_argument`，不能先规范化再查询。
 - 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0，只有 inventory item 允许用 `observed_operation_rversion=0` 表示本地没有 active operation 上下文。
 - 所有版本递增使用 checked increment；Gitea 需要产生新 `operation_rversion` 但当前值已到 `int64` 上限时返回 `state_unavailable`，不产生部分状态写入。Manager 本地 inventory/runtime/metadata generation 已到上限时，停止该对象的新事实或快照上报，保留现有值、进入 recovering 并记录本地错误；相同 generation 的幂等重试仍可继续。任何一方都不允许回绕到 0 或负数。
 - `DeclareManager.capacity_total` 为 `1..10000`；单个 Manager 管理的 Runtime 总数不得超过 10000。
@@ -503,7 +510,7 @@ x-codespace-manager-secret: <manager secret>
 - `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
 - Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 使用 1 到 30 位 DNS-safe 小写字母、数字或连字符。
 - `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
-- `RequestGiteaToken` 在功能启用时按 creating/running 工作状态返回或签发 token；排空时仅 active running stop 可读取已有完整 pair 以恢复日志脱敏，不能签发或修复。
+- `RequestGiteaToken` 在功能启用时按 creating/running 工作状态返回或签发 token，并始终返回规范化 `server_url`；排空时仅 active running stop 可读取已有完整 pair 以恢复日志脱敏，不能签发或修复。
 - 所有 request 解码后不超过 `CONTROL_PLANE_MAX_REQUEST_SIZE`；`UpdateLog.lines` 单行另受 `LOG_MAX_LINE_SIZE` 限制。
 
 实现验收点：
@@ -511,6 +518,7 @@ x-codespace-manager-secret: <manager secret>
 - 除 `RegisterManager` 外的 RPC 都通过统一 interceptor 认证 Manager ID 和 secret。
 - Manager 身份认证成功后，handler 从 request context 读取同一 Manager 记录。
 - 命令拒绝与访问判定使用文中规定的两种响应方式，不混合表达。
+- deadline/cancel 使用 Connect 标准 code 且不携带业务 failure detail，不被映射为 `internal_error`。
 - stale generation 错误携带 generation 类型和 Gitea 当前已接受值，本地版本丢失的 Manager 可以恢复单调上报。
 - Manager 丢失本地 operation 版本基线后，running/stopped 分歧或无 active operation 的 failed inventory 可使 Gitea 返回 `report_runtime_transition.current_operation_rversion`；有 active operation 的 failed inventory 通过 refetch 恢复版本和 payload。
 - 所有版本字段拒绝负数和不允许的 0，递增永不发生回绕。
@@ -518,6 +526,7 @@ x-codespace-manager-secret: <manager secret>
 - Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。
 - 默认 workspace 与普通 Endpoint 使用同一个 Open Token binding 结构，不增加 Web SSH 专用 RPC 分支。
 - RequestGiteaToken 的正常工作态、排空 stop 只读和其他排空请求拒绝三类行为可由现有 request 与服务端状态确定，不增加 mode 字段。
+- RequestGiteaToken 成功响应的 `token/server_url` 均非空；Manager 不从 clone URL 或内部控制面地址推导 Runtime 使用的 Gitea 根地址。
 
 ## 传输
 

@@ -2,13 +2,13 @@
 
 ## 数据表
 
-Gitea 数据库保存 Codespace/Manager binding、生命周期结果和当前 Git token；Gitea cache 保存 Runtime Metadata 与 Gateway Open Token；Endpoint port、Runtime Token、backend 状态和实时容量由 Manager 管理。当前设计不增加 Gitea quota 或运行容量计数表。
+Gitea 数据库保存 Codespace/Manager binding、生命周期结果和当前 Gitea token；Gitea cache 保存 Runtime Metadata 与 Gateway Open Token；Endpoint port、Runtime Token、backend 状态和实时容量由 Manager 管理。当前设计不增加 Gitea quota 或运行容量计数表。
 
 ### codespace
 
 | 字段 | 类型说明 | 备注 |
 | --- | --- | --- |
-| `uuid` | `CHAR(36)`，主键 | 全局唯一持久 ID；Web 路由、RPC、日志路径和 Manager 本地 Runtime 映射都使用该值 |
+| `uuid` | `CHAR(36)`，主键 | Gitea 生成的规范小写 RFC 4122 UUID v4；Web 路由、RPC、日志路径和 Manager 本地 Runtime 映射都使用该值 |
 | `user_id` | `BIGINT NOT NULL DEFAULT 0` | 创建者 user ID；有效 codespace 创建时必须大于 0，用户删除事务会物理删除关联记录 |
 | `repo_id` | `BIGINT NOT NULL DEFAULT 0` | 大于 0 时用于 create 来源展示和 token repo binding；repository 删除 pre-cleanup 时写为 0 |
 | `ref_type` | `VARCHAR(16) NOT NULL DEFAULT ''` | 有效记录只允许 `branch` / `tag` / `commit` / `pull` |
@@ -25,7 +25,7 @@ Gitea 数据库保存 Codespace/Manager binding、生命周期结果和当前 Gi
 | `operation_deadline_unix` | `BIGINT NOT NULL DEFAULT 0` | running lease 截止时间；其他状态为 0 |
 | `runtime_generation` | `BIGINT NOT NULL DEFAULT 0` | Manager 主动运行事实版本，只保存最新值 |
 | `gitea_token_id` | `BIGINT NOT NULL DEFAULT 0` | 当前有效 Gitea access token ID；0 表示当前没有有效 token；`creating/running` 可签发，进入 `stopped/failed/deleting` 或物理删除时吊销并写回 0 |
-| `gitea_token` | `TEXT NOT NULL` | 当前有效 Gitea access token 明文；迁移默认写入空字符串，只供绑定 Manager 通过 `RequestGiteaToken` 获取；空字符串表示无 token，不进入 Web/API/Minimal Info/日志/Runtime Metadata/Gateway Open Token |
+| `gitea_token` | `TEXT NOT NULL` | 当前有效 Gitea access token 明文；迁移默认写入空字符串，只供绑定 Manager 通过 `RequestGiteaToken` 获取并写入 Runtime credential；空字符串表示无 token，不进入 Web、Minimal Info、日志、Runtime Metadata 或 Gateway Open Token |
 | `last_active_unix` | `BIGINT NOT NULL DEFAULT 0` | 最近成功记录的用户交互；仅用于 UI 排序和清理参考，写入失败不阻断访问 |
 | `created_unix` | `BIGINT NOT NULL DEFAULT 0` | 创建时间戳 |
 | `updated_unix` | `BIGINT NOT NULL DEFAULT 0` | 最近一次持久生命周期结果变化时间；进入 failed 时作为 retention 起点 |
@@ -38,6 +38,8 @@ Gitea 数据库保存 Codespace/Manager binding、生命周期结果和当前 Gi
 日志元数据字段参考 Actions `ActionTask`（`models/actions/task.go`）。
 
 repository owner 通过 `repository.owner_id` 表示，不在 codespace 表中重复存 `owner_id`。repository 删除后 `repo_id` 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 `codespace.uuid`、`user_id` 和 `manager_id` 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。repo-bound token 在 `repo_id=0` 时拒绝所有 repository 访问。用户或组织删除在任何 owner repository 删除前，通过现有 `user_id`、`repo_id -> repository.owner_id` 和 `manager_id -> codespace_manager.owner_id` 收集关联 Codespace，并在独立前置清理事务中删除 Gitea 资源，因此不需要增加冗余 owner 字段。repository 此前已单独删除时，`repo_id=0` 表示与原 repository owner 的关系已经有意丢弃，后续只按创建者和 Manager owner 关系处理。
+
+Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUID v4，数据库、Web 路径、RPC 和 Manager 持久状态统一使用 36 字符小写带连字符形式。外部输入先做严格格式校验，大小写不同、无连字符或其他非规范形式返回 `invalid_argument`，不能在规范化前参与查询或构造 lock key。`uuid32` 只表示从规范 UUID 删除四个连字符后的 32 字符结果；需要 UUID 的 helper 参数统一命名为 `codespaceUUID`，避免与数字数据库 ID 混淆。单一表达保证同一对象只对应一个数据库键、一个 `codespace_{uuid}` lock key 和一组 Gateway host。
 
 `operation_rversion`、`runtime_generation` 和 `inventory_generation` 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 `BIGINT` 时使用 checked increment，不回绕到 0 或负数。Gitea 在 `operation_rversion` 已到上限时以 `state_unavailable` 拒绝新 operation，不写主状态或 active operation 的部分结果。Manager 本地 generation 已到上限时保留当前值并进入 recovering，不产生新版本；已持久化的相同 generation 幂等重试仍可继续。`runtime_generation` 仅保存当前值；相同 generation 的幂等以 fact 目标主状态是否已成立判定，不需要再增加历史 fact 类型字段。
 
@@ -62,7 +64,6 @@ endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gite
 | `last_recovered_unix` | `BIGINT NOT NULL DEFAULT 0` | 最近恢复完成时间 |
 | `inventory_generation` | `BIGINT NOT NULL DEFAULT 0` | 最近接受的完整 inventory 版本 |
 | `inventory_hash` | `VARCHAR(64) NOT NULL DEFAULT ''` | 最近接受的规范化 inventory SHA-256 |
-| `created_by` | `BIGINT NOT NULL DEFAULT 0` | 创建者 user ID，允许后续悬空 |
 | `created_unix` | `BIGINT NOT NULL DEFAULT 0` | 创建时间 |
 | `meta_json` | `TEXT NOT NULL` | Gitea 生成的规范化 Manager metadata JSON |
 
@@ -76,25 +77,29 @@ Manager 删除由服务层先按 `codespace.manager_id` 收集并删除绑定 Co
 | --- | --- | --- |
 | `id` | `BIGINT` 自增主键 | |
 | `token` | `VARCHAR(64) NOT NULL`，唯一索引 | 32 随机字节的 hex 编码明文 |
-| `owner_id` | `BIGINT NOT NULL DEFAULT 0` | Registration Token owner scope |
-| `is_active` | `BOOLEAN NOT NULL DEFAULT true` | 同一 `owner_id` 同一时间只能有一个 active token |
+| `owner_id` | `BIGINT NOT NULL DEFAULT 0`，唯一索引 | Registration Token owner scope；每个 scope 最多一行 |
 | `created` | 创建时间戳 | xorm auto（与 `action_runner_token` 一致，不使用 `_unix` 后缀） |
 | `updated` | 更新时间戳 | xorm auto |
-| `deleted` | 软删除时间戳 | xorm auto |
 
-设计与 `action_runner_token` 一致：明文存储，唯一索引。token 可复用，支持多个 Manager 用同一 token 注册。`owner_id` 与 Gitea repository owner 语义一致，组织是 `user` 表中 `type=organization` 的 owner 记录。
+Registration Token 明文存储并可复用，支持同一 owner 用当前 token 注册多个 Manager。`owner_id` 与 Gitea repository owner 语义一致，组织是 `user` 表中 `type=organization` 的 owner 记录。GetOrCreate 在行不存在时插入，Rotate 原地替换随机 token，Deactivate 和 owner 删除物理删除该行。
+
+**设计说明（有意如此）：Registration Token 只表示当前有效的注册入口，不保存 inactive、软删除或轮换历史。**系统不提供凭据审计，保留旧行不会参与认证或恢复，只会增加 retention、索引和并发语义；单行模型让“行存在即有效、行不存在即停用”成为唯一判断。
 
 实现验收点：
 
+- 新 UUID 由 Gitea 生成且始终为规范小写 UUID v4；非规范外部 UUID 在查询和加锁前拒绝，同一 UUID 只有一个 lock key 和 `uuid32`。
 - 数据迁移创建文中列出的真实字段和非空默认值；模型校验只允许文中列出的状态、operation 类型和运行态值。
 - active operation 完成后 operation 字段清空，`operation_rversion` 和最新事实 generation 保留当前值。
 - operation 与 generation 的 0 值只用于未初始化，有效版本从 1 开始，递增不会溢出回绕。
 - operation 版本耗尽时不产生部分写入，Manager generation 耗尽时不产生新版本，两者都保留当前值。
 - token ID 与明文字段在生命周期事务中同时写入或同时清空。
 - `gitea_token_id=0` 时 `gitea_token` 必须为空字符串；非零 token ID 只能被一个 codespace 绑定。
+- 非零 token pair 只有在 access token row 存在、UID 等于 `user_id`、规范化 scope 严格等于 `write:issue,write:repository,read:user` 且明文 hash 匹配时有效；名称不参与安全判定。
 - `inventory_generation/inventory_hash` 同事务更新；相同 generation 只有 hash 相同时才作为幂等重试。
 - inventory 规范化按 `codespace_uuid` 排序，hash 包含 UUID、runtime state 和 observed operation version。
 - Manager secret 的长度、hex 格式和 `SHA-256(salt_bytes || secret_bytes)` 计算在注册、认证和轮换路径一致。
+- Manager 归属只由 `owner_id` 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。
+- 每个 owner 最多存在一行 registration token；轮换更新该行，停用和 owner 删除后该行物理不存在。
 - 用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 `repo_id` 不保留原 owner 历史，也不需要新增冗余 owner 字段。
 - Manager 删除物理清理绑定 Codespace 和 Manager row，不新增删除状态、墓碑或远端确认字段。
 
@@ -148,22 +153,21 @@ Manager 删除由服务层先按 `codespace.manager_id` 收集并删除绑定 Co
 | codespace | `(user_id, status)` |
 | codespace | `(repo_id, status)`，查询 repository 关联记录时使用 `repo_id > 0` |
 | codespace | `(gitea_token_id)`，用于 token binding 反查；查询时使用 `gitea_token_id > 0` |
-| codespace | `(status, operation_type, operation_status, manager_id, repo_tag)`，用于 create 批量领取 |
-| codespace | `(manager_id, operation_type, operation_status, status)`，用于 stop/resume/delete 领取和 active operation 扫描 |
-| codespace | `(operation_status, operation_created_unix)`，用于 queued operation 超时扫描 |
-| codespace | `(operation_status, operation_deadline_unix)`，用于 running lease 超时扫描 |
-| codespace | `(status, updated_unix)`，用于 failed retention 清理；`updated_unix` 在进入 failed 时写入且 token reconciliation 不刷新 |
+| codespace | `(status, operation_type, operation_status, manager_id, repo_tag, operation_created_unix, uuid)`，用于 create 批量领取和稳定排序 |
+| codespace | `(manager_id, operation_type, operation_status, status, operation_created_unix, uuid)`，用于 stop/resume/delete 领取和 active operation 扫描 |
+| codespace | `(operation_status, operation_created_unix, uuid)`，用于 queued operation 超时 keyset 扫描 |
+| codespace | `(operation_status, operation_deadline_unix, uuid)`，用于 running lease 超时 keyset 扫描 |
+| codespace | `(status, updated_unix, uuid)`，用于 failed retention keyset 清理；`updated_unix` 在进入 failed 时写入且 token reconciliation 不刷新 |
 | codespace_manager | `(owner_id, admin_state)` |
 | codespace_manager | `(owner_id, runtime_state)` |
 | codespace_manager | `(admin_state, last_online_unix)`，用于派生 offline 和 reconciliation 扫描 |
 | codespace_manager_token | `token`（唯一） |
-| codespace_manager_token | `(owner_id, is_active)` |
-| codespace_manager_token | `(is_active, updated)`，用于 inactive token retention 清理；`updated` 在停用时成为保留期起点 |
+| codespace_manager_token | `owner_id`（唯一） |
 
 实现验收点：
 
 - queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。
-- operation 超时和 failed/inactive retention 扫描使用时间字段复合索引，不做全表逐行判断。
+- Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。
 - token、UUID 的唯一索引阻止重复记录。
 
 ## Gitea Cache 与 Keyed Lock
@@ -180,11 +184,29 @@ Codespace 不实现 Locker、mutex pool 或 lock backend。需要 keyed serializ
 
 锁 key 只由纯格式化 helper 构造：全局 Manager Gateway/SSH 地址唯一性使用 `codespace_manager_addresses`，owner 使用 `codespace_owner_{owner_id}`，Manager 使用 `codespace_manager_{manager_id}`，Codespace 使用完整规范化小写 UUID 构造 `codespace_{uuid}`。现有 repository transfer 的 `repo_working_{repo_id}` helper 移到 `modules/repository/lock.go` 并导出为 `WorkingLockKey(repoID)`；transfer、repository delete 和 `CreateCodespace` 记录插入事务都直接把该 key 传给 `globallock.Lock`，不增加 repository lock wrapper。
 
-明确取得 keyed lock 的路径：地址首次声明或变更取得地址 lock；registration token 创建/轮换、owner-scoped Manager 注册/删除、用户/组织删除和 `CreateCodespace` 记录插入事务取得相关 owner lock；repository 删除和 `CreateCodespace` 记录插入事务取得 repository lock；创建、取消或拒绝 pending repository transfer 只取得 repository lock，接受 transfer 或其他实际修改 `owner_id` 的路径取得原/新 owner lock 后再取得 repository lock；Declare 写入、Manager secret 轮换、inventory generation 接受、Manager 删除和完整 `FetchOperations` 请求取得 Manager lock；Fetch/UpdateOperation 对 running operation 的续租、重发和收敛、State Finalization、timeout、主动 transition、Gitea token 签发/修复/吊销、Runtime Metadata 写入、operation 日志追加、Open Code 签发/消费、单 Codespace 物理删除和 reconciliation 取得 Codespace lock。Fetch 的 queued 条件 claim 已受调用方 Manager lock 保护，但不额外取得 repository 或 Codespace lock；纯读取和未修改地址的 heartbeat 不增加 lock；repository 数据库删除已经由 repository lock 串行，不额外取得 Codespace lock；Fetch 遇到过期 queued 项并执行 timeout 时按 timeout 路径取得 Codespace lock。
+keyed lock 只用于下表列出的写路径；每项只取得表中需要的层级，不存在覆盖其他 Gitea 功能的“全部业务锁”：
+
+| 写路径 | 取得的 lock |
+| --- | --- |
+| registration token GetOrCreate、轮换、停用；全部 Manager 注册（包括 `owner_id=0`） | owner |
+| Declare 首次设置或变更 Gateway/SSH 地址 | 地址、Manager |
+| Declare 普通快照写入、Manager secret 轮换、Manager enable/disable | Manager |
+| 完整 `FetchOperations` 请求 | Manager；处理 running operation 或 queued timeout 时再取得对应 Codespace |
+| `ReportInstances` | 整个请求持有 Manager；逐项需要写 Codespace 时再取得对应 Codespace |
+| `UpdateOperation`、`UpdateLog`、`ReportRuntimeMetadata`、`ReportRuntimeTransition`、`RequestGiteaToken` | Codespace |
+| State Finalization、用户生命周期动作、Open Code 签发/消费、SSH 校验、token 签发/修复/吊销、单 Codespace 物理删除、reconciliation | Codespace |
+| Manager 删除 | owner、Manager、全部绑定 Codespace |
+| 用户或组织删除 | owner、所需 repository、Manager、Codespace |
+| `CreateCodespace` 记录插入 | 创建者和 repository owner、repository |
+| repository 删除 | 当前 repository owner、repository |
+| pending transfer 创建、取消或拒绝 | repository |
+| 接受 transfer 或其他实际修改 repository owner | 原 owner、新 owner、repository |
+
+Fetch 的 queued 条件 claim 已受调用方 Manager lock 保护，不额外取得 repository 或 Codespace lock；只有遇到过期 queued 项并执行 timeout 时按 timeout 路径取得 Codespace lock。repository 数据库删除已经由 repository lock 串行，不额外取得 Codespace lock。只取得 Codespace lock 的 Manager RPC 在锁内事务中重新读取 Manager 是否仍存在、`manager_id` binding 和 operation/version，不能依赖认证阶段加载的旧记录；这样它可以先完成并由随后取得 Codespace lock 的删除事务清理，或者在删除提交后复检失败，不需要反向取得 Manager lock。
 
 同一操作需要多个 lock 时，代码按地址、owner、repository、Manager、Codespace 直接多次调用 `globallock.Lock`；同层多个 ID 去重并升序取得，完整 UUID 按字符串升序，后一个取得失败或操作完成时逆序释放。所有 lock 在数据库事务前取得，已持锁内部函数不重复取得相同 key，锁内不调用 Manager、Gateway 或其他网络服务。
 
-owner lock 只串行化参与 Codespace 关系集合的明确写路径：Codespace 记录创建、owner-scoped Manager 注册/删除、registration token 变更、repository 实际 owner 变更或删除，以及用户/组织删除。普通 repository、package、membership 等 Gitea 写入继续沿用各自现有事务和前置检查，不因 Codespace 增加 owner lock。这个边界让 Codespace 删除能稳定收集自身关系，同时不把 owner lock 扩展成所有 Gitea 业务写入的总锁。
+owner lock 只串行化参与 Codespace 关系集合的明确写路径：Codespace 记录创建、全部 Manager 注册、owner-scoped Manager 删除、registration token 变更、repository 实际 owner 变更或删除，以及用户/组织删除。global Manager 注册使用 `codespace_owner_0`，使注册与 global token 轮换/停用也有确定先后。普通 repository、package、membership 等 Gitea 写入继续沿用各自现有事务和前置检查，不因 Codespace 增加 owner lock。这个边界让 Codespace 删除能稳定收集自身关系，同时不把 owner lock 扩展成所有 Gitea 业务写入的总锁。
 
 规则：
 
@@ -208,6 +230,7 @@ owner lock 只串行化参与 Codespace 关系集合的明确写路径：Codespa
 - 文档明确列出的 keyed serialization 路径直接调用 Gitea `globallock.Lock`；代码中没有 Codespace Locker、mutex pool、lock wrapper、专用 cache/lock 配置或失败后的后端回退。
 - repository transfer/delete 与 `CreateCodespace` 记录插入事务通过 `modules/repository.WorkingLockKey` 使用同一个 `repo_working_{repo_id}`；实际修改 owner 的 transfer 对原/新 owner ID 去重升序加锁，pending transfer 的创建、取消和拒绝只使用 repository lock。多对象路径按地址、owner、repository、Manager、Codespace 和各层稳定升序取得，事务前完成加锁，内部已持锁实现不重复取得同一 key。
 - `FetchOperations` 在调用方 Manager lock 内重新读取 Manager 并完成 running 处理、queued claim、payload 构造或条件释放；Manager/owner 删除取得相同 Manager lock 后重新查询 binding 集合。
+- `ReportInstances` 在整个请求持有 Manager lock 并按 UUID 逐项取得 Codespace lock；单 Codespace command RPC 只取得 Codespace lock，并在事务内重新检查 Manager 记录、binding 和版本。
 - owner lock 的保证范围只覆盖文中列出的 Codespace 关系写路径；普通 Gitea repository/package/membership 写入仍按现有服务事务收敛。
 
 ## Runtime Metadata 结构
@@ -306,7 +329,7 @@ codespace_log/{codespace_uuid}.log
 - `UpdateLog` 成功响应返回规范化、脱敏并写入后的 `next_offset`；Manager 以该服务端值推进下一次追加。
 - message 包含换行时，Manager 在提交前按换行拆成多条物理日志行；存储层每个 `lines[]` 元素只接受一行，渲染器按物理行顺序展示。
 - 按 `log_indexes` 提供的行号到 byte offset 映射进行 seek 读取。
-- `GET /codespace/{uuid}/logs` 使用 byte offset 分页读取，返回 `offset / next_offset / eof / lines / truncated`。
+- `GET /codespaces/{uuid}/logs` 使用 byte offset 分页读取，返回 `offset / next_offset / eof / lines / truncated`。
 - 读取 offset 必须为 0、文件末尾或 `log_indexes` 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。
 - 第一条完整物理行超过请求 `limit` 时仍单独返回该行并推进 `next_offset`，避免客户端因过小 limit 永远无法前进；单次响应始终不超过 `LOG_READ_MAX_BYTES`，配置要求 `LOG_MAX_LINE_SIZE <= LOG_READ_MAX_BYTES`。
 - delete 成功后删除 codespace 日志。
@@ -328,4 +351,5 @@ codespace_log/{codespace_uuid}.log
 - 达到普通日志上限后只出现一条截断摘要，最终文件大小不超过 `LOG_MAX_SIZE`。
 - 内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。
 - codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。
+- 物理删除调用 DBFS Remove 时把 `fs.ErrNotExist` 视为幂等成功；其他 DBFS 错误回滚当前本地删除事务。尚未写入日志的合法 Codespace 因此不会阻塞资源清理。
 - offset conflict/gap 返回服务端当前 offset，Manager 不通过本地编码结果猜测恢复位置。

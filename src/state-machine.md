@@ -173,9 +173,9 @@ ReportRuntimeTransition
 
 | 当前主状态 | 用户动作 | 写入结果 |
 | --- | --- | --- |
-| 无记录 | create | `status=creating, operation_type=create, operation_status=queued, manager_id=0` |
+| 无记录，来源完整且有匹配 Manager | create | `status=creating, operation_rversion=1, operation_type=create, operation_status=queued, manager_id=0` |
 | repository/ref/commit/config 前置校验失败 | 无 | 返回创建错误，不创建 codespace |
-| 来源数据完整但无 Manager 匹配 | 无 | `status=failed, manager_id=0`，operation 字段为空，Gitea 写入失败摘要日志 |
+| 来源数据完整但无 Manager 匹配 | create | `status=failed, manager_id=0, operation_rversion=0`，operation 字段为空，Gitea 尽力写入失败摘要日志 |
 | `running` | open / SSH | 不写入 operation 字段；由 Gitea 校验后直接 302 或转交 Gateway |
 | `running` | stop | `status=running, operation_type=stop, operation_status=queued` |
 | `stopped` | resume | `status=stopped, operation_type=resume, operation_status=queued` |
@@ -187,9 +187,12 @@ ReportRuntimeTransition
 
 普通动作要求当前没有 active operation。未绑定 Manager 表示 create 尚未在运行侧建立受 Gitea 管理的资源，delete 直接清理 Gitea 记录。已经绑定 Manager 时，delete 是终止目标，可以抢占当前 create/resume/stop：Gitea 递增 `operation_rversion`，写入 delete operation，把主状态改为 `deleting`，并在同一事务内吊销 token。旧 Manager 使用旧版本上报时返回 stale，避免旧结果覆盖新的删除目标。站点管理员 force delete 是明确的 Gitea 本地删除入口，可作用于任意未物理删除状态；提交前展示运行侧可能残留资源并要求确认，提交后不等待 Manager。Gitea 不保存删除墓碑，之后收到未知 UUID 的 inventory 项时忽略，不据此要求 Manager 删除运行侧资源。
 
+无匹配 Manager 的 failed 记录没有产生 Gitea-issued operation，所以保留初始版本 0；后续 Manager 注册、Declare、enable 或 tags 变化不自动创建 operation。该记录用于展示固定失败结果和日志，用户删除后重新 create 才会重新执行匹配。这样版本 1 始终表示实际创建过的第一个 operation，不把前置判定伪装成已下发任务。
+
 实现验收点：
 
 - 普通动作在 active operation 存在时返回 conflict，delete 可按规则抢占。
+- 无匹配 Manager 的 create 直接形成版本 0 failed 记录，后续 Manager 变化不会自动复活；有匹配 Manager 的 create 从版本 1 queued operation 开始。
 - 无绑定 delete 同步完成，有绑定 delete 生成 queued operation 并吊销 token。
 - force delete 可从包括 deleting 在内的任意未物理删除状态同步完成，不读取 Manager 状态或创建 operation。
 
