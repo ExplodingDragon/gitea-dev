@@ -182,7 +182,7 @@ ReportRuntimeTransition
 | `creating/failed` 且 `manager_id=0` | delete | 同步物理删除 codespace、token 和日志 |
 | `creating/running/stopped/failed` 且 `manager_id!=0` | delete | `status=deleting, operation_type=delete, operation_status=queued`，同事务吊销 token |
 | 任意未物理删除状态 | 站点管理员 force delete | 同步物理删除 Gitea 记录、token 和日志；运行侧资源不属于该事务结果 |
-| 任意未物理删除状态 | 用户、组织或 Manager 删除事务 | 同步物理删除关联 Gitea 记录、token 和日志；不创建 operation，不联系 Manager |
+| 任意未物理删除状态 | 用户、组织或 Manager 本地删除 | 通过有界短事务同步物理删除关联 Gitea 记录、token 和日志；不创建 operation，不联系 Manager |
 | `deleting` | 任意用户动作 | 拒绝 |
 
 普通动作要求当前没有 active operation。未绑定 Manager 表示 create 尚未在运行侧建立受 Gitea 管理的资源，delete 直接清理 Gitea 记录。已经绑定 Manager 时，delete 是终止目标，可以抢占当前 create/resume/stop：Gitea 递增 `operation_rversion`，写入 delete operation，把主状态改为 `deleting`，并在同一事务内吊销 token。旧 Manager 使用旧版本上报时返回 stale，避免旧结果覆盖新的删除目标。站点管理员 force delete 是明确的 Gitea 本地删除入口，可作用于任意未物理删除状态；提交前展示运行侧可能残留资源并要求确认，提交后不等待 Manager。Gitea 不保存删除墓碑，之后收到未知 UUID 的 inventory 项时忽略，不据此要求 Manager 删除运行侧资源。
@@ -429,7 +429,7 @@ stateDiagram-v2
     HasToken --> Revoking: timeout 目标为 stopped/failed
     HasToken --> Revoking: missing runtime
     HasToken --> Revoking: 进入 deleting
-    HasToken --> Revoking: Gitea 直接删除事务
+    HasToken --> Revoking: Gitea 直接物理删除
     Revoking --> Cleared: 清空 id 和明文
     Cleared --> NoToken
     NoToken --> [*]: codespace 物理删除
@@ -493,6 +493,8 @@ Runtime Metadata 位于 Gitea cache，不能与数据库事务伪装成同一个
 
 主动 `stopped -> running` 时 token 已在 stopped 阶段吊销，因此 running fact 必须携带高于当前快照的 `credential-refresh` metadata，`boot.operation_rversion` 等于本次事实的 `observed_operation_rversion`。Gitea 接受 running 后，Manager 申请新 token、刷新 Runtime credential，再以同一 boot 版本和更高 metadata generation 上报 `ready`；ready 前 open/SSH 返回 `runtime_not_ready`。确认无法写入 credential 时，Manager 停止 Runtime、再次递增 `runtime_generation` 并上报 stopped。该流程不创建 operation，也不更新 `last_active_unix`。
 
+**设计说明（有意如此）：主动 running 的意图只由 Manager 当前持久化的主动 resume boot 上下文表达，不从 inventory 状态差异推导。**Manager 在启动 stopped Runtime 前先原子保存该上下文和观察到的 `operation_rversion`，响应丢失或进程重启后继续重试同一 `ReportRuntimeTransition`。如果上下文丢失、版本已经变化或 transition 被拒绝，running Runtime 按 inventory 的 `stop_local_runtime` 收敛回 stopped 并保留 workspace。这样 stop 超时形成的 stopped 结果不会被一个迟到的 running inventory 反向恢复。
+
 failed fact 只用于 Manager 已确认的单 Codespace 不可恢复，例如 workspace/volume 损坏或 backend 明确报告该资源无法再运行。Manager 暂时离线、Runtime Metadata 丢失、Gateway/SSH/Endpoint 临时错误继续使用 recovering、metadata_rebuilding 或 runtime_not_ready；Runtime 物理缺失继续由完整 inventory 的 missing 规则处理；active operation 的动作失败继续使用 `UpdateOperation(final failed)`。failed fact 不携带原因或时间，Gitea 只追加固定状态摘要，详细诊断保留在 Manager 本地日志。
 
 Manager 在提交 failed fact 前关闭该 Codespace 的 session，取消 pending metadata/Endpoint mutation 和后置 worker，并保留已递增的 generation 高水位。Gitea 返回首次接受或目标已收敛的幂等成功后，Manager 可立即删除本地 Runtime、workspace 和 volume；清理失败时保留本地快照，并在后续 inventory 中上报 `runtime_state=failed`，由 Gitea 对仍存在的 failed 记录返回 `cleanup_local_runtime`。Gitea 返回 `resource_absent` 或 inventory 发现未知 UUID 时仍不授权破坏本地 Runtime，与无 tombstone 的删除边界一致。
@@ -510,6 +512,7 @@ Manager 对 `ReportRuntimeTransition` 的拒绝按固定方式收敛：`current_
 - 站点排空时可以上报缩减能力的 stopped/failed 事实，running fact 返回 state unavailable。
 - 功能启用且 Manager online/recovering 时可上报三种事实；offline Manager 必须先 Declare recovering。
 - 主动 running 先以 `credential-refresh` 完成主状态切换，再申请 token 并上报 ready；credential 失败可用更高 runtime generation 收敛回 stopped。
+- 主动 resume 在启动 Runtime 前持久化当前 boot 上下文；响应丢失时显式重试 running fact，inventory 不承担恢复主动意图的职责。
 - running fact 的相同 generation 重试可以补写丢失的 metadata cache；stopped/failed 在数据库提交后即成功，cache 清理失败不恢复交互权限，幂等重试可再次尝试清理。
 - failed fact 从 running/stopped 收敛到现有 failed 主状态，立即吊销 token，幂等重试不延后 retention。
 - failed fact 成功后 Manager 可立即删除本地 Runtime、workspace 和 volume；失败的本地清理由后续 failed inventory 和 cleanup instruction 继续收敛。
@@ -585,7 +588,8 @@ Gitea 在接受请求时写入 `last_reported_unix=now`，该时间不属于 Man
 | 已绑定 Manager 上报 `runtime_state=failed` | 只表示资源仍有 identity 但已确认不可恢复；有 active operation 时先 refetch 并 final failed，无 active operation 且 Gitea 为 running/stopped 时返回 `report_runtime_transition(current_operation_rversion)`；未绑定 creating 仍不返回指令 |
 | inventory observed operation version 与 Gitea 当前值不同 | 返回 `refetch_operation(current_operation_rversion)`，本轮不使用该实例事实改写主状态 |
 | Manager 保留非零旧 operation 上下文但 Gitea 当前无 active operation | 返回 `clear_operation_context(current_operation_rversion)`；Manager 只在本地版本不高于该值时清除旧 worker，不删除 Runtime |
-| 站点排空时上报 Gitea stopped、Runtime running | 返回 `stop_local_runtime(current_operation_rversion)`；Manager 仅在本地 operation 版本不高于该值时停止，Gitea 主状态保持 stopped |
+| Gitea running、Runtime stopped 且无 active operation | 返回 `report_runtime_transition(current_operation_rversion)`，由 Manager 上报 stopped fact |
+| Gitea stopped、Runtime running 且无 active operation | 返回 `stop_local_runtime(current_operation_rversion)`；Manager 仅在本地 operation 版本不高于该值时停止进程和交互入口并保留 workspace，Gitea 主状态保持 stopped |
 | Gitea 期望 Runtime 存在，完整 inventory 缺失 Runtime | active create deadline 未到期或绑定 Manager 仍在有效 restart grace 时保持 `creating`；其他 `creating/running/stopped` 进入 `failed` |
 | Gitea `deleting`，完整 inventory 缺失 Runtime | 视为 delete 完成，物理删除 |
 | queued operation 超时未领取 | create/delete 写 `failed`；resume 保持 `stopped`；stop 保持 `running`；全部清空 active operation |
@@ -597,7 +601,7 @@ Gitea 在接受请求时写入 `last_reported_unix=now`，该时间不属于 Man
 | Runtime Metadata 丢失 | 主状态不变，open/SSH 返回 `metadata_rebuilding` |
 | 功能启用，`creating/running` token 缺失且创建用户仍存在 | 允许符合调用条件的 Manager 通过 `RequestGiteaToken` 获取新 token |
 | 功能排空，active running stop 需要恢复日志脱敏集合 | 只返回已有完整 token pair；缺失或损坏时拒绝，不签发或修复 |
-| owner 前置清理事务发现 codespace token binding | 在任何 owner repository 删除前，随 codespace 及 access token 一并物理删除 |
+| owner 分阶段清理发现 codespace token binding | 在任何 owner repository 删除前，随当前 codespace 短事务及 access token 一并物理删除 |
 | `stopped/failed/deleting` token 仍存在 | reconciliation 调用生命周期入口吊销 token |
 | 完整 inventory generation 等于最近接受版本且 hash 相同 | 不重复已经完成的条件状态写入，但按当前数据库状态重新计算并返回 instruction |
 | 完整 inventory generation 低于最近接受版本 | 返回 stale，不参与 missing 判定 |
@@ -608,6 +612,7 @@ Gitea 在接受请求时写入 `last_reported_unix=now`，该时间不属于 Man
 - stale 上报和旧 generation 不会改写当前主状态。
 - 未绑定 creating 不产生可能与后续 claim 竞争的 cleanup 指令。
 - operation 超时按类型回到明确稳定状态，resume/stop 的调度或通信超时不会把既有 workspace 变成破坏性清理目标。
+- stopped 主状态不会因 running inventory 自动恢复；只有版本匹配的显式主动 running fact 可以进入 running。
 
 ## 超时处理
 
@@ -634,7 +639,7 @@ active operation lease 到期时按 Manager 状态判断：
 | offline 且 `now-(last_online_unix+MANAGER_OFFLINE_TIMEOUT) <= MANAGER_RESTART_GRACE` | 暂缓 timeout。 |
 | offline 超过上述 hard deadline | 按上表的 running lease timeout 结果收敛。 |
 
-维护恢复是 Manager 级事件，不在每条 codespace 上保存 recovery deadline。`offline_since=last_online_unix+MANAGER_OFFLINE_TIMEOUT`，offline hard deadline 为 `offline_since+MANAGER_RESTART_GRACE`；recovering hard deadline 仍从首次 `last_recovering_unix` 起算。grace 内允许绑定 Manager 使用当前版本的首次 Fetch、renew 或 final 恢复已经到期的 lease，并原子写入新 deadline；超过 hard deadline 后拒绝恢复。Fetch 与 UpdateOperation 使用同一 deadline/grace 判定，不能因 observed 批量续租绕过超时。完整 `ReportInstances` 到达后，Gitea 在该请求内优先使用 inventory 事实处理差异。
+维护恢复是 Manager 级事件，不在每条 codespace 上保存 recovery deadline。进入 recovering 时先读取更新前的 heartbeat：`old_last_online_unix=0` 表示新 Manager 从未成功 Declare，以当前时间建立窗口；已有 heartbeat 但尚未派生 offline 时同样使用当前时间；已经派生 offline 时计算 `offline_since=old_last_online_unix+MANAGER_OFFLINE_TIMEOUT` 并继承该值。recovering hard deadline 固定为 `last_recovering_unix+MANAGER_RESTART_GRACE`，重复 heartbeat 不后移；进入 online 后清零，下一轮恢复重新建立起点。grace 内允许绑定 Manager 使用当前版本的首次 Fetch、renew 或 final 恢复已经到期的 lease，并原子写入新 deadline；超过 hard deadline 后拒绝恢复。Fetch、renew、final、ReportRuntimeTransition 和 Cron 使用同一判定，不能因迟到 Declare、observed 批量续租或 Cron 尚未扫描而绕过超时。完整 `ReportInstances` 到达后，Gitea 在该请求内优先使用 inventory 事实处理差异。
 
 online Manager 或超过 hard grace 的 Manager 调用当前版本 `UpdateOperation` 时，如果 handler 发现 `now >= operation_deadline_unix` 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization，而不是只拒绝请求并留下过期 running operation。随后按请求 final 映射出的目标主状态判断：目标已与 timeout 结果一致时返回 `idempotent_done`，否则 renew 或 final 返回 `stale_operation`。例如 resume failed、stop done 与 timeout 后的 `stopped` 一致，resume done、stop failed 则 stale。有效 grace 内的首次 Fetch/renew/final 先原子恢复 deadline，再继续本次请求。该映射复用现有 outcome，不增加 expired 响应分支。
 
@@ -648,6 +653,9 @@ Cron、claim、renew 和 final 都以 `codespace_uuid + operation_rversion + ope
 - Fetch 不领取已到硬截止时间的 queued operation，而是条件写入 timeout 结果并继续本批。
 - queued create/delete 超时进入 failed，queued resume/stop 分别保持 stopped/running；running create/delete 超时进入 failed，running resume/stop 收敛为 stopped。
 - recovering 或 offline grace 内不会执行 timeout State Finalization；recovering 超过 hard grace 后不能无限冻结 operation。
+- 已派生 offline 的 Manager 首次 Declare recovering 继承 `offline_since`；Declare 与 Cron 的先后顺序不改变 hard deadline。
+- recovering heartbeat 不延长窗口，进入 online 后清零窗口起点，下一次 recovering 建立新窗口。
+- `last_online_unix=0` 的新 Manager 首次 Declare recovering 以当前时间建立窗口，不从 Unix epoch 推导 offline。
 - 截止时间在业务写入中直接校验，不依赖 Cron 是否已经扫描到该记录。
 - deadline 已过且不在 grace 时，UpdateOperation 请求路径立即完成 timeout，并按请求目标与 timeout 目标是否一致返回 idempotent 或 stale。
 - Fetch 对 running operation 使用与 UpdateOperation 相同的 deadline/grace 规则；超过可恢复边界的 observed operation 不会被刷新 lease。
@@ -700,7 +708,7 @@ runtime_state_mismatch
 - `FetchOperations` 可在同一批响应中恢复 running payload 并领取多个 queued operation。
 - 主动 Runtime transition、inventory 和 metadata 的旧版本均不能覆盖新事实。
 - token pair 只在 `creating/running` 保留，进入 `stopped/failed/deleting` 时吊销；站点排空时稳定工作状态的 pair 可保留但新请求拒绝，重新启用后只恢复仍处于工作主状态的完整 pair。
-- 用户或组织删除在任何 owner repository 删除前提交 owner 前置清理事务，物理清理当时仍由创建者、repository owner 或 Manager owner 关联的 codespace、token、日志、Manager 和 registration token；不创建 operation 或等待 Manager。
+- 用户或组织删除在任何 owner repository 删除前按 keyset 分批、逐 codespace 短事务清理当时仍由创建者、repository owner 或 Manager owner 关联的 codespace、token、日志、Manager 和 registration token；不创建 operation 或等待 Manager。
 - owner、repository、Manager 和 Codespace 关系变更使用单实例固定锁序；普通 owner 删除前置条件失败时不提前清理 Codespace，transfer 后 repository 关系跟随新 owner。
-- Manager 删除在同一 Gitea 事务中物理清理该 Manager 绑定的 codespace、token、日志和 Manager 记录，不以运行侧状态或回收为前置条件。
+- Manager 删除保持父级 lock，按 UUID keyset 逐 codespace 短事务清理 binding、token 和日志，空集合复检后删除 Manager；不以运行侧状态或回收为前置条件。
 - 展示态按固定优先级派生，不写入 `codespace.status`。
