@@ -228,7 +228,6 @@ service ManagerService {
   rpc ReportRuntimeMetadata(ReportRuntimeMetadataRequest) returns (ReportRuntimeMetadataResponse);
 
   // RequestGiteaToken returns or issues the current token for a creating or running Codespace.
-  // During feature drain, only active running stop may read an existing complete token pair.
   rpc RequestGiteaToken(RequestGiteaTokenRequest) returns (RequestGiteaTokenResponse);
 
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
@@ -240,7 +239,7 @@ service ManagerService {
   // ReportInstances reports the complete set of local Runtime Instances at startup and periodically.
   rpc ReportInstances(ReportInstancesRequest) returns (ReportInstancesResponse);
 
-  // ReportRuntimeTransition reports a Manager-initiated running, stopped, or failed fact.
+  // ReportRuntimeTransition reports a Manager-initiated running, stopped, or failed 状态报告.
   rpc ReportRuntimeTransition(ReportRuntimeTransitionRequest) returns (ReportRuntimeTransitionResponse);
 
   // RevalidateGatewaySession checks an existing Endpoint or SSH session.
@@ -444,7 +443,7 @@ message RequestGiteaTokenRequest {
 }
 
 message RequestGiteaTokenResponse {
-  // The plaintext access token for this codespace.
+  // The plaintext Codespace Gitea Token for this codespace.
   string token = 1;
   // Gitea's externally reachable ROOT_URL, including AppSubURL.
   string server_url = 2;
@@ -628,26 +627,26 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 </code></pre>
 <p><code>RegisterManager</code> 使用 registration token 认证，token 通过 request body 传递。</p>
 <p><code>CONTROL_PLANE_TIMEOUT</code> 到期返回 Connect <code>DeadlineExceeded</code>，caller 取消返回 <code>Canceled</code>；这两类传输终止不附 <code>CodespaceFailureDetail</code>。已提交的短事务结果保持有效，除 <code>RegisterManager</code> 外的调用方按 operation、generation 或 offset 幂等规则重试；<code>RegisterManager</code> 的不确定结果由管理员先检查未 Declare 的记录。</p>
-<p>业务命令因状态、版本、容量或参数被拒绝时，Gitea 返回 Connect error，并附带 <code>CodespaceFailureDetail</code>；category、Connect code 和 retryable 的固定映射见 <a href="gitea-server.html#%E7%BB%9F%E4%B8%80%E5%A4%B1%E8%B4%A5%E5%88%86%E7%B1%BB">统一失败分类</a>。generation 过旧时额外附带 <code>StaleGenerationDetail</code>，Manager 以 <code>current_generation + 1</code> 重新生成并持久化对应事实；该 detail 只用于恢复版本基线，不代表 Gitea 接受了旧事实。相同 generation 对应不同内容时返回 <code>generation_conflict</code>，不附 stale detail，因为请求 generation 已经是双方共同的当前基线；Manager 对该已知值做 checked increment，重新读取 backend 当前事实或快照后再提交。<code>UpdateLog</code> 的 offset conflict/gap 额外附带 <code>LogOffsetDetail</code>，使 Manager 以服务端实际文件末尾恢复追加。<code>ValidateOpenToken</code>、<code>VerifySSHPublicKey</code>、<code>RevalidateGatewaySession</code> 属于访问判定，通过 response <code>oneof outcome</code> 返回 binding 或 denied；<code>UpdateOperation</code> 的幂等结果也由 response <code>oneof outcome</code> 穷尽表达。</p>
-<p>输入边界：</p>
+<p>业务命令因状态、版本、容量或参数被拒绝时，Gitea 返回 Connect error，并附带 <code>CodespaceFailureDetail</code>；category、Connect code 和 retryable 的固定映射见 <a href="gitea-server.html#%E7%BB%9F%E4%B8%80%E5%A4%B1%E8%B4%A5%E5%88%86%E7%B1%BB">统一失败分类</a>。generation 过旧时额外附带 <code>StaleGenerationDetail</code>，Manager 以 <code>current_generation + 1</code> 重新生成并持久化对应状态；该 detail 只用于恢复版本基线，不代表 Gitea 接受了旧状态报告。相同 generation 对应不同内容时返回 <code>generation_conflict</code>，不附 stale detail，因为请求 generation 已经是双方共同的当前基线；Manager 对该已知值做 checked increment，重新读取 backend 当前状态或快照后再提交。<code>UpdateLog</code> 的 offset conflict/gap 额外附带 <code>LogOffsetDetail</code>，使 Manager 以服务端实际文件末尾恢复追加。<code>ValidateOpenToken</code>、<code>VerifySSHPublicKey</code>、<code>RevalidateGatewaySession</code> 属于访问判定，通过 response <code>oneof outcome</code> 返回 binding 或 denied；<code>UpdateOperation</code> 的幂等结果也由 response <code>oneof outcome</code> 穷尽表达。</p>
+<p>输入校验规则：</p>
 <ul>
-<li>所有 enum 的 <code>UNSPECIFIED</code> 和未知数值均作为参数错误拒绝，不能回退为默认行为。</li>
-<li>所有 <code>codespace_uuid</code> 使用 Gitea 生成的 36 字符小写带连字符 UUID v4；大小写不同、无连字符或其他非规范形式返回 <code>invalid_argument</code>，不能先规范化再查询。</li>
+<li>enum 只接受各定义中明确列出的业务值；<code>UNSPECIFIED</code> 和未知数值返回 <code>invalid_argument</code>。这样新增枚举值不会被旧服务端误作默认行为。</li>
+<li><code>codespace_uuid</code> 只接受 Gitea 生成的 36 字符小写带连字符 UUID v4；其他形式在查询和构造锁 key 前返回 <code>invalid_argument</code>，保证一个 Codespace 只有一种外部表达。</li>
 <li>数据库中的 operation/generation <code>0</code> 只表示尚未产生版本；<code>operation_rversion</code>、<code>inventory_generation</code>、<code>runtime_generation</code> 和 <code>metadata_generation</code> 的有效新值从 <code>1</code> 开始。operation-bound RPC 和 <code>ReportRuntimeTransition.observed_operation_rversion</code> 必须大于 0，只有 inventory item 允许用 <code>observed_operation_rversion=0</code> 表示本地没有 active operation 上下文。</li>
-<li>所有版本递增使用 checked increment；Gitea 需要产生新 <code>operation_rversion</code> 但当前值已到 <code>int64</code> 上限时返回 <code>state_unavailable</code>，不产生部分状态写入。Manager 本地 inventory/runtime/metadata generation 已到上限时，停止该对象的新事实或快照上报，保留现有值、进入 recovering 并记录本地错误；相同 generation 的幂等重试仍可继续。任何一方都不允许回绕到 0 或负数。</li>
-<li><code>DeclareManager.capacity_total</code> 为 <code>1..10000</code>；单个 Manager 管理的 Runtime 总数不得超过 10000。</li>
+<li>所有版本递增使用 checked increment。Gitea 的 <code>operation_rversion</code> 到达 <code>int64</code> 上限时返回 <code>state_unavailable</code>，主状态和 active operation 保持原值；Manager 的 inventory/runtime/metadata generation 到达上限时保留现有值、进入 recovering 并记录本地错误，相同 generation 的幂等重试仍可继续。版本始终保持正数和单调递增。</li>
+<li><code>DeclareManager.capacity_total</code> 为 <code>1..10000</code>，单个 Manager 管理的 Runtime 总数上限为 10000；超限时按 Manager 恢复规则保持 recovering。</li>
 <li><code>FetchOperations.max_operations</code> 为 <code>1..256</code>，<code>observed_operations</code> 最多 10000 条且 UUID 唯一。Manager 每次提交全部本地上下文完整的 running operation，省略只表示本地缺少可继续执行的上下文。</li>
 <li><code>FetchOperationsResponse.renewed_leases</code> 最多与 request 的 <code>observed_operations</code> 等长；同一 UUID 不能同时出现在 <code>operations</code> 和 <code>renewed_leases</code>。</li>
-<li><code>ReportInstances.instances</code> 最多 10000 条且 UUID 唯一，每次都是完整快照；<code>RUNTIME_STATE_CREATING</code> 只表示具有稳定 identity 的资源存在，<code>RUNTIME_STATE_FAILED</code> 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed fact；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。</li>
+<li><code>ReportInstances.instances</code> 最多 10000 条且 UUID 唯一，每次都是完整快照；Gitea 以条件写入接受 <code>inventory_generation + inventory_hash</code>，逐项处理前复检当前 generation，更高 generation 成立后旧请求停止写入且不返回 instruction。<code>RUNTIME_STATE_CREATING</code> 只表示具有稳定 identity 的资源存在，<code>RUNTIME_STATE_FAILED</code> 只表示 identity 仍存在但 Manager 已确认不可恢复，两者都不直接改写主状态。failed inventory 在无 active operation 时由 Gitea 返回带当前版本的 transition 指令，再由 Manager 提交 failed 状态报告；有 active operation 时返回 refetch，Manager 取得权威 payload 后提交 final failed。</li>
 <li>inventory item 只携带 UUID、Runtime state 和 observed operation version；SSH 验证只携带 UUID 和公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。</li>
-<li><code>report_runtime_transition.current_operation_rversion</code> 始终携带 Gitea 当前 operation 版本；它可由 running/stopped 分歧或无 active operation 的 <code>RUNTIME_STATE_FAILED</code> inventory 触发。failed fact 为空结构，失败详情只进入 Manager 本地日志。</li>
+<li><code>report_runtime_transition.current_operation_rversion</code> 始终携带 Gitea 当前 operation 版本；它可由 Gitea running、Runtime stopped 的分歧或无 active operation 的 <code>RUNTIME_STATE_FAILED</code> inventory 触发。Gitea stopped、Runtime running 返回 <code>stop_local_runtime</code>，主动 running 使用 Manager 启动前持久化的版本直接提交。failed 状态报告为空结构，失败详情只进入 Manager 本地日志。</li>
 <li><code>DeclareManager</code> 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret 或 Codespace binding。</li>
 <li><code>DeclareManager.tags</code> 和 <code>backend_capabilities</code> 各最多 64 项，单项 lower-case 后使用 <code>[a-z0-9_-]+</code>、长度为 1-64，并规范化去重。</li>
 <li><code>gateway_url</code> 与 <code>gateway_ssh_addr</code> 分别在 Manager 间保持规范化唯一；冲突不产生部分声明更新。</li>
 <li><code>metadata_json</code> 规范化后不超过 <code>RUNTIME_METADATA_MAX_SIZE</code>。</li>
 <li>Runtime Metadata 中 endpoints 最多 64 个且 <code>endpoint_id</code> 唯一；ID 使用 1 到 30 位 DNS-safe 小写字母、数字或连字符。</li>
 <li><code>OpenTokenBinding.endpoint_id</code> 和 Endpoint session binding 始终非空；默认 open 固定使用 <code>workspace</code>。</li>
-<li><code>RequestGiteaToken</code> 在功能启用、Manager online 或处于有效 recovering 窗口且 Codespace 为 creating/running 时返回或签发 token，并始终返回规范化 <code>server_url</code>；站点排空时仅 active running stop 可读取已有完整 pair 以恢复日志脱敏，不能签发或修复。</li>
+<li><code>RequestGiteaToken</code> 在功能启用、Manager online 或处于有效 recovering 窗口，且 Codespace 为已领取 create 的 creating 或无 active operation 的 running 时返回或签发 Token，并始终返回规范化 <code>server_url</code>；active stop/delete 和站点排空均拒绝，不读取、签发或修复 Token。</li>
 <li>所有 request 解码后不超过 <code>CONTROL_PLANE_MAX_REQUEST_SIZE</code>；<code>UpdateLog.lines</code> 单行另受 <code>LOG_MAX_LINE_SIZE</code> 限制。</li>
 </ul>
 <p>实现验收点：</p>
@@ -657,12 +656,13 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>命令拒绝与访问判定使用文中规定的两种响应方式，不混合表达。</li>
 <li>deadline/cancel 使用 Connect 标准 code 且不携带业务 failure detail，不被映射为 <code>internal_error</code>。</li>
 <li>stale generation 错误携带 generation 类型和 Gitea 当前已接受值，本地版本丢失的 Manager 可以恢复单调上报。</li>
-<li>Manager 丢失本地 operation 版本基线后，running/stopped 分歧或无 active operation 的 failed inventory 可使 Gitea 返回 <code>report_runtime_transition.current_operation_rversion</code>；有 active operation 的 failed inventory 通过 refetch 恢复版本和 payload。</li>
+<li><code>ReportInstances</code> 不以覆盖全部实例的 Manager 长锁串行；更高 generation 被接受后，旧请求不能继续写入或返回 instruction。</li>
+<li>Manager 丢失本地 operation 版本基线后，running 主状态对应 stopped Runtime 或无 active operation 的 failed inventory 可使 Gitea 返回 <code>report_runtime_transition.current_operation_rversion</code>；stopped 主状态对应 running Runtime 只返回 stop 指令，有 active operation 的 failed inventory 通过 refetch 恢复版本和 payload。</li>
 <li>所有版本字段拒绝负数和不允许的 0，递增永不发生回绕。</li>
 <li>Gitea 的 operation 版本耗尽返回 <code>state_unavailable</code> 且不写部分状态；Manager generation 耗尽时停止新上报并进入 recovering。</li>
 <li>Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。</li>
 <li>默认 workspace 与普通 Endpoint 使用同一个 Open Token binding 结构，不增加 Web SSH 专用 RPC 分支。</li>
-<li>RequestGiteaToken 的正常工作态、排空 stop 只读和其他排空请求拒绝三类行为可由现有 request 与服务端状态确定，不增加 mode 字段。</li>
+<li>RequestGiteaToken 请求只包含 <code>codespace_uuid</code>；服务端根据当前 Codespace、active operation、Manager 和功能状态决定返回 Token 或 <code>state_unavailable</code>。单一请求形态确保调用方无法通过自报用途改变授权结果。</li>
 <li>RequestGiteaToken 成功响应的 <code>token/server_url</code> 均非空；Manager 不从 clone URL 或内部控制面地址推导 Runtime 使用的 Gitea 根地址。</li>
 </ul>
 <h2 id="传输"><a class="header" href="#传输">传输</a></h2>
@@ -679,11 +679,11 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>每个 operation payload 返回当前 <code>log_offset</code>，Manager 从该 offset 继续追加日志。</li>
 <li><code>UpdateLog</code> 成功返回服务端规范化写入后的 <code>next_offset</code>；offset conflict/gap 返回当前服务端 offset。</li>
 <li>Runtime transition、完整 inventory 和 Runtime Metadata 分别携带自己的单调版本。</li>
-<li>Runtime transition 同时携带产生该事实时观察到的 <code>operation_rversion</code>，旧 operation 上下文的事实不能覆盖新 operation 结果。</li>
+<li>Runtime transition 同时携带生成该状态报告时观察到的 <code>operation_rversion</code>，旧 operation 上下文的状态报告不能覆盖新 operation 结果。</li>
 <li>Gateway 通过 <code>RevalidateGatewaySession</code> 复检已有 session：普通 HTTP 在间隔到期后的下一次请求转发前调用，WebSocket 和 SSH 按固定定时器调用。</li>
-<li>inventory instruction 通过互斥 action 表达 cleanup、transition、operation refetch、清除旧 operation 上下文或本地 stop；transition action 携带生成事实所需的当前 operation 版本。</li>
+<li>inventory instruction 通过互斥 action 表达 cleanup、transition、operation refetch、清除旧 operation 上下文或本地 stop；transition action 携带生成状态报告所需的当前 operation 版本。</li>
 <li>final result 携带 Manager 本地保存的原 operation 类型；active operation 存在时严格校验，清空后只按相同版本和目标主状态判断重复 final。</li>
-<li>普通命令拒绝返回 <code>CodespaceFailureDetail</code>；只有 generation stale 和日志 offset 错误增加对应专用 detail，generation conflict 不附 stale detail。<code>UpdateOperation</code> 的五种正常收敛结果和访问判定分别使用自身 response oneof。</li>
+<li>普通命令拒绝返回 <code>CodespaceFailureDetail</code>；只有 generation stale 和日志 offset 错误增加对应专用 detail，generation conflict 不附 stale detail。<code>UpdateOperation</code> 的五种正常处理结果和访问判定分别使用自身 response oneof。</li>
 <li>HTTP 和 HTTPS transport 下生成的 handler、认证 header、failure detail 和幂等行为一致。</li>
 </ul>
 
