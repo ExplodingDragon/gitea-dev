@@ -22,7 +22,7 @@ Gitea 实现、Manager 调用的 Connect RPC over HTTP/HTTPS 服务；scheme 由
 
 <span id="runtime-http-api"></span>
 ## Runtime HTTP API
-Manager 实现、Runtime Instance 使用 Runtime Token 调用的 HTTP(S)/JSON API；是否要求 HTTPS 由 Manager 配置决定。
+Manager 实现、Runtime Instance 的受控 helper 使用 Runtime Token 调用的 HTTP(S)/JSON API，只提供 Git SSH 公钥确认和 Endpoint 管理；create/resume 输入与结果通过 Incus exec 环境和本地文件传递。是否要求 HTTPS 由 Manager 配置决定。
 
 <span id="operation"></span>
 ## Operation
@@ -54,7 +54,7 @@ Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs
 
 <span id="codespace-git-ssh-key"></span>
 ## Codespace Git SSH Key
-SSH 协议 Codespace 用于访问 Gitea 仓库的运行环境凭据。`init.sh` 在首次 create 时生成 Ed25519 密钥对，create 重试和 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 `EnsureCodespaceGitSSHKey` 确认到 Gitea 的 `codespace_ssh_key`。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key、Manager 连接内部 sshd 的 client key 是三个独立凭据。
+Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。`start.sh` 在首次 SSH clone 前生成 Ed25519 密钥对，create 重试和 SSH remote 的 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 `EnsureCodespaceGitSSHKey` 确认到 Gitea 的 `codespace_ssh_key`。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key、Manager 连接内部 sshd 的 client key 是三个独立凭据。
 
 <span id="registration-token"></span>
 ## Registration Token

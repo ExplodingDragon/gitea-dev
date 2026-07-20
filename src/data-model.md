@@ -14,7 +14,7 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、Man
 | `ref_type` | `VARCHAR(16) NOT NULL DEFAULT ''` | 有效记录只允许 `branch` / `tag` / `commit` / `pull` |
 | `ref_name` | `TEXT NOT NULL` | branch/tag/commit 标识或规范化 PR ref 路径 |
 | `repo_tag` | `VARCHAR(64) NOT NULL DEFAULT 'default'` | create 时确定，后续不随仓库文件变化 |
-| `git_protocol` | `VARCHAR(8) NOT NULL DEFAULT 'http'` | 只允许 `http` / `ssh`；create 时按站点默认值固化，决定系统管理的 Git remote 和凭据类型 |
+| `git_protocol` | `VARCHAR(8) NOT NULL DEFAULT 'http'` | 只允许 `http` / `ssh`；create 时按站点默认值固化，决定首次 clone 的尝试顺序 |
 | `commit_sha` | `VARCHAR(64) NOT NULL DEFAULT ''` | create 前置校验完成后必须为完整锁定 commit SHA |
 | `manager_id` | `BIGINT NOT NULL DEFAULT 0` | create 被领取前为 0，领取后固定 |
 | `status` | `VARCHAR(16) NOT NULL DEFAULT ''` | 有效记录只允许五个持久主状态 |
@@ -46,7 +46,7 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 `operation_rversion`、`runtime_generation`、`inventory_generation` 和 `interaction_generation` 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 `BIGINT` 时使用 checked increment，不回绕到 0 或负数。任一版本无法递增时返回不可重试的 `version_exhausted`，不写主状态、active operation、交互结果或本地快照的部分结果。Codespace 的 operation 或交互版本耗尽后由管理员 force delete；单 Codespace 的 runtime/metadata 版本耗尽由 Manager 按 Incus 归属字段清理该对象；Manager inventory 版本耗尽后删除 Manager、清理部署侧资源并重新注册。该情况需要超过 `int64` 可表达次数，继续为计数设计自动恢复没有实际收益，因此按影响范围使用现有删除路径收敛。`runtime_generation` 仅保存当前值；相同 generation 的幂等以状态报告的目标主状态是否已成立判定，不需要再增加历史状态报告类型字段。
 
-`git_protocol` 保存 Codespace 创建时选定的 Git 传输方式，而不是每次启动读取站点当前默认值。站点调整默认协议只影响之后创建的 Codespace；已有 workspace 的 remote、凭据和 resume 完成条件保持一致。**设计如此：**协议固化用于避免同一个 Codespace 在配置变更后出现 remote 仍为 HTTP、恢复流程却生成 SSH Key，或相反的半切换状态。
+`git_protocol` 保存 Codespace 创建时选定的首次 clone 首选方式，而不是每次启动读取站点当前默认值。Gitea 同时下发 HTTP(S) 和 SSH URL，所选 create 脚本决定实际 remote；内置脚本在带当前 UUID 标记的临时 workspace 中使用首选 URL，`clone/fetch` 非零退出时清理该受控临时目录并用另一 URL 重试一次。Manager 只在 HEAD 等于锁定 SHA、最终 workspace 与实际 remote 的本地凭据配置有效时接受结果。resume 读取实际 remote，站点默认值变化只影响之后创建的 Codespace。已经初始化的绝对 workspace 路径和实际 remote 都属于 Manager 本地运行快照，不在 Gitea 数据库重复保存；repository 删除后，resume 仍使用该快照恢复原 workspace。
 
 `auto_stop_mode` 保存用户选择而不是保存解析后的布尔结果。`default` 在每次下发和空闲停止授权时读取站点当前默认值，`custom` 使用对象保存的秒数，`never` 明确表示该对象不因空闲而自动暂停。Gitea 解析 `auto_stop_enabled + idle_timeout_seconds` 后直接下发实际运行值；default 与 custom 当前得到相同有效超时时使用相同运行侧基线，模式仍保留在数据库中决定未来站点默认值变化是否影响该对象。Manager 收到延迟快照最多暂时提前或延后本地计时，`RequestIdleStop` 会直接比较当前有效值和交互版本，过期快照不能创建 stop。`last_active_unix` 只用于页面展示，自动暂停使用 Manager/Gateway 的实时连接索引和本地单调计时，不从数据库时间戳推导空闲时长。
 
@@ -136,7 +136,7 @@ Gitea 的 `PublicKey` 类型增加 `KeyTypeCodespace`。对应行使用 `codespa
 
 Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 Key，也不是 Deploy Key。普通用户 SSH Key 页面与 API、Deploy Key 页面与 API、SSH/GPG 签名 Key 查询都只选择各自已有类型；Codespace Key 只由 Codespace 服务创建、确认和删除。这样公钥仍能复用 Gitea 现有 SSH key ID、内置 SSH 和 `authorized_keys` 入口，同时不会扩大到创建者的其他仓库，也不会进入 Deploy Key 的仓库所有者身份与保护分支规则。
 
-公钥确保请求在关系不存在时创建绑定，关系已指向相同规范化公钥时返回当前结果，已有不同公钥时返回 `key_conflict`。公钥指纹与任何普通用户 Key、Deploy Key 或其他 Codespace Key 冲突时返回相同错误。公钥属于 Codespace 整体生命周期，不记录 operation 版本，也不在 resume 时轮换；因此来自旧初始化过程的相同公钥请求天然幂等，不同公钥请求始终不能覆盖现有绑定。
+公钥确保请求在关系不存在时创建绑定，关系已指向相同规范化公钥时返回当前结果，已有不同公钥时返回 `key_conflict`。公钥指纹与任何普通用户 Key、Deploy Key 或其他 Codespace Key 冲突时返回相同错误。公钥属于 Codespace 整体生命周期，不记录 operation 版本，也不在 resume 时轮换；因此来自旧初始化过程的相同公钥请求天然幂等，不同公钥请求始终不能覆盖现有绑定。Manager 将 `key_conflict` 记为不可恢复启动终态：create 进入 failed，resume 在 final failed 后继续通过 failed 状态报告清理原 Runtime。
 
 登记事务先提交 `public_key` 与 `codespace_ssh_key` 的一致结果，再调用 Gitea 现有公钥授权同步入口。内置 SSH 或外部 `AuthorizedKeysCommand` 直接使用数据库；配置使用外部 `authorized_keys` 文件时重写文件，同步失败则 RPC 返回错误并由相同公钥重试。已经从数据库删除的旧 key ID 即使暂时残留在文件中，也无法通过 Gitea 强制命令鉴权。
 
@@ -159,9 +159,9 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - 任一版本耗尽时返回 `version_exhausted` 且不产生部分写入；不依赖新 operation 版本的 force delete 仍可清理 Codespace。
 - Codespace 主表不包含 Token ID 或 Token 明文；普通 `access_token` 表不创建 Codespace Token。
 - `codespace_gitea_token` 的主键为 `codespace_uuid`，且模型中只有表格列出的字段。
-- 迁移为已有 Codespace 写入 `git_protocol=http`；新记录在 create 时固化站点当前默认协议，后续配置变化不改写已有记录。
+- 迁移为已有 Codespace 写入 `git_protocol=http`；新记录在 create 时固化站点当前首选协议，后续配置变化不改写已有记录。
 - 每个 Codespace 最多存在一行 `codespace_gitea_token`；数据库只保存 Gitea Secret 密文，认证只读取 salt/hash，不读取或解密密文。
-- SSH 协议 Codespace 最多存在一行 `codespace_ssh_key`，其 `key_id` 唯一关联一个 `KeyTypeCodespace` 公钥；关系表不重复保存用户、仓库、状态或权限。
+- 每个 Codespace 最多存在一行 `codespace_ssh_key`，其 `key_id` 唯一关联一个 `KeyTypeCodespace` 公钥；create 实际尝试 SSH remote 时可以创建该关系，HTTP(S) remote 且未尝试 SSH 时可以没有该关系。关系表不重复保存用户、仓库、状态或权限。
 - `KeyTypeCodespace` PublicKey 的名称、owner、内容、指纹、写模式、登录源与验证状态使用文中固定值；实际读写能力仍由每次 Git SSH 命令的创建用户权限决定。
 - 缺失公钥绑定时可以创建，相同公钥确保请求幂等；已有不同公钥或跨对象指纹冲突时返回 `key_conflict`，任何初始化请求都不能替换现有公钥。
 - Codespace Key 不出现在普通用户 Key、Deploy Key 或签名 Key 查询中；SSH 强制命令只能由 key ID 解析到绑定 Codespace。
@@ -344,7 +344,7 @@ owner 写锁覆盖删除判定所依赖的全部关系写入口：repository own
     "internal_ssh": {
       "host": "10.0.0.12",
       "port": 2222,
-      "user": "coder",
+      "user": "codespace",
       "auth_mode": "publickey",
       "host_key_fingerprint": "SHA256:..."
     }
@@ -361,7 +361,7 @@ owner 写锁覆盖删除判定所依赖的全部关系写入口：repository own
   ],
   "boot": {
     "operation_rversion": 1,
-    "stage": "run-init-script",
+    "stage": "start-environment",
     "started_unix": 0,
     "last_update_unix": 0
   }
@@ -374,10 +374,10 @@ owner 写锁覆盖删除判定所依赖的全部关系写入口：repository own
 - `endpoints` 始终以 JSON 数组存储；没有 Endpoint 时使用空数组，不省略字段。
 - `internal_ssh` 不进入 Gitea 面向用户的页面数据或响应。
 - `internal_ssh` 在 SSH 尚未就绪的 boot 阶段可以不出现；一旦出现以及 `boot.stage=ready` 时，`host/user/auth_mode/host_key_fingerprint` 必须为非空字符串，`port` 必须在 1-65535，`auth_mode` 为 `publickey`。字段是否存在直接表达 SSH 就绪状态，避免用空 host/port 表示未就绪。
-- `boot.stage` 只允许 `prepare-runtime`、`configure-ssh`、`configure-git`、`clone-repository`、`checkout-commit`、`run-init-script`、`start-ide`、`report-endpoints`、`credential-refresh`、`ready`。create 使用 `prepare-runtime` 到 `report-endpoints` 的初始化顺序并进入 `ready`；resume 使用 `credential-refresh -> ready`。同一 `boot.operation_rversion` 只按对应顺序前进，已经接受 `ready` 后保持 `ready`。
-- `started_unix > 0`，`last_update_unix >= started_unix`；同一 boot session 的 `started_unix` 保持不变，阶段推进或状态刷新更新 `last_update_unix`。
+- `boot.stage` 只允许 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime`、`ready`。create 与 resume 都由 Manager 按通用 init/prepare/activate 顺序推进；脚本内部的包管理器、Git 和运行环境子步骤只写日志，不增加状态枚举。同一 `boot.operation_rversion` 只前进，已经接受 `ready` 后保持 `ready`。
+- `started_unix > 0`，`last_update_unix >= started_unix`；同一 operation 启动上下文的 `started_unix` 保持不变，阶段推进或状态刷新更新 `last_update_unix`。
 - active create/resume 上报的 `boot.operation_rversion` 等于当前 operation。running 快照固定为 `ready`，boot 版本不大于当前 `codespace.operation_rversion`；stopped 且无 active operation 时不发布 Runtime Metadata。resume failed、timeout 或 abort 后，Manager 清除本轮 boot 发布上下文，迟到的本次 resume 版本上报因 active operation 已结束而被拒绝；下一次 resume 使用更高 operation 版本从保留的 Incus 实例重建完整快照。
-- create 和 resume 的 `final done` 都要求当前快照的 boot 版本等于当前 operation 且 `stage=ready`。resume 在 active operation 内申请 Token、写入 Runtime credential 并上报 ready；Gitea 还要求当前 Token 行完整，才把主状态从 stopped 改为 running。旧版本的 ready 不能完成当前恢复；cache miss 时 Manager 用正 generation 重建当前 operation 快照。Manager 保留最新 boot 版本的终态结果，直到更高 create/resume 版本替换或 Runtime 删除，用于 `/boot` 幂等重试。stopped 主状态存在已领取且租约未到期的 active resume 时，初始化所需的 Gitea Token 与 Git SSH Key 可直接访问绑定仓库；面向用户的 open 和 Gateway SSH 仍等待 `final done` 原子写入 running。**设计如此：初始化脚本必须在 final 前验证真实仓库访问，而用户入口只有在凭据、ready 和运行状态共同完成后开放。**
+- create 和 resume 的 `final done` 都要求当前快照的 boot 版本等于当前 operation 且 `stage=ready`。resume 在 active operation 内申请 Token、写入 Runtime credential 并上报 ready；Gitea 还要求当前 Token 行完整，才把主状态从 stopped 改为 running。Manager 在 ready 前根据本地实际 remote 验证 HTTP helper 或 SSH 密钥、公钥绑定与 known_hosts；该结果不进入 Runtime Metadata，Gitea final 不重复判断实际协议。旧版本的 ready 不能完成当前恢复；cache miss 时 Manager 用正 generation 重建当前 operation 快照。Manager 保留最新 boot 终态的 `operation_type + operation_rversion + outcome`，其中 outcome 为 `done|recoverable_failed|unrecoverable_failed`，用于重启恢复和不可恢复 resume 在 final failed 后继续上报 failed。`done` 和 `recoverable_failed` 可由下一次合法初始化替换；`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成。stopped 主状态存在已领取且租约未到期的 active resume 时，初始化所需的 Gitea Token 与已有 Git SSH Key 可用于恢复本地凭据配置；面向用户的 open 和 Gateway SSH 仍等待 `final done` 原子写入 running。**设计如此：ready 证明已初始化 workspace 的本地凭据配置和交互入口完整，不证明 repository 仍然存在或可访问；`repo_id=0` 时仍可恢复 running，实际 Git/API 请求由 Gitea 拒绝。**
 - `endpoint_id` 由 Manager 上报，使用 1 到 30 位 DNS-safe 小写字母、数字或连字符，并在同一 `codespace_uuid` 内保持唯一。
 - Endpoint 数量不超过协议固定上限 64，规范化 JSON 不超过 `RUNTIME_METADATA_MAX_SIZE`。
 - 不同 codespace 可以使用相同 `endpoint_id`。
@@ -406,7 +406,7 @@ owner 写锁覆盖删除判定所依赖的全部关系写入口：repository own
 - metadata generation stale 以服务端当前值为基线升代；同代冲突和 checked increment 耗尽分别返回 `generation_conflict` 和 `version_exhausted` 硬错误。
 - endpoint ID 在单个 codespace 内唯一，internal SSH 不进入 Gitea 页面数据或任何面向用户的响应。
 - metadata ready 且没有 `workspace` 记录时，默认 workspace open 仍有效，UI 使用稳定 workspace 描述，Manager 将其解析为内置 Web SSH。
-- resume 在 final 前完成同一 operation 版本的 credential-refresh、Token 写入和 ready 上报；Manager 重启后从 active operation 和本地 boot 上下文继续，final 成功后无需恢复独立凭据任务。
+- resume 在 final 前完成同一 operation 版本的系统初始化、Token 写入、环境恢复和 ready 上报；Manager 重启后从 active operation 和本地 boot 上下文继续，final 成功后无需恢复独立凭据任务。
 - 未知字段、缺失固定字段、非法 boot stage、错误 boot operation 版本和不完整 internal SSH 被拒绝；create 在当前 operation 的 ready 快照前不能 final done。
 - active create、active resume 和 running 使用固定 boot 版本与阶段矩阵；无 active operation 的 stopped 拒绝 metadata，同版本 ready 不回退，已结束 resume 的迟到快照不能重建当前启动上下文。
 - 每个 Codespace 只有一个任务修改 metadata generation 并发布当前完整快照；Endpoint、boot、SSH、恢复和周期刷新不各自维护待发布版本。
