@@ -173,7 +173,7 @@
 <p>Gitea 实现、Manager 调用的 Connect RPC over HTTP/HTTPS 服务；scheme 由部署配置决定。</p>
 <p><span id="runtime-http-api"></span></p>
 <h2 id="runtime-http-api"><a class="header" href="#runtime-http-api">Runtime HTTP API</a></h2>
-<p>Manager 实现、Runtime Instance 使用 Runtime Token 调用的 HTTP(S)/JSON API；是否要求 HTTPS 由 Manager 配置决定。</p>
+<p>Manager 实现、Runtime Instance 的受控 helper 使用 Runtime Token 调用的 HTTP(S)/JSON API，只提供 Git SSH 公钥确认和 Endpoint 管理；create/resume 输入与结果通过 Incus exec 环境和本地文件传递。是否要求 HTTPS 由 Manager 配置决定。</p>
 <p><span id="operation"></span></p>
 <h2 id="operation"><a class="header" href="#operation">Operation</a></h2>
 <p>Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete，来源为用户操作或空闲触发。operation 只表示 active 指令，完成后不保留历史状态；<code>abort_create|abort_resume</code> 是站点排空时用于结束现有 create/resume 的清理命令，不增加新的 operation 类型。</p>
@@ -197,7 +197,7 @@
 <p>Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 <code>gcs_</code> 前缀并存储在 <code>codespace_gitea_token</code>。它代表 Codespace 创建用户，在有效 create/resume 初始化期和 <code>running</code> 都能授权新请求，用于开发协作 API、LFS，以及 HTTP 协议 Codespace 的 Git smart HTTP；创建用户登录限制、单仓库绑定和现有业务权限仍在每次请求中检查。稳定 <code>stopped</code> 没有 Token，它不是普通 PAT。</p>
 <p><span id="codespace-git-ssh-key"></span></p>
 <h2 id="codespace-git-ssh-key"><a class="header" href="#codespace-git-ssh-key">Codespace Git SSH Key</a></h2>
-<p>SSH 协议 Codespace 用于访问 Gitea 仓库的运行环境凭据。<code>init.sh</code> 在首次 create 时生成 Ed25519 密钥对，create 重试和 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 <code>EnsureCodespaceGitSSHKey</code> 确认到 Gitea 的 <code>codespace_ssh_key</code>。有效 create/resume 初始化期和 <code>running</code> 可以使用，稳定 <code>stopped</code> 保留关系但拒绝命令。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key、Manager 连接内部 sshd 的 client key 是三个独立凭据。</p>
+<p>Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。<code>start.sh</code> 在首次 SSH clone 前生成 Ed25519 密钥对，create 重试和 SSH remote 的 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 <code>EnsureCodespaceGitSSHKey</code> 确认到 Gitea 的 <code>codespace_ssh_key</code>。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 <code>running</code> 可以使用，稳定 <code>stopped</code> 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key、Manager 连接内部 sshd 的 client key 是三个独立凭据。</p>
 <p><span id="registration-token"></span></p>
 <h2 id="registration-token"><a class="header" href="#registration-token">Registration Token</a></h2>
 <p>管理员为 owner scope 创建的当前明文注册凭据，存储在 <code>codespace_manager_token</code> 表，每个 owner 最多一行。Manager 通过 <code>RegisterManager</code> 注册并获得 manager secret；轮换原地替换，停用物理删除，不保存历史。</p>

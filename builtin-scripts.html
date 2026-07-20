@@ -1,0 +1,386 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>脚本契约与内置实现（builtin-scripts.md） - Gitea Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="codespace-脚本契约与内置实现"><a class="header" href="#codespace-脚本契约与内置实现">Codespace 脚本契约与内置实现</a></h1>
+<h2 id="脚本边界"><a class="header" href="#脚本边界">脚本边界</a></h2>
+<p>Manager 使用三个脚本初始化 Runtime：</p>
+<ul>
+<li><code>init.sh</code>：准备基础系统，并给出后续凭据文件使用的非 root 数值身份。</li>
+<li><code>start.sh</code>：只服务 create，<code>prepare</code> 准备 workspace，<code>activate</code> 恢复交互入口。</li>
+<li><code>resume.sh</code>：只服务 resume，<code>prepare</code> 恢复既有 workspace，<code>activate</code> 恢复交互入口。</li>
+</ul>
+<p>Manager 只理解这三个调用入口、共享环境、阶段结果和最终通用输出。软件包管理器、工作用户名称、直接运行方式、devcontainer、Docker、容器标识、容器内用户、挂载、内部端口转发和 repository lifecycle commands 都属于脚本实现。</p>
+<p>**设计如此：devcontainer 是内置脚本提供的一种 Runtime 内部实现，不是 Manager 资源模型。**Manager 的资源边界始终是 Incus 实例；stop 停止实例，delete 删除实例及其根存储，inventory 也只报告实例。脚本可以改用其他实现，只要最终提供同一 workspace、Git 本地配置、internal SSH 和 Endpoint 行为。</p>
+<p>内置脚本随 Manager 发布。部署方可以在 Manager 本地配置中把三个入口分别设为 <code>builtin</code> 或绝对文件路径：</p>
+<pre><code class="language-yaml">scripts:
+  init: builtin
+  start: builtin
+  resume: builtin
+</code></pre>
+<p>自定义文件由 Manager 启动时读取，必须是本地普通文件。Manager 在领取 create/resume 后、首次执行脚本前，把本次实际使用的三个脚本及内容摘要写入当前 operation 本地快照，再原子发布到 Runtime 固定目录。同一 active operation 的重试和重启恢复继续使用已经发布且摘要相同的脚本；Manager 配置变化从下一次 create/resume 开始生效，不在执行中的 operation 内切换脚本。</p>
+<p>这些脚本由 Manager 以 root 执行，因此自定义来源属于 Manager 部署信任边界。repository 可以通过 devcontainer 配置和 lifecycle commands 自定义自己的开发环境，但不作为 <code>init.sh</code>、<code>start.sh</code> 或 <code>resume.sh</code> 的远程脚本来源。这样 create 在 clone 前就有确定的初始化入口，也不需要增加脚本下载和签名协议。</p>
+<p>实现验收点：</p>
+<ul>
+<li>Manager 核心数据、RPC、结果结构和 Endpoint API 都没有直接运行/devcontainer、Docker、容器标识或容器用户字段。</li>
+<li>内置脚本和本地自定义脚本使用同一调用、共享环境、结果和 ready 契约。</li>
+<li>同一 active operation 在响应丢失、lease 续租和 Manager 重启后继续使用相同脚本内容；配置更新只影响之后开始的 create/resume。</li>
+<li>自定义脚本只从 Manager 本地配置读取，脚本发布不依赖 Gitea、repository 或额外下载接口。</li>
+</ul>
+<h2 id="调用与共享环境"><a class="header" href="#调用与共享环境">调用与共享环境</a></h2>
+<p>Manager 创建或启动 Incus 实例并确认 file/exec API 可用后，把脚本、exec launcher 和通用 helper 原子写入 <code>/usr/local/libexec/gitea-codespace/</code>。每轮 create/resume 依次执行：</p>
+<pre><code class="language-text">init.sh
+start.sh prepare | resume.sh prepare
+start.sh activate | resume.sh activate
+</code></pre>
+<p>三个脚本共享同一个 <code>flock</code>，每次调用由 launcher 建立独立进程组，并使用 Manager 生成的唯一结果文件。stdout/stderr 写入当前 operation 日志。脚本不接收 <code>operation_rversion</code>；Manager 把调用、结果和自己保存的 operation 上下文关联。</p>
+<p>凭据和 Git SSH 材料使用固定路径，脚本直接按路径访问，不再通过环境变量重复传递路径：</p>
+<pre><code class="language-text">/var/lib/gitea-codespace/gitea-token
+/var/lib/gitea-codespace/runtime-token
+/var/lib/gitea-codespace/git/id_ed25519
+/var/lib/gitea-codespace/git/id_ed25519.pub
+/var/lib/gitea-codespace/git/known_hosts
+</code></pre>
+<p>Manager 通过 Incus exec environment 传递脚本输入。通用输入如下：</p>
+<div class="table-wrapper"><table><thead><tr><th>环境变量</th><th>可用调用</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>CODESPACE_UUID</code></td><td>全部</td><td>Codespace 完整 UUID</td></tr>
+<tr><td><code>CODESPACE_NAME</code></td><td>全部</td><td><code>cs-{short_uuid}</code> 派生名称</td></tr>
+<tr><td><code>CODESPACE_OWNER_NAME</code></td><td>全部</td><td>Codespace 创建用户名称</td></tr>
+<tr><td><code>CODESPACE_OPERATION</code></td><td>全部</td><td><code>create</code> 或 <code>resume</code></td></tr>
+<tr><td><code>CODESPACE_SCRIPT_PHASE</code></td><td>prepare、activate</td><td><code>prepare</code> 或 <code>activate</code>；init 不设置</td></tr>
+<tr><td><code>CODESPACE_RESULT</code></td><td>全部</td><td>本次调用唯一的结果文件路径</td></tr>
+<tr><td><code>CODESPACE_ENV</code></td><td>全部</td><td>三个脚本共享的环境文件</td></tr>
+<tr><td><code>CODESPACE_WORKSPACES_DIR</code></td><td>全部</td><td>默认 workspace 根目录 <code>/workspaces</code></td></tr>
+<tr><td><code>CODESPACE_MANAGER_BASE_URL</code></td><td>全部</td><td>Runtime HTTP API 基础 URL</td></tr>
+<tr><td><code>CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY</code></td><td>全部</td><td>internal SSH 授权使用的 Manager/Gateway 公钥</td></tr>
+<tr><td><code>GITEA_SERVER_URL</code></td><td>prepare、activate</td><td>本轮 Token 响应中的 Gitea 对外根地址</td></tr>
+<tr><td><code>GITEA_TOKEN</code></td><td>prepare、activate</td><td>从当前 Gitea Token 文件读取的本次进程快照</td></tr>
+<tr><td><code>CODESPACE_RUNTIME_TOKEN</code></td><td>prepare、activate</td><td>从当前 Runtime Token 文件读取的本次进程快照</td></tr>
+</tbody></table>
+</div>
+<p>create 的三个调用还取得创建时锁定的 repository 输入；resume 不取得这些字段，因为恢复只使用已有 workspace 和本地快照：</p>
+<div class="table-wrapper"><table><thead><tr><th>环境变量</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>GITEA_REPO_CLONE_HTTP_URL</code></td><td>Gitea 生成的规范 HTTP(S) clone URL</td></tr>
+<tr><td><code>GITEA_REPO_CLONE_SSH_URL</code></td><td>Gitea 生成的规范 SSH clone URL</td></tr>
+<tr><td><code>GITEA_GIT_PROTOCOL</code></td><td>首次 clone 的首选协议，值为 <code>http</code> 或 <code>ssh</code></td></tr>
+<tr><td><code>GITEA_REPO_WEB_URL</code></td><td>repository Web URL</td></tr>
+<tr><td><code>GITEA_REPO_ID</code></td><td>repository ID</td></tr>
+<tr><td><code>GITEA_REPO_FULL_NAME</code></td><td>repository 完整名称</td></tr>
+<tr><td><code>GITEA_OWNER_ID</code>、<code>GITEA_OWNER_NAME</code></td><td>repository owner 身份</td></tr>
+<tr><td><code>GITEA_OWNER_TYPE</code>、<code>GITEA_OWNER_DISPLAY_NAME</code></td><td>repository owner 类型与展示名称</td></tr>
+<tr><td><code>GITEA_REF_TYPE</code>、<code>GITEA_REF_NAME</code></td><td>创建来源 ref 类型与名称</td></tr>
+<tr><td><code>GITEA_COMMIT_SHA</code></td><td>create 必须得到的锁定 commit SHA</td></tr>
+<tr><td><code>CODESPACE_REPO_NAME</code></td><td>create 时的 repository 名称</td></tr>
+</tbody></table>
+</div>
+<p>Manager 在首次 create 前把默认 <code>CODESPACE_WORKSPACE_DIR</code> 写入共享环境；resume 使用当前快照中已经提交的值。它属于可覆盖的共享变量，不属于上表的预定义输入。<code>init.sh</code> 先完成系统与数值身份准备，Manager 随后申请并写入两个固定 Token 文件，再执行 prepare 和 activate。这个顺序使 Token 文件 owner 可以使用 init 的通用输出，同时保证准备 workspace 和启动用户服务时已经取得本轮凭据。</p>
+<p><code>CODESPACE_ENV</code> 指向当前 Codespace 的共享环境文件。脚本使用追加方式发布后续调用需要的变量：</p>
+<pre><code class="language-sh">printf '%s\n' 'NAME=value' &gt;&gt; "$CODESPACE_ENV"
+</code></pre>
+<p>共享规则如下：</p>
+<ol>
+<li>Manager 在每次调用前把上一次成功阶段的规范环境写入 <code>CODESPACE_ENV</code>，并保存调用前内容。</li>
+<li>脚本只追加完整的 <code>NAME=value</code> 行；同名变量以最后一行生效，值按第一个 <code>=</code> 分隔，因此可以包含后续 <code>=</code>。</li>
+<li>两张表中的全部输入都是 Manager 预定义变量。脚本向共享环境追加同名变量时，Manager 忽略这些行且不保存；当前调用和后续调用始终使用 Manager 注入值。</li>
+<li>脚本结果为 <code>done</code> 后，Manager 解析完整文件，拒绝 NUL、换行值和非法变量名，移除预定义变量，按最后值合并其余重复项，再通过临时文件、<code>fsync</code> 和 rename 原子保存规范结果。</li>
+<li>脚本失败、结果缺失或被取消时，Manager 恢复调用前环境；本次未完成的追加不会进入下一次调用。</li>
+<li>成功环境跨 prepare、activate、stop 和 resume 保留，物理删除 Runtime 时随本地快照和实例一起删除。</li>
+</ol>
+<p>Manager 每次调用都在共享环境之后注入表中适用于本轮调用的预定义变量。这些值始终由当前 operation 和 Manager 本地快照生成。其余合法共享变量按最后值覆盖；内置脚本的私有状态使用 <code>GITEA_BUILTIN_*</code> 前缀，Manager 只保存和传递，不解释其内容。环境文件由 Manager 结构化解析，不作为 shell 源文件执行。</p>
+<p>脚本在对应成功阶段写入以下通用共享输出：</p>
+<div class="table-wrapper"><table><thead><tr><th>阶段</th><th>输出变量</th><th>说明</th></tr></thead><tbody>
+<tr><td>init</td><td><code>CODESPACE_CREDENTIAL_UID</code>、<code>CODESPACE_CREDENTIAL_GID</code></td><td>后续两个 Token 文件使用的非 root 数值身份</td></tr>
+<tr><td>prepare</td><td><code>CODESPACE_WORKSPACE_DIR</code></td><td>已准备好的绝对 workspace 路径；create 可以覆盖 Manager 提供的默认值</td></tr>
+<tr><td>activate</td><td><code>CODESPACE_INTERNAL_SSH_PORT</code></td><td>Incus 通信地址上可直接连接的端口</td></tr>
+<tr><td>activate</td><td><code>CODESPACE_INTERNAL_SSH_USER</code></td><td>非 root SSH 用户名</td></tr>
+<tr><td>activate</td><td><code>CODESPACE_INTERNAL_SSH_HOST_KEY_FINGERPRINT</code></td><td>当前内部 sshd 的 Host Key 指纹</td></tr>
+</tbody></table>
+</div>
+<p>Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，再以该身份和 <code>0600</code> mode 原子写入 Gitea Token 与 Runtime Token 文件。prepare 成功后校验 workspace 是绝对路径；create 还校验 Git HEAD 等于 payload 锁定 SHA，resume 保留当前 HEAD。activate 成功后，Manager 从 Incus 通信地址连接给出的端口，以内部 client key 登录给出的用户并核对 Host Key。脚本私有变量不能替代这些通用校验。</p>
+<p>**设计如此：共享变量可以覆盖，预定义变量覆盖无效。**覆盖能力用于 init、prepare、activate 和后续 resume 之间传递 workspace、通用输出与实现状态；Manager 预定义变量始终以当前 operation 为准。同名追加被直接忽略，使自定义脚本可以组合，同时保持生命周期和凭据归属可验证。</p>
+<p>实现验收点：</p>
+<ul>
+<li>三个脚本只通过 <code>CODESPACE_ENV</code> 共享和覆盖非预定义变量，Manager 在成功阶段后保存规范结果。</li>
+<li>动态文件路径只使用 <code>CODESPACE_ENV</code> 和 <code>CODESPACE_RESULT</code>；Token 与 Git SSH 材料使用文档定义的固定路径。</li>
+<li>init 时固定 Token 路径已经确定但凭据尚未写入；prepare 和 activate 取得当前 Token 环境快照与 Gitea 对外地址。</li>
+<li>create 取得两种 clone URL、首选协议和锁定 ref；resume 不取得 repository 输入，只使用持久 workspace 与共享环境。</li>
+<li>同一变量被多次追加时最后值进入下一阶段；失败或取消调用的追加不生效，成功调用后的规范环境跨 stop/resume 保存。</li>
+<li>脚本追加预定义变量时当前调用不受影响，Manager 规范化时移除该行，后续调用仍使用 Manager 当前注入值。</li>
+<li>Manager 使用解析器读取环境文件，不执行其中的 shell 内容；只读输入在每次调用时覆盖共享同名值。</li>
+<li>init、prepare、activate 的通用输出缺失、类型错误或校验失败时不能进入下一阶段。</li>
+<li>自定义脚本可以保存任意合法私有变量，Manager 本地快照只把它们作为当前环境映射保存。</li>
+</ul>
+<h2 id="结果与恢复"><a class="header" href="#结果与恢复">结果与恢复</a></h2>
+<p>每次 init、prepare 和 activate 调用都取得唯一的 <code>CODESPACE_RESULT</code>。脚本在同目录写临时文件、<code>fsync</code> 并 rename，最终文件固定为 <code>root:root 0600</code>。成功结果只包含：</p>
+<pre><code class="language-json">{"outcome":"done","stage":"initialize-system"}
+</code></pre>
+<p><code>stage</code> 按调用固定为 <code>initialize-system</code>、<code>prepare-workspace</code> 或 <code>start-environment</code>。失败结果只包含当前 stage 和以下 outcome 之一：</p>
+<ul>
+<li><code>recoverable_failed</code>：当前 operation lease 内可以重试；本次共享环境追加不提交。</li>
+<li><code>unrecoverable_failed</code>：继续使用当前 Runtime 无法得到可信结果；create 收敛到 failed，resume final failed 后继续上报 failed。</li>
+</ul>
+<p>Manager 主动取消时丢弃结果。其他结果缺失、损坏、owner/mode 错误、出现未知字段或 schema 不匹配时按 <code>recoverable_failed</code> 处理。脚本退出码只用于日志诊断，不替代结果文件。</p>
+<p>Manager 本地阶段固定为：</p>
+<pre><code class="language-text">lease_paused
+-&gt; prepare_runtime
+-&gt; run_init
+-&gt; write_credentials
+-&gt; run_prepare
+-&gt; run_activate
+-&gt; validate_runtime
+-&gt; publish_ready
+-&gt; finalize
+-&gt; completed
+</code></pre>
+<p>脚本成功结果、规范共享环境和下一本地阶段在一个本地提交边界内保存。进入 <code>lease_paused</code> 会终止 launcher 并停止 create/resume 实例；同版本续租后复检持久 workspace 和凭据，再重新执行通用 prepare、activate 与连通校验。脚本自行根据共享环境和 Runtime 文件恢复直接运行、devcontainer 或其他实现。旧 ready 快照保持 boot stage 单调，但不能跳过本次实例启动后的校验。</p>
+<p>实现验收点：</p>
+<ul>
+<li>结果结构不包含运行方式、容器标识、容器用户、UID/GID 或内部转发字段。</li>
+<li>每次调用只有结果为 done 且共享环境通过校验时才原子推进本地阶段。</li>
+<li>非主动取消场景的缺失或损坏结果按可恢复失败处理；不可恢复结果按 create/resume 已定义状态闭环处理。</li>
+<li><code>lease_paused</code> 恢复只调用通用脚本阶段，Manager 不执行任何 devcontainer 专用恢复分支。</li>
+</ul>
+<h2 id="endpoint-与内部-ssh-契约"><a class="header" href="#endpoint-与内部-ssh-契约">Endpoint 与内部 SSH 契约</a></h2>
+<p>Endpoint helper 的 <code>upstream_port</code> 始终表示 Incus 通信地址上已经可以访问的实际端口。Manager 根据 Runtime Token 和请求来源确定 Codespace，再把该通信地址与端口保存为本地路由。Manager 不接收内部容器端口、容器标识或转发描述。</p>
+<p>脚本若把服务运行在 Runtime 内的另一层环境中，先在 Incus 实例内建立到通信地址实际端口的转发，再调用 helper 登记该实际端口。脚本负责恢复和删除自己创建的转发；stop 会关闭整个实例，delete 会删除包含这些状态的根存储。Endpoint API 仍只处理 <code>endpoint_id</code>、label、<code>http|https</code> 和实际端口。</p>
+<p>internal SSH 使用同一边界。activate 必须先使 sshd 能从 Incus 通信地址访问，再通过 <code>CODESPACE_INTERNAL_SSH_*</code> 输出实际端口、用户和 Host Key 指纹。Manager 只验证这个通用入口；sshd 直接位于实例还是由脚本转发到内部环境，不影响 Gateway。</p>
+<p>**设计如此：Runtime 内部的进程具有同一个 Codespace 权限边界。**用户在实例内拥有 sudo，容器不是额外授权边界；Runtime Token 与 Incus 来源地址负责防止跨 Codespace 调用，Endpoint 和 internal SSH 的实际连通校验负责防止脚本发布不可达目标。因此 Manager 不需要理解内部容器标识。</p>
+<p>实现验收点：</p>
+<ul>
+<li>Endpoint API 对所有脚本实现都只接收 Incus 通信地址上的实际端口，没有 devcontainer 条件分支。</li>
+<li>内部环境的端口转发由脚本建立；Manager 只保存并连接实际地址和端口。</li>
+<li>internal SSH 的用户、端口和 Host Key 来自通用共享输出，并在 ready 前由 Manager 实际连接校验。</li>
+<li>自定义脚本无法通过 Endpoint 请求指定其他 host，Runtime API 继续按 Runtime Token 和实时来源地址限制到当前 Codespace。</li>
+</ul>
+<h2 id="内置脚本实现"><a class="header" href="#内置脚本实现">内置脚本实现</a></h2>
+<p>内置 <code>init.sh</code> 读取 <code>/etc/os-release</code>，只选择能够明确归入的 <code>apt-get</code>、<code>dnf</code> 或 <code>pacman</code>。它按缺失命令安装 CA 证书、<code>curl</code>、Git、OpenSSH、<code>sudo</code>、<code>util-linux</code>、账户工具和脚本实际使用的基础工具，安装后逐项确认命令存在。无法识别系统或系统字段与实际包管理器矛盾时返回 <code>unrecoverable_failed</code>；下载、软件源或包管理器暂时失败时返回 <code>recoverable_failed</code>。</p>
+<p>内置 init 幂等创建 <code>codespace</code> 用户和组，UID/GID 为 <code>1000:1000</code>，home 为 <code>/home/codespace</code>，shell 为 <code>/bin/bash</code>，workspace 根为 <code>/workspaces</code>。同名身份字段冲突或数值身份已被占用时失败。它锁定密码，写入经过 <code>visudo -cf</code> 校验的 <code>NOPASSWD</code> sudoers，准备 host key、helper、Token、Git SSH、共享环境和结果目录，并把以下内容追加到 <code>CODESPACE_ENV</code>：</p>
+<pre><code class="language-text">CODESPACE_CREDENTIAL_UID=1000
+CODESPACE_CREDENTIAL_GID=1000
+</code></pre>
+<p>内置 <code>start.sh prepare</code> 以 <code>codespace</code> 用户使用 <code>/workspaces/.gitea-create-{codespace_uuid}</code>。初始化标记记录 UUID、repo ID、锁定 SHA 和两种 clone URL。首选协议的 clone/fetch 非零退出时只清理带当前标记的临时目录，再用另一协议重试一次；本地前置错误和 HEAD 校验失败不切换协议。HEAD 等于锁定 SHA 后，脚本原子 rename 到默认 <code>/workspaces/{repo_name}</code>，并把最终绝对路径追加到 <code>CODESPACE_ENV</code>。已有无匹配标记的目标目录返回 workspace 冲突。</p>
+<p>HTTP(S) remote 使用读取当前 Token 文件的 credential helper。首次尝试 SSH 前，内置脚本原子生成 Ed25519 密钥对，通过 Git SSH Key helper 登记公钥并写入可信 known_hosts。SSH 失败后回退到 HTTP(S) 成功时允许保留已经登记的公钥。<code>resume.sh prepare</code> 读取共享 workspace 路径，保留用户当前 HEAD，并只恢复实际 remote 的本地凭据配置，不 clone、fetch、checkout 或探测 repository 可达性。</p>
+<p>create 的内置 <code>start.sh prepare</code> 在 workspace 中查找 <code>.devcontainer/devcontainer.json</code> 或 <code>.devcontainer.json</code>：存在时选择固定版本 devcontainer CLI，否则选择直接运行方式。它把选择结果、配置相对路径、容器标识、有效用户和转发端口写入 <code>GITEA_BUILTIN_*</code> 共享变量和 Runtime 文件；内置 <code>resume.sh</code> 只读取该状态恢复原方式，不重新探测配置，Manager 也不读取这些值。</p>
+<ul>
+<li>直接运行：activate 在 Incus 实例中启动内部 sshd，交互用户为 <code>codespace</code>，并把实际 internal SSH 输出追加到 <code>CODESPACE_ENV</code>。</li>
+<li>devcontainer：prepare 在实例内安装并启动所需 Docker、Node.js、devcontainer CLI 和转发工具，创建或恢复主容器并暂缓 repository lifecycle commands。内置实现把有效非 root 用户同步为 <code>1000:1000</code>，并自行把 Token、Git SSH、helper 与持久环境提供给容器。</li>
+<li>devcontainer activate：在容器内补齐 OpenSSH、curl、shell 和 helper，配置用户 authorized_keys，启动容器 sshd，再在 Incus 实例内建立实际 SSH 转发端口。转发建立后写入通用 <code>CODESPACE_INTERNAL_SSH_*</code> 变量，然后通过 CLI 的用户命令入口执行适用的 lifecycle commands。</li>
+<li>devcontainer Endpoint helper：先为容器逻辑端口建立实例实际端口转发，再把实际端口提交给通用 Endpoint API。Manager 和 Gitea 只保存实际端口，容器逻辑端口和容器标识保留在脚本状态中。</li>
+</ul>
+<p>默认实现把 devcontainer 视为 Runtime 内部开发环境。配置缺失、有效用户为 root、用户同步失败、workspace 根存储损坏或容器归属冲突返回 <code>unrecoverable_failed</code>；临时容器引擎、构建、包安装或网络错误返回 <code>recoverable_failed</code>。这些分类只属于内置脚本；自定义脚本按自己的实现给出同一通用 outcome。</p>
+<p>**设计如此：内置脚本的直接运行/devcontainer 选择在 create 后保存在脚本私有状态中，resume 不重新探测。**这保证已有 workspace 使用同一种内部实现；同时 Manager 不持久化结构化的实现类型，因此替换脚本时由新脚本负责读取或迁移自己的共享变量。</p>
+<p>实现验收点：</p>
+<ul>
+<li>apt/dnf/pacman 探测、固定 <code>codespace</code> 用户、sudo、clone 回退、直接运行/devcontainer 和 lifecycle commands 全部在内置脚本测试中覆盖，不进入 Manager 核心测试。</li>
+<li>内置直接运行与 devcontainer 最终都只向 Manager 提交相同的 workspace 路径、internal SSH 和实际 Endpoint 端口。</li>
+<li>devcontainer 容器标识、用户和转发状态只存在于脚本私有环境或 Runtime 文件；Manager 当前快照不含对应结构化字段。</li>
+<li>resume 使用脚本私有状态恢复原实现，保留 workspace HEAD，并且不依赖 repository payload 或网络可达性。</li>
+<li>自定义脚本可以完全替换内置直接运行/devcontainer 行为，只要通过通用结果、共享环境和 ready 校验。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="lifecycle-flows.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="maintenance-recovery.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="lifecycle-flows.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="maintenance-recovery.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>

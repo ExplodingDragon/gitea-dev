@@ -228,18 +228,18 @@ Gitea globallock 的当前锁持有状态
 <ol>
 <li>取得该 Manager 本地状态目录独占锁；锁已被其他进程持有时退出，不发送 RPC。</li>
 <li>读取并校验 Manager 根快照；失败时以固定硬错误退出，不发送 RPC 或修改 Incus 实例。校验各 Codespace 快照，为有效对象初始化关闭 session 准入、空 session 集合和空 ready 接受记录；优先续做 <code>cleanup_pending=true</code> 的本地清理。单个快照损坏时按“持久状态损坏处理”清理该 UUID，不尝试恢复其运行状态。</li>
+<li>校验配置和 host key，绑定 Runtime HTTP API、Gateway HTTP/WebSocket 和 Gateway SSH listener；任一必要 listener 失败时退出，不 Declare online。</li>
 <li><code>DeclareManager(manager_runtime_state=recovering)</code>，取得服务端心跳周期、Runtime Metadata 刷新周期和控制面消息上限；响应非法时以零容量保持 recovering，不开始新的 Incus 枚举或修改，步骤 2 已经持久化的 <code>cleanup_pending</code> 继续按原授权完成。</li>
 <li>全量枚举带当前 Manager 归属字段的 Incus 实例，并读取每个实例的当前状态。</li>
-<li>生成 Runtime inventory 快照。</li>
-<li>递增 <code>inventory_generation</code>，通过 <code>ReportInstances</code> 上报完整快照；正数 observed operation 高于 Gitea 当前版本时，因 Manager 级 <code>state_history_conflict</code> 停止恢复并等待运维处理。</li>
-<li>恢复 Runtime 映射和本地 worker 上下文，并把全部恢复 worker 保持在暂停状态。只有上下文完整的 active operation 才放入 <code>FetchOperations(observed_operations=...)</code>；服务端版本更高时重新取得当前 payload，上下文缺失的 operation 保持不执行并等待原 deadline。</li>
+<li>生成 Runtime inventory 快照，递增 <code>inventory_generation</code>，通过 <code>ReportInstances</code> 上报完整快照；正数 observed operation 高于 Gitea 当前版本时，因 Manager 级 <code>state_history_conflict</code> 停止恢复并等待运维处理。</li>
+<li>恢复 Runtime 映射，并把每个本地 worker 上下文分类为“完整、可以请求续租”或“缺失、保持不执行并等待原 deadline”。全部恢复 worker 先保持暂停；只有上下文完整的 active operation 放入 <code>FetchOperations(observed_operations=...)</code>，服务端版本更高时重新取得当前 payload。</li>
 <li>对 Fetch 成功返回的普通 payload 或续租回执，使用请求开始时的本地单调时钟和相对有效时长建立新本地截止点，再恢复对应 worker。服务端已经超时、RPC 暂时不可用或未返回明确续租结果时继续暂停。随后执行 inventory 返回的 cleanup、clear、stop 和 refetch 指令。</li>
-<li>执行 <code>DeclareManager(manager_runtime_state=online)</code>，表示完整 inventory、Runtime 映射和可恢复 worker 上下文已经建立；随后 Fetch 仍使用 <code>capacity_available=0</code> 和空的 <code>accepted_operation_types</code>，暂不领取新 create/resume。</li>
-<li>逐 Codespace 完成交互恢复：active create/resume 继续当前 operation；Gitea 与本地都为 running 的对象验证凭据、internal SSH 和路由，并通过唯一 metadata 发布任务重报当前 ready 快照；本地 stopped/failed 或待清理对象提交明确状态结果并保持准入关闭。稳定 stopped 保留 Incus 实例及根存储，等待下一次 resume 从该实例重建 metadata。</li>
-<li>running 对象收到当前 ready 的成功上报且没有待提交状态后，在本地协调锁内开放 session 准入；单个仍在重试的对象保持关闭，不阻塞其他健康 Codespace。</li>
-<li>上述逐 Codespace 恢复任务都进入“已开放交互、稳定 stopped/failed、active operation 继续执行或明确后台重试”之一后，恢复领取新的 create/resume。</li>
+<li>执行 <code>DeclareManager(manager_runtime_state=online)</code>，表示必要 listener、完整 inventory、Runtime 映射和 worker 上下文分类已经完成；后续 Fetch 使用真实 <code>capacity_available</code> 和当前 <code>accepted_operation_types</code>，可以领取其他 Codespace 的 operation。</li>
+<li>同时逐 Codespace 完成交互恢复：active create/resume 继续当前 operation；Gitea 与本地都为 running 的对象验证凭据、internal SSH 和路由，并通过唯一 metadata 发布任务重报当前 ready 快照；本地 stopped/failed 或待清理对象提交明确状态结果并保持准入关闭。稳定 stopped 保留 Incus 实例及根存储，等待下一次 resume 从该实例重建 metadata。</li>
+<li>running 对象收到当前 ready 的成功上报且没有待提交状态后，在本地协调锁内开放 session 准入；单个仍在重试的对象保持关闭，不阻塞其他对象恢复或 operation 领取。</li>
 </ol>
-<p>Manager 重启后先恢复已有 Runtime 信息，再领取新的 create/resume，使已有 Codespace 优先恢复控制。Declare online 表示完整 Incus inventory、Runtime 映射和可继续的 worker 上下文已经恢复，可以接受逐 Codespace RPC；它不直接开放任何 Codespace 的本地 session。Runtime Metadata、凭据检查和待提交状态报告可以在 online 后逐项完成，Gateway/SSH 的前置检查与最终登记都会拒绝本地准入尚未开放的对象。这样外部 cache 即使保留重启前的 ready 快照，也只能让 Gitea 维持数据库主状态，不能越过 Manager 本地恢复边界。Manager 在最后一步 Fetch 前保持 <code>capacity_available=0</code> 或省略 create/resume，避免提前领取新工作。<code>operation_rversion</code> 相同且本地上下文完整的 running operation 可以请求续租，但收到新的相对有效时长前仍保持暂停；服务端较高版本由 Gitea 返回当前 operation 数据，Manager 按请求发出时的版本起点判断返回结果是可接受更新、延迟响应还是真正倒退。站点排空时，Manager 处理 abort、stop、delete 和状态差异指令；已经到期的 operation 由 Gitea 按普通超时表写入结果。</p>
+<p>**设计如此：Declare online 表示 Manager 的全局运行能力已恢复，不表示每个 Codespace 已经恢复交互。**全局边界包括必要 listener、完整 Incus inventory、Runtime 映射和 worker 上下文分类；逐 Codespace 的 Runtime Metadata、凭据、内部 SSH、路由和待提交状态在 online 后独立恢复。Fetch 使用真实容量，不把未完成的对象级恢复转换成整个 Manager 的零容量。Gateway/SSH 的前置检查与最终登记仍拒绝本地准入尚未开放的对象，因此外部 cache 保留的旧 ready 快照不能越过本地恢复边界。<code>operation_rversion</code> 相同且本地上下文完整的 running operation 可以请求续租，但收到新的相对有效时长前保持暂停；已经到期或上下文缺失的 operation 由普通超时和 inventory 规则收敛。</p>
+<p>运行中任一必要 listener 意外终止时，<code>serve</code> 关闭全部 Codespace 的新 session 准入和已有连接后退出；heartbeat 停止后 Gitea 按现有超时派生 offline。该故障使用进程退出、heartbeat 和本地结构化日志诊断，不增加新的持久健康状态。</p>
 <p>Manager 重启恢复流程：</p>
 <pre class="mermaid">sequenceDiagram
     participant M as Manager
@@ -249,6 +249,7 @@ Gitea globallock 的当前锁持有状态
     opt 存在 cleanup_pending 快照
         M-&gt;&gt;B: 续做本地清理并删除已清空快照
     end
+    M-&gt;&gt;M: 绑定 Runtime API / Gateway HTTP / Gateway SSH
     M-&gt;&gt;G: DeclareManager(recovering)
     M-&gt;&gt;B: 扫描全部带归属字段的 Incus 实例
     M-&gt;&gt;G: ReportInstances(完整快照)
@@ -271,9 +272,12 @@ Gitea globallock 的当前锁持有状态
     else missing runtime
         G-&gt;&gt;G: 写入缺失资源对应的主状态结果
     end
-    M-&gt;&gt;G: DeclareManager(online, capacity=0)
+    M-&gt;&gt;G: DeclareManager(online, 当前真实容量)
     G--&gt;&gt;M: online 确认
-    loop 逐 Codespace 交互恢复
+    par 正常领取其他 operation
+        M-&gt;&gt;G: FetchOperations(真实容量与操作类型)
+        G--&gt;&gt;M: 返回 operation 或空
+    and 逐 Codespace 交互恢复
         alt running 且本地依赖完整
             M-&gt;&gt;G: 重报当前 ready Metadata
             G--&gt;&gt;M: ready 已接受
@@ -285,8 +289,6 @@ Gitea globallock 的当前锁持有状态
             M-&gt;&gt;M: 保持准入关闭
         end
     end
-    M-&gt;&gt;G: FetchOperations(create/resume)
-    G--&gt;&gt;M: 返回 operation 或空
 </pre>
 <p>实现验收点：</p>
 <ul>
@@ -294,7 +296,7 @@ Gitea globallock 的当前锁持有状态
 <li>功能启用时，Manager 在 recovering 期间接受 <code>FinalizeOperation</code>、<code>UpdateLog</code>、<code>ReportInstances</code>、<code>ReportRuntimeMetadata</code> 和 <code>ReportRuntimeTransition</code>；站点排空时按排空能力表处理。</li>
 <li>Manager 完整扫描 Incus 实例、恢复 Runtime 映射和 worker 上下文后声明 online；各 Codespace 的 metadata 和状态报告任务在 online 后继续处理。</li>
 <li>active create、active resume 和 running Codespace 恢复时只启动一个读取当前完整快照的 metadata 发布任务；Endpoint、boot、SSH 和周期刷新共享其 generation。稳定 stopped 不启动周期发布。</li>
-<li>逐 Codespace 恢复任务完成前，Fetch 使用零容量或省略 create/resume；Declare online 本身不分配 operation。</li>
+<li>Declare online 后 Fetch 使用真实容量和当前操作类型；单个 Codespace 的交互恢复未完成不阻塞其他 operation，Declare 本身不分配 operation。</li>
 <li>Manager 进程启动时所有 Codespace 的本地 session 准入关闭；online 后只有完成凭据、SSH、路由和当前 ready 上报的 running 对象逐个开放，外部 cache 保留旧 metadata 不能提前建立连接。</li>
 <li>单个 Codespace 的临时恢复错误只保持该对象准入关闭并后台重试，其他健康对象可以开放；确定无法恢复时停止 Runtime 并上报 stopped 或 failed。</li>
 <li>状态目录独占锁保证一个 Manager 身份只有一个本地进程管理其 Incus 实例和版本状态。</li>
@@ -304,6 +306,7 @@ Gitea globallock 的当前锁持有状态
 <li>Manager 从快照恢复自动暂停开关、超时和交互版本；Gitea 已创建的 stop 通过普通 Fetch 恢复，其他对象在当前 inventory 设置应用后从完整时长重新计时。</li>
 <li>Manager 在扫描和上报新 inventory 前续做全部 <code>cleanup_pending</code>；Incus 实例已删除但本地快照仍存在时也能完成清理。</li>
 <li>启动恢复遇到 <code>state_history_conflict</code> 时 Manager 整体停止；payload、续租回执或带版本 action 低于对应请求发出时的本地最高版本时，Manager 因 <code>operation_version_regression</code> 整体停止，请求期间产生的延迟响应只丢弃当前 UUID。</li>
+<li>三个必要 listener 在首次 recovering Declare 前成功绑定；任一 listener 启动失败时进程退出，运行中意外终止时关闭 session 并退出，Gitea 最终按 heartbeat 派生 offline。</li>
 </ul>
 <h2 id="runtime-inventory-reconciliation"><a class="header" href="#runtime-inventory-reconciliation">Runtime Inventory Reconciliation</a></h2>
 <p><code>ReportInstances</code> 上报 Manager 本地 Runtime inventory。</p>
@@ -420,7 +423,7 @@ missing = expected - reported
 <p>Fetch 遇到已超过该硬截止时间的 queued 候选时，在 Codespace lock 内按当前 UUID、operation 版本和 queued 状态条件执行同一 timeout State Finalization，不领取该项，也不把它计入 <code>max_operations</code>。Cron 处理未被 Fetch 扫到的过期记录。</p>
 <p>running operation lease 到期后统一执行 timeout 映射：create/delete 写 failed，resume/stop 写 stopped。Manager 的 online、recovering 或 offline 状态只影响当前能否通信和领取新任务，不改变已经写入 operation 的 deadline。这样 Gitea 与 Manager 的重启顺序不会产生另一套超时结果。</p>
 <p>Fetch 在 observed 续租或返回当前 running payload 前检查原 deadline；未到期时可以原子写入新 deadline，observed-only 续租通过 <code>renewed_leases</code> 返回相对有效时长。已经到期时，Fetch 直接执行 timeout 且不返回 payload 或续租回执。当前版本 FinalizeOperation 在发现 deadline 已过而 Cron 尚未处理时，同样先执行按 operation 类型定义的 timeout State Finalization；请求 final 映射出的目标与 timeout 结果一致时返回 <code>idempotent_done</code>，其他 final 返回 <code>stale_operation</code>。Cron、Fetch 续租和 final 使用相同条件更新，第一个成功者生效。站点排空时，未到期的 create/resume 返回不续租的 abort 命令。</p>
-<p>Manager 在发送 Fetch 前记录本地单调时钟，成功收到 payload 或续租回执后将请求开始时间加 <code>lease_valid_for_milliseconds</code> 作为普通 worker 的本地截止点。达到该点后停止新的 Incus 变更并保留 operation 上下文；只有收到新的成功 Fetch 续租或 final outcome 才更新处理。服务端绝对 Unix deadline 不通过协议返回。**设计如此：<code>recovering</code> 不暂停、不延长 Gitea 侧 operation lease；Manager 重启后因原单调时钟基线丢失而主动暂停 worker，成功续租后才恢复执行。**上下文缺失的 operation 不通过 Fetch 重新开始执行，而是等待原 deadline 触发同一 timeout 结果。abort 的相对时长为 0，只立即执行本轮缩减清理并提交 final failed。</p>
+<p>Manager 在发送 Fetch 前记录本地单调时钟，成功收到 payload 或续租回执后将请求开始时间加 <code>lease_valid_for_milliseconds</code> 作为普通 worker 的本地截止点，并把按该截止点计算的剩余毫秒数和递增 pulse 序号写给当前 Runtime launcher。达到截止点或 pulse 到期时，launcher 终止进程组；Manager 取消在途 exec，create/resume 额外停止实例并把 worker 持久化为 <code>lease_paused</code>，保留 operation 上下文且不提交 final。只有收到同版本新的成功 Fetch 续租才重新启动实例并从已提交阶段继续。服务端绝对 Unix deadline 不通过协议返回。**设计如此：pulse 与 <code>lease_paused</code> 只落实现有 lease 的本地执行边界，不暂停、不延长 Gitea 侧 operation lease。**Manager 重启先终止遗留 launcher 并停止 active create/resume 实例，再等待成功续租；上下文缺失的 operation 不通过 Fetch 重新开始执行，而是等待原 deadline 触发同一 timeout 结果。abort 的相对时长为 0，只立即执行本轮缩减清理并提交 final failed。</p>
 <p>实现验收点：</p>
 <ul>
 <li>online、recovering 和 offline 使用相同的 operation 超时映射，重启不改变 deadline。</li>
@@ -435,32 +438,32 @@ missing = expected - reported
 <li>Manager 重启后全部恢复 worker 先暂停；只有成功 Fetch 续租返回新的相对有效时长后才恢复普通 Incus 变更。</li>
 </ul>
 <h2 id="operation-恢复"><a class="header" href="#operation-恢复">Operation 恢复</a></h2>
-<p>Manager 重启后从本地完整快照恢复 Gitea-issued operation，但全部 worker 先暂停。上下文完整的 operation 通过普通 Fetch 请求同版本续租，只有取得新的相对有效时长后才继续；上下文缺失或 Gitea 已按原 deadline 超时的 operation 不重新执行。resume 的 Token、协议所需 Git 凭据和 ready 都在 final done 前完成，因此成功续租的 active resume 可继续未完成步骤；SSH 公钥确认响应丢失时，init.sh 使用已落盘公钥幂等重试。已经 final done 的 resume 没有后置任务。最新 boot 终态结果保留到更高 create/resume 版本或 Runtime 删除，以支持 Runtime API 重试。</p>
+<p>Manager 重启后从本地完整快照恢复 Gitea 下发的 operation，先终止遗留 launcher、停止 active create/resume 实例，并把全部 worker 置为 <code>lease_paused</code>。上下文完整的 operation 通过普通 Fetch 请求同版本续租，只有取得新的相对有效时长后才重新启动并继续；上下文缺失或 Gitea 已按原 deadline 超时的 operation 不重新执行。resume 的 Token、实际 remote 本地 Git 凭据配置和 ready 都在 final done 前完成，因此成功续租的 active resume 可复用已持久化的系统、workspace、凭据和规范共享环境，但实例重新启动后仍须重做 prepare、activate 和连通校验；SSH 公钥确认响应丢失时，resume prepare 使用已落盘公钥幂等重试。已经 final done 的 resume 没有后置任务。最新 boot 终态保存 operation 类型、版本和 <code>done|recoverable_failed|unrecoverable_failed</code>；前两种可由下一次合法初始化替换，<code>unrecoverable_failed</code> 保留到 failed 状态报告或 delete 完成并继续驱动相应收敛。</p>
 <div class="table-wrapper"><table><thead><tr><th>operation</th><th>Runtime 状态</th><th>Manager 行为</th></tr></thead><tbody>
-<tr><td>create</td><td>Runtime 与持久 create payload/boot session 完整</td><td>继续当前 create；boot 已成功则上报 metadata 和 done。</td></tr>
+<tr><td>create</td><td>Runtime 与持久 create payload、脚本阶段完整</td><td>继续当前 create；本地结果已成功则上报 metadata 和 done。</td></tr>
 <tr><td>create</td><td>repository 已删除且本地完整上下文仍在</td><td>继续使用已持久化的 payload 和 boot 结果；初始化已完成时上报 <code>ready</code> 并 done。</td></tr>
 <tr><td>create</td><td>repository 已删除且本地上下文不完整</td><td>保持本轮工作停止并等待原 deadline，timeout 后 Gitea 进入 failed。</td></tr>
 <tr><td>create</td><td>站点排空后收到 <code>abort_create</code></td><td>清理本轮 Runtime 工作、上传摘要并 final failed。</td></tr>
 <tr><td>stop</td><td>Runtime 仍运行</td><td>继续 stop，完成后上报 done。</td></tr>
 <tr><td>stop</td><td>Runtime 已停止</td><td>上报 done。</td></tr>
 <tr><td>stop</td><td>Runtime 不存在</td><td>上报 failed；Gitea 根据 missing runtime 进入 failed。</td></tr>
-<tr><td>resume</td><td>Runtime 已运行且基础 metadata 完整</td><td>在当前 operation 内申请新 Gitea Token，按固化协议刷新 HTTP helper 或确认已有 Git SSH Key，上报当前版本 <code>ready</code> metadata，再提交 final done。</td></tr>
+<tr><td>resume</td><td>Runtime 已运行且基础 metadata 完整</td><td>在当前 operation 内先运行 init，申请并写入新 Gitea Token 与 Runtime Token，再运行 resume prepare/activate；按实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 <code>ready</code> metadata，再提交 final done。</td></tr>
 <tr><td>resume</td><td>Runtime 正在恢复</td><td>继续 resume，通过 renew lease 保持 operation，并用 Runtime Metadata 和日志上报阶段。</td></tr>
 <tr><td>resume</td><td>Runtime 仍停止</td><td>继续执行 resume。</td></tr>
-<tr><td>resume</td><td>Runtime 不存在或恢复失败</td><td>停止本轮启动进程；确认 workspace 可恢复时 final failed 并回到 stopped，不可恢复时随后上报 failed 状态报告。</td></tr>
+<tr><td>resume</td><td>Runtime 不存在或恢复失败</td><td>停止本轮启动进程；确认 workspace 可恢复时保存 <code>recoverable_failed</code>、final failed 并回到 stopped；密钥材料矛盾或根存储损坏时保存 <code>unrecoverable_failed</code>，final failed 后继续上报 failed 状态报告。</td></tr>
 <tr><td>resume</td><td>收到 <code>abort_resume</code></td><td>停止恢复并确认本轮启动进程已清理，上传摘要后 final failed，Gitea 保持 workspace 并写回 stopped。</td></tr>
 <tr><td>delete</td><td>Runtime 仍存在</td><td>继续按 <code>codespace_uuid</code> 的确定性映射清理，完成后上报 done。</td></tr>
 <tr><td>delete</td><td>Runtime 已不存在</td><td>直接上报 done；若 Gitea 已物理删除，<code>resource_absent</code> 同样视为完成。</td></tr>
 </tbody></table>
 </div>
-<p>stop 让 running Codespace 退出可交互态并保留可恢复资源。Runtime 不存在则无法满足 stopped 可恢复语义，故进入 failed。resume 在 active operation 内完成 <code>credential-refresh</code>、Token、固化协议对应凭据和 ready；临时错误通过 lease 续租继续重试，确认无法写入凭据时停止本轮 Runtime 并 final failed，主状态保持 stopped。</p>
+<p>stop 让 running Codespace 退出可交互态并保留可恢复资源。Runtime 不存在则无法满足 stopped 可恢复语义，故进入 failed。resume 在 active operation 内依次完成系统初始化、Token 写入、脚本共享环境恢复、实际 remote 凭据和 ready；临时错误通过 lease 续租继续重试，普通失败停止本轮 Runtime 并 final failed 回到 stopped，不可恢复终态在 operation 清空后继续上报 failed。进程在两个请求之间退出时从已持久化 boot 终态继续；新 resume 抢先创建时，Manager 领取后直接 final failed，再次提交 failed 状态报告。</p>
 <p>站点排空时，active resume 取得 <code>abort_resume</code> 后停止本轮 Incus 实例并 final failed；<code>manager_offline</code> 先 Declare recovering；<code>codespace_not_found</code> 停止当前通信并触发完整 inventory；<code>manager_unregistered</code> 或明确认证失败关闭全部入口、强制停止 Incus 实例并停止 RPC，同时保留实例根存储等待同一身份凭据恢复；更高 delete operation 通过普通版本替换接管。</p>
 <p>Fetch 的 <code>renewed_leases</code> 回执使 worker 用请求开始时的本地单调时钟和相对有效时长建立新截止点后继续。<code>FinalizeOperation</code> 的 <code>final_accepted</code> 和 <code>idempotent_done</code> 清除同一版本的 operation 上下文。<code>stale_operation</code> 停止该 worker 的新 Incus 变更和 operation RPC，从 observed 集合省略旧上下文并保留 Incus 实例；Gitea 按原 deadline 超时，随后由完整 inventory 处理 cleanup、停止或状态差异。它不用于重新取得 payload，也不覆盖本地更高版本上下文。<code>resource_absent</code> 只清除当前通信上下文并触发新一轮完整 inventory，Incus 实例是否删除由该 inventory 的明确 action 决定。</p>
 <p>实现验收点：</p>
 <ul>
 <li>Manager 重启后把本地上下文完整的 create/resume/stop/delete 以相同 <code>operation_rversion</code> 恢复为暂停 worker；成功 Fetch 续租后继续，上下文缺失或服务端已超时时等待普通 timeout。站点排空的 abort 使用同一版本使 create 写为 failed、resume 写为 stopped。</li>
-<li>resume 在进入 running 前取得新的 Gitea Token，按固化协议刷新 HTTP helper 或确认 Runtime 已有 Git SSH Key，再上报当前版本 ready；初始化阶段即可使用两类开发凭据验证绑定仓库，final 成功后仍保留最新 boot 结果供幂等重试。repository 初始化和 Git SSH 密钥生成只在 create 中执行。</li>
-<li>最新 boot 结果使 final 后的相同 POST 重试保持幂等；更高版本 delete 通过普通 operation 替换停止旧 resume worker。</li>
+<li>resume 在进入 running 前取得新的 Gitea Token，按 workspace 实际 remote 配置 HTTP helper 或确认 Runtime 已有 Git SSH Key，再上报当前版本 ready；该检查不探测 repository 可达性，final 成功后仍保留最新 boot 结果供重启恢复。repository clone 和 Git SSH 密钥首次生成只在 create 中执行。</li>
+<li>最新 boot 结果使重启后可以继续 metadata/final；更高版本 delete 通过普通 operation 替换停止旧 resume worker。</li>
 <li>stale outcome 停止旧 worker 并省略旧 observed 上下文，保留 Runtime 和更高版本上下文；原 operation 超时后由 inventory 收敛。resource absent 本身不删除资源，随后由完整 inventory 取得当前处理指令。</li>
 <li>active resume 在 recovering 期间凭完整本地上下文请求普通 Fetch 续租，取得新相对有效时长后才恢复，并对站点排空、offline、记录缺失和更高 delete operation 作确定处理。</li>
 </ul>
@@ -527,7 +530,7 @@ ReportRuntimeTransition 被接受
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="lifecycle-flows.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="builtin-scripts.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -541,7 +544,7 @@ ReportRuntimeTransition 被接受
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="lifecycle-flows.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="builtin-scripts.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
