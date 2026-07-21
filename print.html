@@ -308,7 +308,7 @@
 <li>active operation 完成后清空 operation 字段，不保留 operation 历史；失败诊断通过 codespace 日志读取。</li>
 <li>Manager 可通过 <code>ReportRuntimeTransition</code> 上报本地主动 stopped/failed 状态；failed 用于单 Codespace 已确认不可恢复且当前没有 active operation 的情况，不增加新的持久主状态。</li>
 <li>stopped Runtime 只通过 Gitea 下发的 resume operation 恢复；Manager 在该 operation 内先运行 init 取得凭据身份，再申请并写入新 Gitea Token 和 Runtime Token，随后运行 resume prepare/activate。Manager 按 workspace 实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 ready 后才能 final done 进入 running。ready 不探测 repository 可达性；repository 删除后已有 workspace 仍可恢复，后续 Git/API 请求按当前 binding 和权限返回结果。面向用户的 open 和 Gateway SSH 等待 running。</li>
-<li>Runtime inventory 差异只在 <code>ReportInstances</code> 请求内计算；Cron 不保存或重放 inventory，只处理数据库可判断的 operation 超时、Manager 可用性和 failed retention。Token 创建与删除由签发和生命周期事务完成，不增加周期修复路径。</li>
+<li>Runtime inventory 差异只在 <code>ReportInstances</code> 请求内计算；Manager offline 由请求实时派生。单个 <code>reconcile_codespaces</code> Cron 不保存或重放 inventory，只处理数据库可判断的 operation 超时和 failed 到期清理。Token 创建与删除由签发和生命周期事务完成，不增加周期修复路径。</li>
 <li>failed 保留期到期后由 Gitea 直接物理删除记录、Codespace Token、Git SSH Key 和日志，提交并释放 Codespace lock 后尽力清理 cache；Cron 不创建 Manager operation 或等待远端确认，原 Manager 身份仍有效时由后续成功的完整 inventory 对无记录 UUID 返回 <code>cleanup_local_runtime</code>。</li>
 <li>Codespace Token 使用 <code>gcs_</code> 专用前缀和独立表；Web/API 认证入口先识别该前缀并进入 Codespace 专用认证分支。该分支验证失败时直接返回认证失败，普通密码、PAT、Session 或 Reverse Proxy 认证不再处理该凭据。resolver 通过一次候选查询验证 Token，并生成包含 Codespace、创建用户、仓库绑定和登录限制的请求内认证数据；后续权限检查复用这份数据。API 路由注册处按具体 method/route 标记开发操作。**设计理由：Codespace Token 是绑定仓库的开发凭据。**它支持 commit、Issue、Pull Request、Release、Wiki 和受限 Actions 操作；仓库删除、权限、Hook、Deploy Key、Actions Secret/Runner 等管理操作统一返回 403。直接 API 路由目标必须是绑定 repository，进入绑定 Issue/PR 后，由 Gitea 已有的 fork、commit、dependency、project 关系触发的关联写入继续按创建用户当前权限处理。新增 API route 只有明确标记为开发操作后才接受 Codespace Token。通知使用 Gitea 现有机制；SSH 认证限流由 Gateway 执行，Manager RPC 通过认证、双向消息大小和控制面超时限制资源使用。</li>
 <li>repository/ref/commit/config 前置校验失败直接返回创建错误，不产生残缺对象；来源数据完整但 Manager 不匹配或进入队列后的 create 失败，在同一 codespace 对象上进入 <code>failed</code>，由用户决定 delete 后重新创建。</li>
@@ -577,7 +577,7 @@
 <tr><td>codespace</td><td><code>(operation_status, operation_deadline_unix, uuid)</code>，用于 running operation 当前 deadline 超时 keyset 扫描</td></tr>
 <tr><td>codespace</td><td><code>(status, updated_unix, uuid)</code>，用于 failed retention keyset 清理；<code>updated_unix</code> 在进入 failed 时写入</td></tr>
 <tr><td>codespace_manager</td><td><code>(owner_id, runtime_state)</code></td></tr>
-<tr><td>codespace_manager</td><td><code>(runtime_state, last_online_unix)</code>，用于派生 offline 和 reconciliation 扫描</td></tr>
+<tr><td>codespace_manager</td><td><code>(runtime_state, last_online_unix)</code>，用于按声明状态筛选并实时派生 offline</td></tr>
 <tr><td>codespace_manager_address</td><td><code>(manager_id, kind)</code>（唯一）</td></tr>
 <tr><td>codespace_manager_address</td><td><code>(kind, address)</code>（唯一）</td></tr>
 <tr><td>codespace_manager_token</td><td><code>token</code>（唯一）</td></tr>
@@ -768,7 +768,7 @@
 <li>读取 offset 必须为 0、文件末尾或 <code>log_indexes</code> 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。</li>
 <li>第一条完整物理行超过请求 <code>limit</code> 时仍单独返回该行并推进 <code>next_offset</code>，避免客户端因过小 limit 永远无法前进；单次响应始终不超过 <code>LOG_READ_MAX_BYTES</code>，配置要求 <code>LOG_MAX_LINE_SIZE &lt;= LOG_READ_MAX_BYTES</code>。</li>
 <li>delete 成功后删除 codespace 日志。</li>
-<li><code>failed</code> 日志保留到用户 delete 或 <code>FAILED_RETENTION_DAYS</code> 清理。</li>
+<li><code>failed</code> 日志保留到用户 delete，或 <code>reconcile_codespaces</code> 按 <code>OLDER_THAN</code> 到期清理。</li>
 <li>日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。</li>
 <li>Gitea 单实例内使用按 <code>codespace_uuid</code> 分片的 keyed lock 串行化日志追加；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 <code>log_size/log_line_count/log_indexes</code> 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。</li>
 <li>在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 <code>LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE</code> 时，拒绝该 batch 并只写一条固定截断摘要；文件已经达到该上限后的普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 <code>LOG_MAX_SIZE</code>，最终摘要优先使用剩余预留空间。现有大小和摘要元数据足以完成判断。</li>
@@ -1540,16 +1540,16 @@ metadata_generation
 <li>Manager 重启后暂停全部恢复 worker，只有成功 Fetch 续租并取得新相对有效时长后才恢复；abort 的相对时长为 0，只执行缩减清理。</li>
 </ul>
 <h2 id="周期状态检查"><a class="header" href="#周期状态检查">周期状态检查</a></h2>
-<p><code>reconcile_codespace_states</code> 周期运行。</p>
+<p><code>reconcile_codespaces</code> 周期运行。</p>
 <p>职责：</p>
 <ul>
 <li>检查 queued operation timeout。</li>
 <li>检查 running operation lease。</li>
-<li>检查 Manager online/offline/recovering。</li>
 <li>通过 State Finalization 写入明确结果。</li>
+<li>清理超过 <code>OLDER_THAN</code> 的 failed Codespace。</li>
 </ul>
-<p>Runtime inventory 作为 <code>ReportInstances</code> 请求数据处理，extra/missing/mismatch 在该请求中计算；Runtime Metadata 缓存未命中时，交互入口返回 <code>metadata_rebuilding</code>。周期任务只读取数据库中的 operation 时间和 Manager 状态。完整状态差异规则分布在 Fetch、Update、Report 和该周期任务中，<code>reconcile_codespace_states</code> 只负责数据库可以独立判断的超时和绑定结果。</p>
-<p><strong>设计理由：开发凭据由 operation 请求和生命周期事务维护。</strong><code>RequestGiteaToken</code> 为 active create、active resume 或稳定 running 创建或修复 Token；create 首次尝试 SSH 或 SSH remote 的 resume 初始化时，<code>EnsureCodespaceGitSSHKey</code> 确认 Codespace 生命周期内唯一的公钥关系。有效初始化期与 running 都可直接访问绑定仓库。stop final 和 resume 失败/超时删除 Token 并保留 Git SSH Key；failed、deleting 和物理删除删除两类凭据。每次变化都由明确的生命周期阶段约束，周期任务只处理 operation 超时和 Manager 可用性。</p>
+<p>Runtime inventory 作为 <code>ReportInstances</code> 请求数据处理，extra/missing/mismatch 在该请求中计算；Runtime Metadata 缓存未命中时，交互入口返回 <code>metadata_rebuilding</code>。Manager 的 offline 状态由请求根据声明状态和最后在线时间实时派生。周期任务只处理数据库可以独立判断的 operation 超时和 failed 到期清理，不扫描 Manager 状态、inventory、Runtime Metadata、<code>last_active_unix</code> 或自动暂停设置。</p>
+<p><strong>设计理由：开发凭据由 operation 请求和生命周期事务维护。</strong><code>RequestGiteaToken</code> 为 active create、active resume 或稳定 running 创建或修复 Token；create 首次尝试 SSH 或 SSH remote 的 resume 初始化时，<code>EnsureCodespaceGitSSHKey</code> 确认 Codespace 生命周期内唯一的公钥关系。有效初始化期与 running 都可直接访问绑定仓库。stop final 和 resume 失败/超时删除 Token 并保留 Git SSH Key；failed、deleting 和物理删除删除两类凭据。每次变化都由明确的生命周期阶段约束，周期任务只在 operation 超时和 failed 物理删除事务中得到相应凭据结果。</p>
 <p>恢复依据：</p>
 <pre><code class="language-text">DeclareManager(recovering/online)
 ReportInstances(完整快照)
@@ -1568,7 +1568,7 @@ ReportRuntimeTransition 被接受
 <li>同一 inventory 项只产生五种明确指令之一，元数据缺失和 final 前置条件由各自接口处理。</li>
 <li>Codespace Token 行可在 active create、active resume 或稳定 running 保留，并在 create/resume 初始化期直接使用；resume failed/timeout/abort 和 stop final 删除 Token。SSH Key 首次 create 登记后跨 stopped 和 resume 保留，有效 create/resume 初始化期与 running 可用，稳定 stopped 按状态拒绝。failed、deleting 和物理删除会删除两类凭据；站点排空时已有完整行可保留但新请求拒绝。</li>
 <li>Token 时间经过本身不轮换；允许阶段的每个新请求仍执行工作状态、repository binding、登录限制和现有业务权限检查，生命周期删除 Token 行后由下一次合法 resume 重新签发。</li>
-<li><code>reconcile_codespace_states</code> 不扫描或改写开发凭据；所有正常状态转换与物理删除路径在自身事务中完成 Token 与 Git SSH Key 结果。</li>
+<li><code>reconcile_codespaces</code> 不单独扫描或修复开发凭据；所有状态转换与物理删除路径在自身事务中完成 Token 与 Git SSH Key 结果。</li>
 <li>用户或组织删除在任何 owner repository 删除前按 keyset 分批、逐 Codespace 短事务清理当时仍由创建者、repository owner 或 Manager owner 关联的 Codespace、Token、Git SSH Key、日志，以及目标 owner 自有的 Manager、地址和 registration token；删除结果只依赖 Gitea 持久数据。</li>
 <li>owner、repository、Manager 和 Codespace 关系变更在需要多个锁时使用固定层级；普通 owner 删除在前置条件通过后开始 Codespace 清理，用户 purge 释放 owner 写锁处理组织关系后重新取得并复扫，transfer 后 repository 关系跟随新 owner。</li>
 <li>账户清理绑定到其他 owner 或全局 Manager 的 Codespace 时只取得 Codespace lock；成功删除普通用户或组织不会删除 <code>owner_id=0</code> 的 Manager、地址、registration token 或其无关 Codespace。</li>
@@ -2247,7 +2247,7 @@ Gitea globallock 的当前锁持有状态
 <li>Gitea 重启后从数据库恢复 active operation、当前 Codespace Gitea Token、Git SSH 公钥绑定和日志元数据。</li>
 <li>cache 丢失不写 failed，用户可重新 open，Manager 可重建 metadata。</li>
 <li>memory/twoqueue 丢失 cache 和 Redis/memcache 在 TTL 内保留 cache 都不改变数据库主状态；保留的 Open Code 继续执行完整访问校验，cache miss 按既有重建流程处理。</li>
-<li>启动路径不扫描或改写 Codespace；启动后的普通 Cron 只按原时间字段处理已经满足超时条件的记录。</li>
+<li>启动路径不直接扫描或改写 Codespace；启动后的普通 Cron 按原时间字段处理已经满足 operation 超时或 failed 保留期到期条件的记录。</li>
 </ul>
 <h2 id="数据库时间点恢复"><a class="header" href="#数据库时间点恢复">数据库时间点恢复</a></h2>
 <p>数据库时间点恢复可能使 Gitea 的 operation、Token、inventory generation 与 Manager 本地持久状态来自不同时间点。自动判断哪一侧可以继续会引入跨系统恢复协议，却仍无法证明全部对象一致，因此时间点恢复由运维在停止 Gitea 和全部 Manager 后完成。运维恢复相互一致的数据库与 Manager 状态；无法取得一致状态时，选择保留数据库并通过部署工具按不可变归属字段明确清理 Incus 实例。</p>
@@ -2531,8 +2531,8 @@ ReportRuntimeTransition 被接受
 <p><code>ReportInstances</code> 为每个请求 UUID 返回一个 result。result 可以带当前自动暂停设置，并通过 oneof 带至多一个 action：<code>cleanup_local_runtime</code>、<code>report_runtime_transition(current_operation_rversion)</code>、<code>refetch_operation(current_operation_rversion)</code>、<code>clear_operation_context(current_operation_rversion)</code> 或 <code>stop_local_runtime(current_operation_rversion)</code>。<code>cleanup_local_runtime</code> 先持久化本地 cleanup，再关闭会话、删除 Incus 实例和本地快照；实例内凭据随根存储一并删除。正常向前的数据库历史中明确无记录、binding 不匹配或 failed 记录都使用该动作。<code>stop_local_runtime</code> 停止 Incus 实例和交互入口并保留根存储。Manager 持有正版本完整操作上下文且当前 active operation 版本更高时，Manager 才先 Fetch 当前 payload；failed inventory 的版本与当前 active operation 相同时，Manager 使用已有完整上下文直接提交 <code>FinalizeOperation(final failed)</code>。<code>observed_operation_rversion=0</code> 表示缺少完整操作上下文，Gitea 不返回 refetch、不刷新 lease，当前 operation 按原 deadline 超时。正数 observed 版本高于 Gitea 当前版本时，整次 inventory 返回 Manager 级 <code>state_history_conflict</code>，不生成 result。当前无 active operation 时明确要求清除旧 worker；自动暂停在当前条件仍成立时从完整超时重新计时。Fetch 未返回某 UUID 不代表服务端已清除 operation，只有当前完整 inventory 返回的明确 cleanup action 才会进入持久化清理。Gitea running、Runtime stopped 的分歧以及无 active operation 的 failed inventory 触发 report transition 并携带当前版本；Gitea stopped、Runtime running 在功能启用和站点排空时都只返回 stop action。Manager 仅在本地 operation 版本不高于该版本时停止，因而不会让延迟 action 停止较新 operation 启动的 Runtime；新的启动只由 Gitea 下发的 resume operation 表达。</p>
 <p>每个 UUID 的 action 优先级固定为 <code>cleanup_local_runtime &gt; refetch_operation &gt; clear_operation_context &gt; stop_local_runtime &gt; report_runtime_transition</code>。Runtime Metadata cache 缺失由该 Codespace 的单一发布任务重建，create/resume final 缺少当前 ready 快照时由 <code>FinalizeOperation</code> 返回 <code>metadata_required</code>；这两种情况不参与 inventory action 选择。这样 inventory 只处理资源和生命周期差异，不与可重建缓存的发布状态交叉。</p>
 <p>Gitea 不在处理全部 inventory 期间持有 Manager lock。请求先确认 generation 高于当前值，并批量预读 reported UUID 的当前 operation 版本；任一正数 observed operation 高于 Gitea 当前值时，整次请求直接返回 Manager 级 <code>state_history_conflict</code>。预检通过后，新请求在短事务中条件接受 <code>inventory_generation</code>，再按 UUID 取得 Codespace lock，并复检 Manager 身份和数据库 generation 仍等于请求值。单个 Codespace 失败不回滚其他已提交项，但 RPC 以临时错误结束且不返回部分 result；Manager 重新完整扫描并使用更高 generation 继续。Manager 在接受响应前还要确认本地当前 generation 仍等于请求 generation。每个 UUID 最多返回一个 action，优先级固定为 <code>cleanup &gt; refetch &gt; clear &gt; stop &gt; report transition</code>，避免同一轮给出互相冲突的动作。</p>
-<p>Codespace Cron 使用单活动 Gitea 进程中的现有调度器。queued、running 和 failed 分别按对应时间字段与 UUID 使用 100 条 keyset 批次；Codespace 候选逐条取得 Codespace lock 并使用短事务。单条错误记录日志后继续并在下一轮重试，候选查询或数据库级错误终止本轮。Registration Token 停用时已经物理删除，不进入 Cron。该边界避免一条损坏记录阻塞其他生命周期结果，也不增加任务队列或持久扫描游标。</p>
-<p>超过 <code>FAILED_RETENTION_DAYS</code> 的 failed Codespace 由 Gitea 定时任务取得 Codespace lock 后，在本地事务中直接物理删除其 Token、Git SSH Key、日志和记录；提交并释放 lock 后尽力清理 cache。failed 已经不能 resume，保留期结束表示 Gitea 不再保留该终态及诊断日志；运行侧若仍有同 UUID Runtime，原 Manager 下一次成功提交完整 inventory 时收到 <code>cleanup_local_runtime</code> 并完成本地清理。</p>
+<p><code>reconcile_codespaces</code> 使用单活动 Gitea 进程中的现有调度器和同名 Cron 全局任务锁。每轮读取一次当前时间，依次处理 queued operation 超时、running operation 超时和 failed 到期清理。三个阶段分别按对应时间字段与 UUID 使用 100 条 keyset 批次；Codespace 候选逐条取得 Codespace lock 并使用短事务。单条错误记录日志后继续并在下一轮重试；候选查询或数据库级错误结束当前阶段，其他阶段继续，任务最后汇总返回错误。Registration Token 停用时已经物理删除，不进入 Cron。该边界避免一条损坏记录或一个阶段的故障阻塞其他生命周期结果，也不增加任务队列或持久扫描游标。</p>
+<p>failed Codespace 满足 <code>updated_unix &lt;= now-OLDER_THAN</code> 时，由该任务取得 Codespace lock 后，在本地事务中直接物理删除其 Token、Git SSH Key、日志和记录；提交并释放 lock 后尽力清理 cache。<code>OLDER_THAN</code> 是正数时长，默认 <code>8760h</code>。failed 已经不能 resume，保留期结束表示 Gitea 不再保留该终态及诊断日志；运行侧若仍有同 UUID Runtime，原 Manager 下一次成功提交完整 inventory 时收到 <code>cleanup_local_runtime</code> 并完成本地清理。</p>
 <p>实现验收点：</p>
 <ul>
 <li>online、recovering 和 offline 使用相同的 Gitea operation deadline；重启和可用性声明不延长期限。Manager 重启后以新相对时长重建本地执行边界。</li>
@@ -2551,7 +2551,7 @@ ReportRuntimeTransition 被接受
 <li>operation refetch 与上下文清除使用不同 action，Manager 不从空 Fetch 响应推导服务端状态。</li>
 <li>Gitea 的 <code>state_history_conflict</code> 始终使整个 Manager 停止继续处理；Manager 收到低于请求发出时本地最高版本的 payload、续租回执或带版本 action 时使用 <code>operation_version_regression</code> 整体停止并保留资源，正常延迟结果只丢弃对应 UUID。</li>
 <li>每个 inventory UUID 只产生五种互斥 action 之一；metadata cache 重建和 final ready 条件由各自接口处理。</li>
-<li>Cron 使用 100 条稳定 keyset 批次和逐条短事务；单条失败继续，数据库级错误终止本轮，cache 清理失败不恢复已删除记录。</li>
+<li>单个 Cron 任务的三个阶段各自使用 100 条稳定 keyset 批次和逐条短事务；单条失败继续，阶段级错误不阻塞其他阶段并使任务返回失败，cache 清理失败不恢复已删除记录。</li>
 </ul>
 <h2 id="自动暂停恢复"><a class="header" href="#自动暂停恢复">自动暂停恢复</a></h2>
 <p>自动暂停的普通空闲计时只存在于 Manager 进程的单调时钟，不把墙上时间或最后活动时间保存为跨重启截止点。Manager/Gateway 重启后认证 live session 已经丢失，公共连接也已经断开但原本就不进入空闲计数。恢复流程先扫描 Incus 实例、提交完整 inventory，并应用 Gitea 当前启用值、有效超时和交互版本。running/ready、设置启用、没有 worker 且认证 session 为 0 的 Codespace 从完整配置时长重新计时。进程停机时间不计入空闲，这给用户重新建立连接留下确定窗口，也避免系统时间调整导致启动后立即暂停。</p>
@@ -3627,7 +3627,7 @@ missing = expected - reported
 <li><code>eof=false</code> 表示仍可继续读取。</li>
 <li><code>truncated=true</code> 表示本次响应达到读取上限，客户端继续使用 <code>next_offset</code> 拉取。</li>
 <li>delete done 和其他物理删除路径删除 DBFS 日志；<code>dbfs.Remove</code> 返回 <code>fs.ErrNotExist</code> 时作为幂等成功，其他错误使当前本地删除事务失败。</li>
-<li><code>failed</code> 状态日志保留到用户 delete 或 <code>FAILED_RETENTION_DAYS</code> 清理。</li>
+<li><code>failed</code> 状态日志保留到用户 delete，或 <code>reconcile_codespaces</code> 按 <code>OLDER_THAN</code> 到期清理。</li>
 <li>日志接口只允许 Codespace 创建者访问；对象不存在和创建者权限不足沿用 Codespace 对象路由既有 404/403 语义，不由日志分页错误覆盖。</li>
 </ul>
 <p>日志在 Codespace 存续期间始终保留在 DBFS，并在物理删除时一起清理。尚未产生任何日志的 Codespace 可能没有 DBFS 文件，因此删除不存在文件表示目标结果已经成立。DBFS 已满足运行中追加、页面读取和同事务日志元数据更新，不需要增加归档状态、存储类型字段或传输任务。</p>
@@ -3900,23 +3900,26 @@ interaction_generation
 </ul>
 <h2 id="cron-任务"><a class="header" href="#cron-任务">Cron 任务</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>任务</th><th>默认调度</th><th>职责</th></tr></thead><tbody>
-<tr><td><code>reconcile_codespace_states</code></td><td><code>@every 1m</code></td><td>检查 queued operation timeout、running operation lease 和 Manager offline/recovering</td></tr>
-<tr><td><code>cleanup_failed_codespaces</code></td><td><code>@daily</code></td><td>清理超过保留期的 <code>failed</code> 状态 Codespace 记录、开发凭据和日志</td></tr>
+<tr><td><code>reconcile_codespaces</code></td><td><code>@every 1m</code></td><td>收敛 queued/running operation 超时，并清理超过保留期的 <code>failed</code> Codespace</td></tr>
 </tbody></table>
 </div>
-<p><code>reconcile_codespace_states</code> 定时扫描 active operation 和 Manager 可用性。Runtime inventory 不持久化，差异只在 <code>ReportInstances</code> 请求内处理；空闲时长由 Manager/Gateway 的实时连接索引和本地单调时钟判断，达到超时后通过 <code>RequestIdleStop</code> 创建普通 stop，因此 Gitea Cron 不扫描 <code>last_active_unix</code> 或自动暂停设置。queued operation 使用 <code>operation_created_unix + QUEUE_TIMEOUT</code> 判定等待超时，running operation 使用已经由 <code>OPERATION_MAX_DURATION</code> 封顶的 <code>operation_deadline_unix</code> 判定超时。failed retention 从进入 failed 时写入的 <code>updated_unix</code> 起算。Codespace 只有一份连续日志且不保存 operation 历史，因此日志随 delete 或 <code>cleanup_failed_codespaces</code> 一起删除，不按“已完成 operation”单独清理。</p>
-<p>**设计理由：Cron 负责 operation 超时、Manager 可用性和 failed retention。**Token 由 <code>RequestGiteaToken</code> 创建或修复，Git SSH Key 由 active create/resume 登记；stop final、resume 失败/超时、failed、deleting 和物理删除事务同步删除对应凭据。事务提交或回滚时，主状态与凭据结果保持一致，认证还会检查 Codespace 主状态。这样开发凭据生命周期只有明确 operation 和状态事务写入，测试可以直接发现事务遗漏。</p>
-<p>两个任务沿用 Gitea 单实例 Cron，不增加调度器。扫描统一使用 100 条固定批次和稳定 keyset：queued 按 <code>operation_created_unix, uuid</code>，running 按 <code>operation_deadline_unix, uuid</code>，failed 按 <code>updated_unix, uuid</code>。每个 Codespace 候选单独取得 Codespace lock 并在短事务中处理。单条业务或数据错误记录服务端日志后继续当前批次，keyset 仍越过该项并在下一轮任务重试。候选查询、数据库连接或事务基础设施错误会终止本轮，避免在无法确认扫描基线时继续。任务响应进程关闭 context，处理完当前短事务后停止。</p>
-<p><code>cleanup_failed_codespaces</code> 对到期记录直接执行 Gitea 本地物理删除：取得 Codespace lock 后在本地事务中删除 Codespace Token、Git SSH Key、单文件日志和数据库记录，提交并释放 lock 后尽力清理对应 cache；cache 清理失败只记录服务端日志，不改变删除结果。该任务不创建 delete operation，不联系 Manager，也不读取 Manager runtime state。failed 已经是不可恢复终态，保留期只用于给用户读取日志和手动 delete；到期后继续等待运行侧确认不会增加 Gitea 数据安全性，反而会让终态记录无限保留。原 Manager 身份仍有效时，下一次成功的完整 inventory 按无数据库记录返回 <code>cleanup_local_runtime</code>。</p>
+<p><code>reconcile_codespaces</code> 每轮只读取一次当前时间，并依次执行 queued operation 超时、running operation 超时和 failed 到期清理三个阶段。queued operation 使用 <code>operation_created_unix + QUEUE_TIMEOUT</code> 判定等待超时，running operation 使用已经由 <code>OPERATION_MAX_DURATION</code> 封顶的 <code>operation_deadline_unix</code> 判定超时；failed 保留期从进入 failed 时写入的 <code>updated_unix</code> 起算，到期条件为 <code>status=failed AND updated_unix &lt;= now-OLDER_THAN</code>。<code>OLDER_THAN</code> 使用 Gitea Cron 通用的正数时长配置，默认 <code>8760h</code>；配置变更在服务重启后生效，缩短时长会使满足新边界的记录在下一轮被清理，延长时长不改写现有记录。</p>
+<p>Runtime inventory 差异只在 <code>ReportInstances</code> 请求内计算。Manager 的 offline 状态由请求根据 <code>runtime_state</code>、<code>last_online_unix</code> 和 <code>MANAGER_OFFLINE_TIMEOUT</code> 实时派生，周期任务不扫描或改写 Manager 状态。自动暂停由 Manager/Gateway 的实时连接索引和本地单调时钟判断，达到超时后通过 <code>RequestIdleStop</code> 创建普通 stop，因此周期任务也不扫描 <code>last_active_unix</code> 或自动暂停设置。</p>
+<p>**设计理由：单个周期任务已经能够表达全部数据库时间边界。**三个阶段操作同一类 Codespace 记录，都使用有索引的短查询；每分钟执行一次 failed 空结果查询的成本很小。统一任务避免维护两套调度配置，也不需要增加“每天是否已经清理”的进程内或持久化计时。<strong>设计如此：<code>ENABLED</code>、<code>RUN_AT_START</code> 和 <code>SCHEDULE</code> 对三个阶段整体生效；启动执行会清理当时已经超过 <code>OLDER_THAN</code> 的 failed 记录。<code>OLDER_THAN</code> 决定保留边界，调度周期只决定到期后的最长清理延迟。</strong></p>
+<p>任务沿用 Gitea 现有 Cron 注册和 <code>cron_task:reconcile_codespaces</code> 全局任务锁，不增加调度器或专用任务锁。三个阶段分别使用 100 条固定批次和稳定 keyset：queued 按 <code>operation_created_unix, uuid</code>，running 按 <code>operation_deadline_unix, uuid</code>，failed 按 <code>updated_unix, uuid</code>。每个 Codespace 候选单独取得 Codespace lock 并在短事务中处理。单条业务或数据错误记录服务端日志后继续当前批次，keyset 越过该项并在下一轮重试。某个阶段发生候选查询、数据库连接或事务基础设施错误时结束该阶段并继续其他阶段，任务最后汇总返回错误，使 Cron 状态能够显示本轮失败且一个阶段不会长期阻塞其他阶段。任务响应进程关闭 context，处理完当前短事务后停止。</p>
+<p>failed 到期阶段直接执行 Gitea 本地物理删除：取得 Codespace lock 后在本地事务中删除 Codespace Token、Git SSH Key、单文件日志和数据库记录，提交并释放 lock 后尽力清理对应 cache；cache 清理失败只记录服务端日志，不改变删除结果。该阶段不创建 delete operation，不联系 Manager，也不读取 Manager runtime state。failed 已经是不可恢复终态，保留期只用于给用户读取日志和手动 delete；到期后继续等待运行侧确认不会增加 Gitea 数据安全性，反而会让终态记录无限保留。原 Manager 身份仍有效时，下一次成功的完整 inventory 按无数据库记录返回 <code>cleanup_local_runtime</code>。</p>
+<p>Token 由 <code>RequestGiteaToken</code> 创建或修复，Git SSH Key 由 active create/resume 登记；stop final、resume 失败/超时、failed、deleting 和物理删除事务同步删除对应凭据。事务提交或回滚时，主状态与凭据结果保持一致，认证还会检查 Codespace 主状态。周期任务不会扫描或修复开发凭据，只在 operation 超时和 failed 物理删除的既有事务中得到规定的凭据结果。</p>
 <p>实现验收点：</p>
 <ul>
-<li>reconciliation 不读取已失效的 inventory 快照，只处理数据库可判断的 operation timeout 和 Manager 可用性。</li>
+<li><code>reconcile_codespaces</code> 只处理数据库可判断的 queued/running operation 超时和 failed 到期清理，不读取 inventory 快照，也不扫描或改写 Manager 状态。</li>
 <li>自动暂停由 Manager 的实时连接与单调计时触发，并通过 RequestIdleStop 进入 stop operation；Cron 不从 <code>last_active_unix</code> 推算空闲。</li>
-<li>failed retention 在本地事务中清理 Codespace 记录、Token、Git SSH Key 和对应单文件日志，提交后先释放 Codespace lock 再清理 cache；cache 清理失败不恢复记录或权限。</li>
-<li>failed retention 仅在 Cron 中提交 Gitea 本地清理，不创建 operation 或等待远端确认；原 Manager 后续通过成功的完整 inventory 取得 cleanup。</li>
+<li><code>OLDER_THAN</code> 必须是正数时长；默认 <code>8760h</code>，非正数使服务启动配置校验失败，到期判断使用进入 failed 时稳定写入的 <code>updated_unix</code>。</li>
+<li><code>ENABLED</code>、<code>RUN_AT_START</code> 和 <code>SCHEDULE</code> 统一控制三个阶段；启动执行会处理全部当时已经到期的 operation 和 failed 记录。</li>
+<li>failed 到期阶段在本地事务中清理 Codespace 记录、Token、Git SSH Key 和对应单文件日志，提交后先释放 Codespace lock 再清理 cache；cache 清理失败不恢复记录或权限。</li>
+<li>failed 到期清理不创建 operation 或等待远端确认；原 Manager 后续通过成功的完整 inventory 取得 cleanup。</li>
 <li>Codespace Token、Git SSH Key 和 registration token 都不参与周期修复；前两类开发凭据随 Codespace 生命周期事务维护，registration token 在停用时直接物理删除。</li>
 <li>系统不存在按 operation 历史清理日志的 cron 任务。</li>
-<li>Cron 使用 100 条 keyset 批次和单 Codespace 短事务；单条失败不阻塞同批后续记录，数据库级错误终止本轮。</li>
+<li>三个阶段使用各自的 100 条 keyset 批次和单 Codespace 短事务；单条失败不阻塞同批后续记录，阶段级错误不阻塞其他阶段并使本轮任务返回失败。</li>
 </ul>
 <h2 id="配置"><a class="header" href="#配置">配置</a></h2>
 <p>Gitea：</p>
@@ -3937,21 +3940,16 @@ LOG_READ_MAX_BYTES = 512KiB
 LOG_MAX_SIZE = 64MiB
 LOG_FINAL_SUMMARY_RESERVE = 64KiB
 RUNTIME_METADATA_MAX_SIZE = 256KiB
-FAILED_RETENTION_DAYS = 365
 CODESPACE_REPO_CONFIG_MAX_SIZE = 64KiB
 AUTO_STOP_DEFAULT_TIMEOUT = 30m
 AUTO_STOP_MIN_TIMEOUT = 5m
 AUTO_STOP_MAX_TIMEOUT = 168h
 
-[cron.reconcile_codespace_states]
+[cron.reconcile_codespaces]
 ENABLED = true
 RUN_AT_START = true
 SCHEDULE = @every 1m
-
-[cron.cleanup_failed_codespaces]
-ENABLED = true
-RUN_AT_START = false
-SCHEDULE = @daily
+OLDER_THAN = 8760h
 
 </code></pre>
 <p>说明：</p>
@@ -3966,7 +3964,7 @@ SCHEDULE = @daily
 <li>Codespace 功能只支持一个活动 Gitea 进程；cache 直接复用 <code>[cache]</code> adapter，需要 keyed serialization 的明确写路径直接调用 <code>[global_lock]</code> backend 提供的 <code>globallock.Lock</code>，Cron 沿用 Gitea 单实例调度。Redis 配置不改变 Codespace 的单进程支持边界。</li>
 <li><code>ENABLED=false</code> 使用排空模式，不删除现有 Codespace/Manager 数据。Web 禁止新 create、resume、open、继续运行和 SSH，但创建者详情、创建者日志、创建者自动暂停设置、stop、普通 delete、站点管理员 force delete 与现有管理页继续可用；<code>ValidateOpenToken</code>、<code>ValidatePublicEndpoint</code>、<code>VerifySSHPublicKey</code> 和 <code>RevalidateGatewaySession</code> 都返回 <code>state_unavailable</code>。认证和公共普通 HTTP 在下一次请求且最迟已有 allowed 的 1 秒期限结束后拒绝，WebSocket 和 SSH 最迟在一个复检周期内关闭。</li>
 <li>排空模式拒绝 <code>RegisterManager</code>、全部 <code>RequestGiteaToken</code>、<code>EnsureCodespaceGitSSHKey</code>、新的 idle stop 创建和 Runtime Metadata 写入。<code>RequestIdleStop</code> 对已经存在的 idle stop 仍返回 <code>pending</code>，对没有 active operation 的 running 对象返回包含 <code>auto_stop_enabled=false</code> 的 <code>observation_changed</code>；ReportInstances 下发相同关闭设置，使 Manager 清除普通计时。已有 Manager 仍使用注册时签发的 secret 认证，可以 Declare、ReportInstances、上报 stopped/failed transition，并通过 Fetch 领取 stop/delete 或取得已领取 create/resume 的 abort；对应 UpdateLog 和 final failed 继续可用。stop 从本地 Runtime credential 文件恢复日志脱敏值，无法确认安全的缓冲日志不上传。queued create/resume 不再领取，按现有 queue timeout 处理。</li>
-<li>排空模式继续运行 <code>reconcile_codespace_states</code> 和 <code>cleanup_failed_codespaces</code>。Codespace Token resolver 和 repo binding 判定不受 <code>ENABLED</code> 开关影响，仍会识别并拒绝已有凭据；普通 PAT 行为不需要 Codespace 特判。重新启用后，未进入 stopped/failed/deleting 的现有对象继续按当前状态工作。</li>
+<li>排空模式继续运行 <code>reconcile_codespaces</code>。Codespace Token resolver 和 repo binding 判定不受 <code>ENABLED</code> 开关影响，仍会识别并拒绝已有凭据；普通 PAT 行为不需要 Codespace 特判。重新启用后，未进入 stopped/failed/deleting 的现有对象继续按当前状态工作。</li>
 <li><code>OPEN_TOKEN_EXPIRE</code> 同时作为 <a href="glossary.html#gateway-open-token">Gateway Open Token</a> 的 Gitea cache TTL 和 <code>expires_unix</code> 计算时长，因此以正整数秒表示。</li>
 <li>Runtime Metadata 与 Open Code 直接保存在站点 <code>[cache]</code> adapter，并使用各自明确 TTL；即使通用 <code>[cache] ITEM_TTL=-1</code>，协议条目仍按自身 TTL 写入。需要串行化的写路径直接使用站点 <code>[global_lock]</code> backend。</li>
 <li><code>CONTROL_PLANE_TIMEOUT</code> 从 Connect 应用 handler/interceptor 接管已经受大小限制并完成 framing 的请求开始，到响应提交为止，覆盖认证、<code>globallock</code> 等待、数据库、cache 和响应构造。HTTP 请求体读取和网络传输继续使用 Gitea 现有 HTTP server timeout；该配置不替代通用读写超时。该 deadline 到期返回 Connect <code>DeadlineExceeded</code>，caller 取消返回 <code>Canceled</code>，均不附业务 failure detail；请求结束后不把同一个 RPC 转为后台任务继续执行，已经提交的短事务结果保持有效。</li>
@@ -6106,7 +6104,7 @@ make lint-backend
 <li>Web 测试确认 Codespace 创建者详情只展示当前 Token 是否存在、创建时间和末八位，页面与普通响应不包含 verifier、salt、密文或明文；组织和站点治理响应不包含任何 Token 展示字段。</li>
 <li>integration 测试确认 <code>DeleteRepositoryDirectly</code> 拒绝已处于事务中的 context；repository 数据库删除提交并释放 owner/repository lock 后才执行 <code>RepositoryCleanupPlan</code>，强制数据库回滚不执行文件或 cache 清理；文件清理失败沿用各 Gitea 删除入口现有 system notice、日志和错误返回，不回滚数据库结果或创建补偿任务。</li>
 <li>Web/RPC 配置测试覆盖非法大小关系启动失败、<code>OPERATION_MAX_DURATION &gt; OPERATION_LEASE_TIMEOUT</code>、control-plane timeout 不大于四分之一 Manager 离线超时、protobuf 最大不可拆分 request/response 的实际编码大小、普通 lease 与最后一段受总期限截短的整数毫秒精度、Manager 离线/queue/Open Code/自动暂停的整数秒精度、control-plane timeout 包含认证/锁等待/数据库/cache，deadline/caller cancel 分别返回 Connect <code>DeadlineExceeded</code>/<code>Canceled</code> 且无业务 detail，以及日志 JSON 行换行保留、默认 limit、400 参数错误和 409 <code>current_offset</code> 恢复。消息上限不足时启动错误指出实际值、要求值和消息类型；超限输入在业务事务前返回 <code>ResourceExhausted</code>。启动测试覆盖启用时 HTTP/SSH 两种入口必须同时可用、<code>DISABLE_HTTP_GIT</code>、内置 SSH 首启生成 Host Key、内置 SSH 复用已有 Key 和外部 SSH 显式 known_hosts，以及排空模式关闭两种 Git 接入后继续管理清理。Gateway 域测试覆盖非法 DNS 标签、尾随点、最长派生 Host 超限、与 Gitea 相同可注册域、ROOT_URL host 等于基础域名、Gitea host 落入 wildcard、session Domain 覆盖基础域名、新 Declare 冲突和已有地址在配置变化后的启动冲突；错误包含 Manager、地址和配置项，安全配置下正常启动。</li>
-<li>Cron 测试覆盖 queued timeout、普通 running lease timeout、达到固定总执行期限的 running timeout、Manager 可用性和 failed retention 的 100 条 keyset 批次、单记录短事务、单条失败继续、数据库级错误终止和下一轮重试失败项；<code>reconcile_codespace_states</code> 不扫描或修复开发凭据，<code>cleanup_failed_codespaces</code> 随 failed 记录物理删除 Token 与 Git SSH Key。</li>
+<li>Cron 测试覆盖 <code>reconcile_codespaces</code> 的 queued timeout、普通 running lease timeout、达到固定总执行期限的 running timeout，以及 <code>OLDER_THAN</code> failed 清理的三组 100 条 keyset 批次、单记录短事务和同名任务锁。测试确认 <code>ENABLED/RUN_AT_START/SCHEDULE</code> 统一作用于三个阶段、启动执行清理当时已到期记录、非正数 <code>OLDER_THAN</code> 使启动配置校验失败；单条失败继续并在下一轮重试，阶段级数据库错误不阻塞其他阶段且任务汇总失败。任务不扫描 Manager 状态或单独修复开发凭据，failed 到期阶段随记录物理删除 Token 与 Git SSH Key。</li>
 <li>integration 测试覆盖 running/stopped 主动 failed 状态报告、failed inventory 恢复 operation 版本基线、active operation 存在时低正版本先 refetch 后 final failed、同版本使用已有上下文直接 final failed、版本 0 等待原 deadline、resume operation failed 后需继续 failed 状态报告才能进入不可恢复状态、recovering 上报、站点排空时接受 stopped/failed、offline 先 Declare recovering、active operation conflict、transition 对 current-operation/stale-operation/stale-generation/generation-conflict/manager-offline/codespace-not-found/manager-unregistered 的固定处理、runtime generation 的 stale/目标幂等/conflict/新版本矩阵、stopped 主状态/running Runtime 的本地停止、active resume 经 Fetch 恢复并在 final 前完成 Token/credential/ready、token/cache/session 清理、failed retention 起点不被重试刷新，以及 failed 或数据库无记录时删除 Incus 实例、stopped 只停止实例并保留根存储的 inventory action。</li>
 <li>Manager worker 测试覆盖四种 FinalizeOperation outcome、resource absent 触发完整 inventory、同一 UUID 动作与 cleanup 串行、cleanup pending 的崩溃续做，以及 create/resume/stop/delete 经 timeout 和 inventory 收敛。lease 测试覆盖普通完整 lease、受总执行期限截短的最后一段 lease，以及持续可恢复失败不能越过 <code>operation_started_unix + OPERATION_MAX_DURATION</code>；Manager 以 Fetch 请求开始时的单调时钟建立保守截止点，pulse 或本地截止点到期时 launcher 终止进程组，create/resume 实例停止并持久化 <code>lease_paused</code>，Manager 崩溃后脚本同样退出。重启先清理 launcher，再由同版本正数续租恢复；恢复复用持久 workspace、凭据和规范共享环境，但重做 prepare、activate 与连通校验，旧 ready 不能直接 final。上下文缺失、abort、stale 和更高 delete 分别等待 timeout、只做缩减清理、停止旧 worker 或接管当前动作。</li>
 <li>Manager 进程监督测试分别使 Declare/heartbeat、Fetch/lease、inventory、健康调度和三个必要 listener 意外返回，确认临时依赖错误留在原循环退避，关键循环真正结束时统一关闭领取、session 和其他组件并非零退出。Declare 返回 <code>protocol_mismatch</code> 时关闭全部入口、停止领取和新的 Incus 修改，保留实例与状态目录并以明确错误退出。SIGINT/SIGTERM 测试确认在 <code>process_shutdown_timeout</code> 内终止 launcher、停止 active create/resume 实例、持久化 <code>lease_paused</code>、等待缩减操作当前 Incus 调用返回并关闭 heartbeat；任一阶段退出后都由原 lease、快照和 inventory 恢复，不创建额外 operation 或延长 deadline。Manager <code>/api/healthz</code> 测试覆盖 pass、HTTP 200 warn 和 HTTP 503 fail，且响应不包含 UUID、内部地址或错误正文。</li>
@@ -6201,7 +6199,7 @@ make lint-backend
 <p>主状态写入流程。Gitea 根据 operation 结果、超时、Runtime 缺失或 failed 运行状态报告，在同一事务中写入 Codespace 主状态、Codespace Token 与 Git SSH Key 结果，并清空 active operation。物理删除路径直接删除记录、开发凭据与日志。</p>
 <p><span id="state-reconciliation"></span></p>
 <h2 id="state-reconciliation"><a class="header" href="#state-reconciliation">State Reconciliation</a></h2>
-<p>状态差异处理规则。Gitea 比较数据库主状态与 Manager 当前有效报告，并按状态表写入唯一确定的结果。周期任务处理数据库可以独立判断的 operation 超时和 Manager 可用性；Runtime inventory 差异在 <code>ReportInstances</code> 请求内处理。Codespace Token 由签发和生命周期事务维护，Git SSH Key 由 active create/resume 登记并由同一生命周期事务清理。</p>
+<p>状态差异处理规则。Gitea 比较数据库主状态与 Manager 当前有效报告，并按状态表写入唯一确定的结果。单个周期任务处理数据库可以独立判断的 operation 超时和 failed 到期清理；Manager offline 由请求实时派生，Runtime inventory 差异在 <code>ReportInstances</code> 请求内处理。Codespace Token 由签发和生命周期事务维护，Git SSH Key 由 active create/resume 登记并由同一生命周期事务清理。</p>
 <p><span id="stale-report"></span></p>
 <h2 id="stale-report"><a class="header" href="#stale-report">Stale Report</a></h2>
 <p>Manager 上报中的 <code>codespace_uuid</code>、<code>operation_rversion</code>、<code>manager_id</code> 或 operation status 与 Gitea 当前 active operation 不匹配。</p>

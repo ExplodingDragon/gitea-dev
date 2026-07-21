@@ -346,7 +346,7 @@
 <tr><td>codespace</td><td><code>(operation_status, operation_deadline_unix, uuid)</code>，用于 running operation 当前 deadline 超时 keyset 扫描</td></tr>
 <tr><td>codespace</td><td><code>(status, updated_unix, uuid)</code>，用于 failed retention keyset 清理；<code>updated_unix</code> 在进入 failed 时写入</td></tr>
 <tr><td>codespace_manager</td><td><code>(owner_id, runtime_state)</code></td></tr>
-<tr><td>codespace_manager</td><td><code>(runtime_state, last_online_unix)</code>，用于派生 offline 和 reconciliation 扫描</td></tr>
+<tr><td>codespace_manager</td><td><code>(runtime_state, last_online_unix)</code>，用于按声明状态筛选并实时派生 offline</td></tr>
 <tr><td>codespace_manager_address</td><td><code>(manager_id, kind)</code>（唯一）</td></tr>
 <tr><td>codespace_manager_address</td><td><code>(kind, address)</code>（唯一）</td></tr>
 <tr><td>codespace_manager_token</td><td><code>token</code>（唯一）</td></tr>
@@ -537,7 +537,7 @@
 <li>读取 offset 必须为 0、文件末尾或 <code>log_indexes</code> 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。</li>
 <li>第一条完整物理行超过请求 <code>limit</code> 时仍单独返回该行并推进 <code>next_offset</code>，避免客户端因过小 limit 永远无法前进；单次响应始终不超过 <code>LOG_READ_MAX_BYTES</code>，配置要求 <code>LOG_MAX_LINE_SIZE &lt;= LOG_READ_MAX_BYTES</code>。</li>
 <li>delete 成功后删除 codespace 日志。</li>
-<li><code>failed</code> 日志保留到用户 delete 或 <code>FAILED_RETENTION_DAYS</code> 清理。</li>
+<li><code>failed</code> 日志保留到用户 delete，或 <code>reconcile_codespaces</code> 按 <code>OLDER_THAN</code> 到期清理。</li>
 <li>日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。</li>
 <li>Gitea 单实例内使用按 <code>codespace_uuid</code> 分片的 keyed lock 串行化日志追加；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 <code>log_size/log_line_count/log_indexes</code> 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。</li>
 <li>在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 <code>LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE</code> 时，拒绝该 batch 并只写一条固定截断摘要；文件已经达到该上限后的普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 <code>LOG_MAX_SIZE</code>，最终摘要优先使用剩余预留空间。现有大小和摘要元数据足以完成判断。</li>
