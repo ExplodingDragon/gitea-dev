@@ -65,9 +65,6 @@ service ManagerService {
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
   rpc DeclareManager(DeclareManagerRequest) returns (DeclareManagerResponse);
 
-  // RotateManagerSecret replaces the current Manager credential.
-  rpc RotateManagerSecret(RotateManagerSecretRequest) returns (RotateManagerSecretResponse);
-
   // FetchOperations returns operations for the Manager to execute.
   rpc FetchOperations(FetchOperationsRequest) returns (FetchOperationsResponse);
 
@@ -92,6 +89,9 @@ service ManagerService {
   // ValidateOpenToken validates and consumes a one-time Gateway Open Token.
   rpc ValidateOpenToken(ValidateOpenTokenRequest) returns (ValidateOpenTokenResponse);
 
+  // ValidatePublicEndpoint authorizes an unauthenticated request to a public Endpoint.
+  rpc ValidatePublicEndpoint(ValidatePublicEndpointRequest) returns (ValidatePublicEndpointResponse);
+
   // VerifySSHPublicKey authenticates an SSH session via public key.
   rpc VerifySSHPublicKey(VerifySSHPublicKeyRequest) returns (VerifySSHPublicKeyResponse);
 
@@ -110,6 +110,8 @@ service ManagerService {
 message RegisterManagerRequest {
   // The registration token shown in the Codespace manager settings page.
   string registration_token = 1;
+  // ManagerService protocol major version. Version 1 is required by this design.
+  int32 protocol_version = 2;
 }
 
 message RegisterManagerResponse {
@@ -134,6 +136,8 @@ message DeclareManagerRequest {
   int64 gateway_ssh_host_key_updated_unix = 9;
   int32 capacity_total = 10;
   int32 capacity_available = 11;
+  // ManagerService protocol major version. It is independent of the display version.
+  int32 protocol_version = 12;
 }
 
 message DeclareManagerResponse {
@@ -142,16 +146,9 @@ message DeclareManagerResponse {
   int64 runtime_metadata_refresh_interval_milliseconds = 2;
   // Maximum encoded protobuf message size accepted in either direction.
   int64 control_plane_max_message_size_bytes = 3;
+  // Gitea's canonical browser-visible ROOT_URL, including AppSubURL.
+  string gitea_web_url = 4;
 }
-
-// --- RotateManagerSecret ---
-
-message RotateManagerSecretRequest {
-  // Generated and persisted locally by Manager before this authenticated call.
-  string new_manager_secret = 1;
-}
-
-message RotateManagerSecretResponse {}
 
 // --- FetchOperations ---
 
@@ -160,6 +157,7 @@ message FetchOperationsRequest {
   repeated AcceptedOperationType accepted_operation_types = 2;
   int32 max_operations = 3;
   repeated ObservedOperation observed_operations = 4;
+  int32 cleanup_capacity_available = 5;
 }
 
 message ObservedOperation {
@@ -370,6 +368,22 @@ message OpenTokenBinding {
   int64 interaction_generation = 4;
 }
 
+// --- ValidatePublicEndpoint ---
+
+message ValidatePublicEndpointRequest {
+  string codespace_uuid = 1;
+  string endpoint_id = 2;
+}
+
+message ValidatePublicEndpointResponse {
+  oneof outcome {
+    PublicEndpointAllowed allowed = 1;
+    FailureDetail denied = 2;
+  }
+}
+
+message PublicEndpointAllowed {}
+
 // --- VerifySSHPublicKey ---
 
 message VerifySSHPublicKeyRequest {
@@ -509,7 +523,11 @@ x-codespace-manager-id: <manager id>
 x-codespace-manager-secret: <manager secret>
 ```
 
-`RegisterManager` 使用 registration token 认证，token 通过 request body 传递。
+`RegisterManager` 使用 registration token 认证，token 通过 request body 传递。`RegisterManager` 和 `DeclareManager` 都必须提交 `protocol_version=1`。Register 在查询 registration token 前校验版本；Declare 在统一 Manager 身份认证后、更新 heartbeat 或声明快照前校验版本。
+
+`protocol_version` 是 ManagerService 的主版本。第一版只支持版本 1，Gitea 同一时刻只实现一个主版本；只有会改变既有字段含义、状态推进或错误处理的不兼容变更才提高它。普通增加可由旧端忽略的 protobuf 字段时保持当前主版本。版本不匹配返回 `protocol_mismatch`，Register 不创建 Manager，Declare 不更新 heartbeat、地址、容量或运行状态。Manager 收到该错误后关闭入口和新的 Incus 修改，以明确错误退出。该字段与用于页面展示的软件 `version`、Manager 本地状态文件格式版本以及脚本结果版本互相独立。
+
+**设计如此：ManagerService 不协商多个协议主版本。**Gitea 和 Manager 可以在保持主版本兼容时独立更新；需要提高主版本时，由部署方完成配套升级。单一版本校验可以在执行生命周期写入前拒绝不兼容客户端，也避免增加能力列表和分支状态机。
 
 `CONTROL_PLANE_TIMEOUT` 到期返回 Connect `DeadlineExceeded`，caller 取消返回 `Canceled`；这两类传输终止不附 `FailureDetail`。已提交的短事务结果保持有效，除 `RegisterManager` 外的调用方按 operation、generation 或 offset 规则继续；`RegisterManager` 的不确定结果由管理员先检查未 Declare 的记录。
 
@@ -517,25 +535,26 @@ x-codespace-manager-secret: <manager secret>
 
 输入校验规则：
 
+- `RegisterManager.protocol_version` 和 `DeclareManager.protocol_version` 必须等于当前 ManagerService 主版本 1；0、负数和其他版本返回 `protocol_mismatch`，不能按旧客户端或默认行为继续。
 - enum 只接受各定义中明确列出的业务值；`UNSPECIFIED` 和未知数值返回 `invalid_argument`。这样新增枚举值不会被旧服务端误作默认行为。
 - `codespace_uuid` 只接受 Gitea 生成的 36 字符小写带连字符 UUID v4；其他形式在查询和构造锁 key 前返回 `invalid_argument`，保证一个 Codespace 只有一种外部表达。
-- 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0。inventory item 的 `observed_operation_rversion=0` 固定表示 Manager 没有可继续的完整 active operation 上下文；正数固定表示 Manager 持有该版本的完整 active operation 上下文。该字段不传输本地历史最高版本。
+- 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0。inventory item 的 `observed_operation_rversion=0` 固定表示 Manager 没有可继续的完整 active operation 上下文，即使 Gitea 当前 `codespace.operation_rversion` 已经是正数也成立；正数固定表示 Manager 持有该版本的完整 active operation 上下文。该字段不传输本地历史最高版本，也不写回数据库版本。
 - 所有版本递增使用 checked increment。任一 operation、交互或 Manager generation 无法递增时返回不可重试的 `version_exhausted`，不提交主状态、active operation、交互结果或本地快照的部分写入。Codespace operation/交互版本由管理员 force delete，单对象 runtime/metadata 版本由 Manager 清理该 UUID，inventory 版本由管理员删除 Manager 并重新注册；版本保持正数和单调递增，不回绕或重置。
 - `DeclareManager.capacity_total` 为 `1..10000`，单个 Manager 管理的 Runtime 总数上限为 10000；超限时按 Manager 恢复规则保持 recovering。
-- `FetchOperations.max_operations` 为 `1..256`，`observed_operations` 最多 10000 条且 UUID 唯一。Manager 每次提交全部本地上下文完整的 running operation：相同版本续租，较低版本取得当前 payload，省略项保持不执行并等待原 deadline。
+- `FetchOperations.capacity_available` 为 `0..DeclareManager.capacity_total`，限制本次新领取的 create/resume；`cleanup_capacity_available` 为 `0..256`，限制本次新领取的 stop/delete。`max_operations` 为 `1..256`，只限制完整 operation payload；两个可用容量都为 0 时仍处理全部 observed 续租，但不领取 queued operation。Manager 每次提交全部本地上下文完整的 running operation：相同版本续租，较低版本取得当前 payload，省略项保持不执行并等待原 deadline。
 - `FetchOperations` 在续租、timeout 和 claim 前批量预检 observed 版本；高于已存在且绑定当前 Manager 的 Codespace 当前版本时整次返回 `state_history_conflict`。无记录或 binding 不匹配的 UUID 不续租，由完整 inventory 返回清理结果。
-- `FetchOperationsResponse.renewed_leases` 最多与 request 的 `observed_operations` 等长；同一 UUID 不能同时出现在 `operations` 和 `renewed_leases`。普通 operation payload 与 observed 批量续租都返回正数 `lease_valid_for_milliseconds`，其值精确等于本次服务端授予的 `OPERATION_LEASE_TIMEOUT` 毫秒数。Gitea 把同一次授权的绝对 deadline 写入数据库，但不通过协议回传；abort payload 不续租，因此相对时长固定为 0。
+- `FetchOperationsResponse.renewed_leases` 最多与 request 的 `observed_operations` 等长；同一 UUID 不能同时出现在 `operations` 和 `renewed_leases`。普通 operation payload 与 observed 批量续租都返回正数 `lease_valid_for_milliseconds`：通常精确等于 `OPERATION_LEASE_TIMEOUT`，标准 lease 会越过固定总执行期限时返回到总期限为止、向下取整的实际正整数毫秒数。Gitea 把同一次授权的绝对 deadline 写入数据库但不通过协议回传；abort payload 不续租，因此相对时长固定为 0。
 - `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整扫描结果。每次提交都使用高于 Manager 本地已使用值的新 `inventory_generation`；传输失败后的下一次完整扫描也使用更高值。Gitea 原子接受任何高于数据库当前值的 generation，等于或低于当前值返回 stale；更高请求成立后，旧 handler 在逐项写入和返回响应前复检失败并停止。数据库查询成功并明确确认 reported UUID 不存在时才返回 `cleanup_local_runtime`；数据库或请求处理失败不转换成清理指令。
 - `ReportInstancesResponse.results` 与 request 的 UUID 一一对应。仍属于当前 Manager 且未进入 cleanup 的结果携带当前有效设置；cleanup 结果不携带设置；未绑定 creating 可以同时没有设置和 action。Manager 先确认 response 属于本地最新 inventory generation，再按结果应用设置和互斥 action。
 - 每个 `RuntimeInstanceResult` 只使用 `cleanup_local_runtime`、`refetch_operation`、`clear_operation_context`、`stop_local_runtime` 或 `report_runtime_transition` 之一，优先级依次为 cleanup、refetch、clear、stop、report。Gitea 有 active operation 且其版本高于 Manager 上报的正数版本时可以 refetch；Manager 上报的正数版本高于 Gitea 当前 operation 版本时，整次请求返回 Manager 级 `state_history_conflict`。metadata cache 缺失和 final 的 ready 前置条件由对应 RPC 处理。
 - inventory item 只携带 UUID、Runtime state 和 observed operation version；Gateway 用户 SSH 验证只携带 UUID 和客户端公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。该 `VerifySSHPublicKey` 公钥用于用户连接工作区，与 `EnsureCodespaceGitSSHKey` 确保的 Runtime Git SSH 公钥是两个独立用途。
-- `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 Gitea running、Runtime stopped 的分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。Gitea stopped、Runtime running 返回 `stop_local_runtime`；启动只能由 Gitea 下发的 resume operation 完成。`ReportRuntimeTransition.runtime_state` 只接受 `STOPPED|FAILED`，诊断详情只进入 Manager 本地日志。
+- `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 Gitea running、Runtime stopped 的分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。Gitea stopped、Runtime running 返回 `stop_local_runtime`；启动只能由 Gitea 下发的 resume operation 完成。`ReportRuntimeTransition.runtime_state` 只接受 `STOPPED|FAILED`：运行健康检查确认基础交互持续失败时，Manager 先停止实例再提交 `STOPPED`；只有资源明确不可恢复时提交 `FAILED`。诊断详情只进入 Manager 本地日志。
 - `DeclareManager` 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret 或 Codespace binding。
-- `DeclareManagerResponse` 返回正数 `heartbeat_interval_milliseconds`、`runtime_metadata_refresh_interval_milliseconds` 和 `control_plane_max_message_size_bytes`。Manager 启动后先以 recovering 立即声明，成功取得这三个值后才启动周期任务和领取流程；后续成功响应原子替换当前服务端参数。字段非法时 Manager 保持 recovering 和零容量，不采用本地猜测值。
+- `DeclareManagerResponse` 返回正数 `heartbeat_interval_milliseconds`、`runtime_metadata_refresh_interval_milliseconds` 和 `control_plane_max_message_size_bytes`，并返回来自 Gitea `ROOT_URL` 的规范 absolute `http|https` `gitea_web_url`。该 URL 必须有 host，不含 userinfo、query 或 fragment，path 是规范 AppSubURL 并以 `/` 结尾；HTTP 与 HTTPS 都可使用。Manager 启动后先以 recovering 立即声明，成功取得全部字段后才启动周期任务和领取流程；后续成功响应原子替换当前服务端参数。字段非法时 Manager 保持 recovering 和零容量，不采用本地猜测值。
 - `DeclareManager.tags` 最多 64 项，单项 lower-case 后使用 `[a-z0-9_-]+`、长度为 1-64，并规范化去重。
-- `gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一；冲突不产生部分声明更新。
+- `gateway_url` 使用无尾随点的规范 ASCII DNS 主机名，每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符，并与 Gitea `ROOT_URL` 处于不同可注册域；`gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一。任一校验或唯一性冲突都不产生部分声明更新。
 - `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
-- Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 使用 1 到 30 位 DNS-safe 小写字母、数字或连字符。
+- Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 固定匹配 `^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`，每项必须包含布尔 `public`。`workspace` 项的 `public` 必须为 false，并继续使用无 ID 前缀的 workspace Host。
 - Runtime Metadata 的 boot 上下文按状态校验：active create/resume 使用当前 operation 和适用的 `prepare-runtime|initialize-system|prepare-workspace|start-environment|publish-runtime|ready` 顺序，running 固定为 boot 版本不大于当前 operation 的 `ready`；stopped 且无 active operation 时拒绝 metadata。同一 boot 版本一旦 ready 就保持 ready。
 - `ReportRuntimeMetadataResponse` 为空。成功响应确认 Gitea 接受了该请求携带的 `metadata_generation + metadata_json`；Manager 使用发送前保存的 generation 和完整快照更新 ready 接受记录并判断是否还需发送本地更新版本。功能关闭返回 `state_unavailable`，Manager 保留本地快照和 generation 重试。
 - `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
@@ -543,19 +562,22 @@ x-codespace-manager-secret: <manager secret>
 - `RequestIdleStop` 直接提交 Manager 观察到的开关、超时和交互版本。Gitea 先返回已经存在的同一 idle stop，再按当前 operation 和主状态返回 `not_applicable`；其余情况比较三个观察值，任一变化时返回完整 `observation_changed(runtime_settings)`。只有当前设置启用、三个值一致、Codespace 为 running 且版本可以递增时才创建 idle stop，并以统一 `pending(operation_rversion)` 表达首次创建或幂等重试。版本不能递增时返回不可重试的 `version_exhausted`。
 - create/resume payload 和成功的当前 `ReportInstances` 响应都携带完整有效设置。`auto_stop_enabled=false` 时超时固定为 0；启用时超时必须大于 0。延迟设置快照可能短暂改变 Manager 本地计时，但 `RequestIdleStop` 会直接比较当前有效值和交互版本；控制面稳定后，下一次成功完整 inventory 重新下发当前设置。Open 和 SSH 的 allowed binding 返回本次事务提交后的 `interaction_generation`，Manager 只向前更新该值并重新开始完整空闲时长。
 - `ValidateOpenToken` 对无法解析或显式过期的 code 尽力删除；Manager、Codespace、状态、权限、metadata、Endpoint 或在线状态校验不通过时返回 denied 并保留 code 到原 TTL。全部检查通过后删除必须成功才返回 allowed；删除后的交互事务失败会消费 code，用户重新发起 open。
-- `ValidateOpenToken`、`VerifySSHPublicKey` 和 `RevalidateGatewaySession` 只在 Codespace 功能启用时返回 allowed；功能关闭使用 response 的 `denied(state_unavailable)`，不创建新的协议状态。普通 HTTP 每次转发前 revalidate，WebSocket 和 SSH 按固定周期 revalidate。
+- `ValidateOpenToken`、`ValidatePublicEndpoint`、`VerifySSHPublicKey` 和 `RevalidateGatewaySession` 只在 Codespace 功能启用时返回 allowed；功能关闭使用 response 的 `denied(state_unavailable)`，不创建新的协议状态。认证和公共普通 HTTP 每次转发前检查本地状态以及相同授权键最多 1 秒的新鲜 allowed，缺失时分别调用 `RevalidateGatewaySession` 或 `ValidatePublicEndpoint`；认证 WebSocket、SSH、公共 WebSocket 和持续超过复检周期的 HTTP 请求继续定时校验且不复用普通 HTTP 短期结果。
+- `ValidatePublicEndpoint` 只接受非 `workspace` 的普通 Endpoint。调用方 Manager 必须仍与 Codespace binding 匹配且在线，Codespace 必须为稳定 running 且没有 active operation（包括 queued idle stop），Runtime Metadata 必须 ready，目标 Endpoint 必须存在且 `public=true`。成功不创建 Gateway session、不推进 `interaction_generation`、不更新 `last_active_unix`；denied 或 RPC 无法确认时 Gateway 不转发请求。
 - `ValidateOpenToken` 和 `VerifySSHPublicKey` 的 allowed 只表示 Gitea 控制面授权。Gateway 在 RPC 前预检本地 Codespace session 准入，allowed 后再在同一 Codespace 协调锁内复检准入、当前路由和 session 上限，并完成 session 登记或最长 30 秒的 SSH connecting reservation；并发生命周期或路由变化先成立时不建立连接。
 - SSH 公钥只用于 `VerifySSHPublicKey` 的本次新连接认证。`RevalidateGatewaySession` 的 SSH binding 固定为 `user_id + codespace_uuid`；公钥删除拒绝后续新连接，已有 transport 继续按用户登录状态、功能开关、生命周期、Manager/metadata、TTL、空闲超时和周期复检收敛。
 - `RequestGiteaToken` 在功能启用、Manager 声明为 online 或 recovering 且 heartbeat 有效时，只接受三种阶段：已领取且租约未到期的 create、已领取且租约未到期的 resume，以及无 active operation 的 running。成功时返回或签发 Token，并始终返回规范化 `server_url`。active stop 创建前已经下发的 Token 仍按 running 阶段完成新请求授权，但该 worker 不能重新读取、签发或修复 Token；active stop、active delete 和站点排空下的 `RequestGiteaToken` 返回 `state_unavailable`。
 - create/resume payload 的 `git_protocol` 必须等于 Codespace 创建时固化的 `http|ssh` 首选项。create 同时下发两种规范 clone URL；所选脚本实际使用 SSH 时，通过 `EnsureCodespaceGitSSHKey` 创建或确认公钥，SSH remote 的 resume 复用同一密钥。请求公钥为空、无法解析、算法不是 Ed25519 或超过 Gitea SSH key 大小限制时返回 `invalid_argument`。
-- `EnsureCodespaceGitSSHKey` 只接受与调用方 Manager 绑定、协议为 SSH、当前已领取且租约未到期的 create/resume 初始化阶段。绑定不存在时创建，绑定为相同公钥时幂等返回当前 `known_hosts_lines`；已有不同公钥或全局指纹冲突时返回 `key_conflict`，不替换当前绑定。响应至少包含一条与 Gitea SSH 对外 host 和有效端口匹配的规范化 Host Key 行。
+- `EnsureCodespaceGitSSHKey` 只接受与调用方 Manager 绑定、当前已领取且期限未到期的 create/resume 初始化阶段；固化首选项为 `http` 或 `ssh` 都可以调用。create 可以在 HTTP(S) 首选失败后为 SSH fallback 调用；resume 由脚本仅在 workspace 当前实际 remote 为 SSH 时调用。绑定不存在时创建，绑定为相同公钥时幂等返回当前 `known_hosts_lines`；已有不同公钥或全局指纹冲突时返回 `key_conflict`，不替换当前绑定。响应至少包含一条与 Gitea SSH 对外 host 和有效端口匹配的规范化 Host Key 行。
 - 所有编码后的 protobuf request 和 response 都不超过 `CONTROL_PLANE_MAX_MESSAGE_SIZE`；`UpdateLog.lines` 单行另受 `LOG_MAX_LINE_SIZE` 限制。日志按返回的消息上限分批，inventory、observed operation、Runtime Metadata 和单条日志物理行是必须能整体传输的协议单元。
 
 实现验收点：
 
+- Register 协议版本不匹配时不创建 Manager；Declare 不匹配时不更新 heartbeat 或声明快照，Manager 关闭入口和新动作后退出。
+- 软件展示版本、ManagerService 主版本、本地状态格式版本和脚本结果版本使用不同字段，任一实现都不从另一个版本推导兼容性。
 - 除 `RegisterManager` 外的 RPC 都通过统一 interceptor 认证 Manager ID 和 secret。
 - Manager 身份认证成功后，handler 从 request context 读取同一 Manager 记录。
-- 首次 Declare 响应在 64 KiB 读取上限内返回三个正数控制参数；Manager 只在完整校验成功后原子启用这些参数并进入 online，非法响应保持 recovering 和零容量，后续成功 Declare 可以整体替换旧参数。
+- 首次 Declare 响应在 64 KiB 读取上限内返回三个正数控制参数和规范 `gitea_web_url`；Manager 只在完整校验成功后原子启用这些参数并进入 online。URL 带 AppSubURL 时通过结构化 URL resolve 生成 Gitea 打开路由，不使用字符串拼接；非法响应保持 recovering 和零容量，后续成功 Declare 可以整体替换旧值。
 - 命令拒绝与访问判定使用文中规定的两种响应方式，不混合表达。
 - deadline/cancel 使用 Connect 标准 code 且不携带业务 failure detail，不被映射为 `internal_error`。
 - Gitea 启动校验保证协议允许的最大不可拆分请求和响应能放入消息上限；超限输入在业务事务前返回 Connect `ResourceExhausted`，不推进 generation、不处理部分清单，也不生成清理指令。
@@ -569,11 +591,13 @@ x-codespace-manager-secret: <manager secret>
 - 普通 operation payload 和 observed 批量续租都携带精确的正整数毫秒相对 lease 时长；服务端 Unix deadline 只保存在 Gitea。Manager 从请求开始时的本地单调时钟建立保守执行截止点。abort 的相对时长为 0，只授权立即执行对应的缩减清理。
 - 所有版本字段拒绝负数和不允许的 0，递增永不发生回绕。
 - 任一版本无法递增时返回 `version_exhausted` 且不写部分状态；清理范围按版本归属固定为 force delete 单个 Codespace、Manager 清理单 UUID 或删除并重新注册 Manager。
-- Open、SSH 和 session revalidate 的成功 binding 与拒绝 detail 通过 oneof 互斥返回。
-- 功能关闭时三个访问 RPC 都返回 `denied(state_unavailable)`；普通 HTTP 的下一次请求不进入 upstream，WebSocket 和 SSH 最迟在一个复检周期内关闭。
+- Open、公共 Endpoint、SSH 和 session revalidate 的成功结果与拒绝 detail 通过 oneof 互斥返回。
+- 功能关闭时四个访问 RPC 都返回 `denied(state_unavailable)`；认证和公共普通 HTTP 在下一次请求且最迟已有 allowed 的 1 秒期限结束后不进入 upstream，WebSocket、持续公共 HTTP 和 SSH 最迟在一个复检周期内关闭。
 - metadata 成功空响应的语义完全来自对应请求；Manager 不从 response 读取 generation、boot 或快照字段。
 - Open Code 缓存值无法解析、显式过期、暂时访问失败、成功删除和删除失败分别具有确定的消费结果；allowed 一定对应已经成功删除的 code。
-- Open/SSH 的 Gitea allowed 不能越过 Manager 本地恢复和并发生命周期边界；最终本地复检与 session 登记使用同一个 Codespace 协调锁临界区。
+- Open/SSH 的 Gitea allowed 不能越过 Manager 本地恢复和并发生命周期边界；最终本地复检与 session 登记使用同一个 Codespace 协调锁临界区。公共 Endpoint allowed 同样需要 Gateway 在调用前后复检同一不可变公共路由引用，并在该锁内登记有界连接名额。
+- 公共 Endpoint 还复用 Manager 的本地交互准入边界；进程恢复期间保留的路由不能仅凭 Gitea allowed 提前转发。
+- Gateway 在调用 `ValidatePublicEndpoint` 前先于本地协调锁内取得 per-Endpoint 与 per-IP 的 `validating` 名额，allowed 后复检并原地转为连接名额；拒绝、传输失败和并发取消都释放同一名额。
 - SSH 认证成功后的 connecting reservation 在 30 秒内转为 live 或只清理一次；公钥删除后新连接被拒绝，现有 transport 不需要新增公钥指纹字段即可按既有 session 边界结束。
 - RequestIdleStop 的 `pending`、`observation_changed` 和 `not_applicable` 三种 outcome 互斥；`not_applicable.reason` 区分 operation 冲突、已经停止和生命周期暂不可用。响应丢失后以同一观察值重试，已创建的 idle stop 仍返回同一 `operation_rversion` 的 `pending`。
 - create/resume 和完整 inventory 能把当前有效自动暂停设置下发给 Manager；延迟快照不能绕过 RequestIdleStop 的当前值复检而创建 stop。
@@ -607,7 +631,7 @@ x-codespace-manager-secret: <manager secret>
 - `UpdateLog` 成功返回服务端规范化写入后的 `next_offset`；offset conflict/gap 返回当前服务端 offset。
 - Runtime transition、完整 inventory 和 Runtime Metadata 分别携带自己的单调版本。
 - Runtime transition 同时携带生成该状态报告时观察到的 `operation_rversion`，旧 operation 上下文的状态报告不能覆盖新 operation 结果。
-- Gateway 通过 `RevalidateGatewaySession` 复检已有 session：普通 HTTP 在每次请求转发前调用，WebSocket 和 SSH 按固定定时器调用。
+- Gateway 通过 `RevalidateGatewaySession` 复检已有认证 session：普通 HTTP 在每次请求转发前检查最多 1 秒的新鲜 allowed，缺失时调用，WebSocket 和 SSH 按固定定时器调用。公共 Endpoint 使用独立的 `ValidatePublicEndpoint` 和同样的普通 HTTP 短期 allowed，不构造虚假用户或 session binding；短期结果、并发 miss 合并和全进程 RPC 上限都属于 Manager 进程内行为，不增加协议字段或持久状态。
 - inventory action 通过互斥 action 表达 cleanup、transition、operation refetch、清除旧 operation 上下文或本地 stop；transition action 携带生成状态报告所需的当前 operation 版本。
 - final result 携带 Manager 本地保存的原 operation 类型；active operation 存在时严格校验，清空后只按相同版本和目标主状态判断重复 final。
 - 普通命令拒绝返回 `FailureDetail`；只有 generation stale 和日志 offset 错误增加对应专用 detail，generation conflict 不附 stale detail。`FinalizeOperation` 的四种正常处理结果、`RequestIdleStop` 的三种竞态结果和访问判定分别使用自身 response oneof。
