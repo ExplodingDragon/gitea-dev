@@ -901,18 +901,18 @@ Cron、claim、Fetch 续租和 final 都以 `codespace_uuid + operation_rversion
 
 ## 周期状态检查
 
-`reconcile_codespace_states` 周期运行。
+`reconcile_codespaces` 周期运行。
 
 职责：
 
 - 检查 queued operation timeout。
 - 检查 running operation lease。
-- 检查 Manager online/offline/recovering。
 - 通过 State Finalization 写入明确结果。
+- 清理超过 `OLDER_THAN` 的 failed Codespace。
 
-Runtime inventory 作为 `ReportInstances` 请求数据处理，extra/missing/mismatch 在该请求中计算；Runtime Metadata 缓存未命中时，交互入口返回 `metadata_rebuilding`。周期任务只读取数据库中的 operation 时间和 Manager 状态。完整状态差异规则分布在 Fetch、Update、Report 和该周期任务中，`reconcile_codespace_states` 只负责数据库可以独立判断的超时和绑定结果。
+Runtime inventory 作为 `ReportInstances` 请求数据处理，extra/missing/mismatch 在该请求中计算；Runtime Metadata 缓存未命中时，交互入口返回 `metadata_rebuilding`。Manager 的 offline 状态由请求根据声明状态和最后在线时间实时派生。周期任务只处理数据库可以独立判断的 operation 超时和 failed 到期清理，不扫描 Manager 状态、inventory、Runtime Metadata、`last_active_unix` 或自动暂停设置。
 
-**设计理由：开发凭据由 operation 请求和生命周期事务维护。**`RequestGiteaToken` 为 active create、active resume 或稳定 running 创建或修复 Token；create 首次尝试 SSH 或 SSH remote 的 resume 初始化时，`EnsureCodespaceGitSSHKey` 确认 Codespace 生命周期内唯一的公钥关系。有效初始化期与 running 都可直接访问绑定仓库。stop final 和 resume 失败/超时删除 Token 并保留 Git SSH Key；failed、deleting 和物理删除删除两类凭据。每次变化都由明确的生命周期阶段约束，周期任务只处理 operation 超时和 Manager 可用性。
+**设计理由：开发凭据由 operation 请求和生命周期事务维护。**`RequestGiteaToken` 为 active create、active resume 或稳定 running 创建或修复 Token；create 首次尝试 SSH 或 SSH remote 的 resume 初始化时，`EnsureCodespaceGitSSHKey` 确认 Codespace 生命周期内唯一的公钥关系。有效初始化期与 running 都可直接访问绑定仓库。stop final 和 resume 失败/超时删除 Token 并保留 Git SSH Key；failed、deleting 和物理删除删除两类凭据。每次变化都由明确的生命周期阶段约束，周期任务只在 operation 超时和 failed 物理删除事务中得到相应凭据结果。
 
 恢复依据：
 
@@ -936,7 +936,7 @@ ReportRuntimeTransition 被接受
 - 同一 inventory 项只产生五种明确指令之一，元数据缺失和 final 前置条件由各自接口处理。
 - Codespace Token 行可在 active create、active resume 或稳定 running 保留，并在 create/resume 初始化期直接使用；resume failed/timeout/abort 和 stop final 删除 Token。SSH Key 首次 create 登记后跨 stopped 和 resume 保留，有效 create/resume 初始化期与 running 可用，稳定 stopped 按状态拒绝。failed、deleting 和物理删除会删除两类凭据；站点排空时已有完整行可保留但新请求拒绝。
 - Token 时间经过本身不轮换；允许阶段的每个新请求仍执行工作状态、repository binding、登录限制和现有业务权限检查，生命周期删除 Token 行后由下一次合法 resume 重新签发。
-- `reconcile_codespace_states` 不扫描或改写开发凭据；所有正常状态转换与物理删除路径在自身事务中完成 Token 与 Git SSH Key 结果。
+- `reconcile_codespaces` 不单独扫描或修复开发凭据；所有状态转换与物理删除路径在自身事务中完成 Token 与 Git SSH Key 结果。
 - 用户或组织删除在任何 owner repository 删除前按 keyset 分批、逐 Codespace 短事务清理当时仍由创建者、repository owner 或 Manager owner 关联的 Codespace、Token、Git SSH Key、日志，以及目标 owner 自有的 Manager、地址和 registration token；删除结果只依赖 Gitea 持久数据。
 - owner、repository、Manager 和 Codespace 关系变更在需要多个锁时使用固定层级；普通 owner 删除在前置条件通过后开始 Codespace 清理，用户 purge 释放 owner 写锁处理组织关系后重新取得并复扫，transfer 后 repository 关系跟随新 owner。
 - 账户清理绑定到其他 owner 或全局 Manager 的 Codespace 时只取得 Codespace lock；成功删除普通用户或组织不会删除 `owner_id=0` 的 Manager、地址、registration token 或其无关 Codespace。

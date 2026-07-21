@@ -86,7 +86,7 @@ open Endpoint、SSH、继续运行、resume。
 
 <span id="state-reconciliation"></span>
 ## State Reconciliation
-状态差异处理规则。Gitea 比较数据库主状态与 Manager 当前有效报告，并按状态表写入唯一确定的结果。周期任务处理数据库可以独立判断的 operation 超时和 Manager 可用性；Runtime inventory 差异在 `ReportInstances` 请求内处理。Codespace Token 由签发和生命周期事务维护，Git SSH Key 由 active create/resume 登记并由同一生命周期事务清理。
+状态差异处理规则。Gitea 比较数据库主状态与 Manager 当前有效报告，并按状态表写入唯一确定的结果。单个周期任务处理数据库可以独立判断的 operation 超时和 failed 到期清理；Manager offline 由请求实时派生，Runtime inventory 差异在 `ReportInstances` 请求内处理。Codespace Token 由签发和生命周期事务维护，Git SSH Key 由 active create/resume 登记并由同一生命周期事务清理。
 
 <span id="stale-report"></span>
 ## Stale Report

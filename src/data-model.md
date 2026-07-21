@@ -231,7 +231,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 | codespace | `(operation_status, operation_deadline_unix, uuid)`，用于 running operation 当前 deadline 超时 keyset 扫描 |
 | codespace | `(status, updated_unix, uuid)`，用于 failed retention keyset 清理；`updated_unix` 在进入 failed 时写入 |
 | codespace_manager | `(owner_id, runtime_state)` |
-| codespace_manager | `(runtime_state, last_online_unix)`，用于派生 offline 和 reconciliation 扫描 |
+| codespace_manager | `(runtime_state, last_online_unix)`，用于按声明状态筛选并实时派生 offline |
 | codespace_manager_address | `(manager_id, kind)`（唯一） |
 | codespace_manager_address | `(kind, address)`（唯一） |
 | codespace_manager_token | `token`（唯一） |
@@ -445,7 +445,7 @@ codespace_log/{codespace_uuid}.log
 - 读取 offset 必须为 0、文件末尾或 `log_indexes` 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。
 - 第一条完整物理行超过请求 `limit` 时仍单独返回该行并推进 `next_offset`，避免客户端因过小 limit 永远无法前进；单次响应始终不超过 `LOG_READ_MAX_BYTES`，配置要求 `LOG_MAX_LINE_SIZE <= LOG_READ_MAX_BYTES`。
 - delete 成功后删除 codespace 日志。
-- `failed` 日志保留到用户 delete 或 `FAILED_RETENTION_DAYS` 清理。
+- `failed` 日志保留到用户 delete，或 `reconcile_codespaces` 按 `OLDER_THAN` 到期清理。
 - 日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。
 - Gitea 单实例内使用按 `codespace_uuid` 分片的 keyed lock 串行化日志追加；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 `log_size/log_line_count/log_indexes` 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。
 - 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE` 时，拒绝该 batch 并只写一条固定截断摘要；文件已经达到该上限后的普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 `LOG_MAX_SIZE`，最终摘要优先使用剩余预留空间。现有大小和摘要元数据足以完成判断。
