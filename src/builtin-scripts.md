@@ -1,4 +1,4 @@
-# Codespace 脚本契约与内置实现
+# Codespace 脚本契约、内置实现与 devcontainer 案例
 
 ## 脚本边界
 
@@ -8,11 +8,11 @@ Manager 使用三个脚本初始化 Runtime：
 - `start.sh`：只服务 create，`prepare` 准备 workspace，`activate` 恢复交互入口。
 - `resume.sh`：只服务 resume，`prepare` 恢复既有 workspace，`activate` 恢复交互入口。
 
-Manager 只理解这三个调用入口、共享环境、阶段结果和最终通用输出。软件包管理器、工作用户名称、直接运行方式、devcontainer、Docker、容器标识、容器内用户、挂载、内部端口转发和 repository lifecycle commands 都属于脚本实现。
+Manager 只理解这三个调用入口、共享环境、阶段结果和最终通用输出。软件包管理器、工作用户名称、内部开发环境、容器工具、挂载、端口转发和 repository lifecycle commands 都属于脚本实现。
 
-**设计如此：devcontainer 是内置脚本提供的一种 Runtime 内部实现，不是 Manager 资源模型。**Manager 的资源边界始终是 Incus 实例；stop 停止实例，delete 删除实例及其根存储，inventory 也只报告实例。脚本可以改用其他实现，只要最终提供同一 workspace、Git 本地配置、internal SSH 和 Endpoint 行为。
+**设计如此：devcontainer 是完整自定义脚本套件的可运行案例，不是内置运行方式，也不是 Manager 资源模型。**Manager 的资源边界始终是 Incus 实例；stop 停止实例，delete 删除实例及其根存储，inventory 也只报告实例。默认内置脚本直接在实例中提供开发环境；管理员显式选择 devcontainer 案例或其他自定义套件时，由脚本自行编排内部环境，只要最终提供同一 workspace、Git 本地配置、internal SSH 和 Endpoint 行为。这个边界证明系统能够使用 devcontainer，同时不让 Go 代码解析其配置或保存其容器状态。
 
-稳定 running 后的周期健康检查由 Manager 使用 activate 已提交的 `internal_ssh` 执行固定 SSH exec 命令。它直接验证所有脚本套件都必须提供的通用交互入口，因此三个脚本入口和 `prepare|activate` 阶段保持不变；直接运行、devcontainer 或自定义实现负责让自己的内部 SSH 持续满足同一契约。
+稳定 running 后的周期健康检查由 Manager 使用 activate 已提交的 `internal_ssh` 执行固定 SSH exec 命令。它直接验证所有脚本套件都必须提供的通用交互入口，因此三个脚本入口和 `prepare|activate` 阶段保持不变；内置直接运行和任意自定义实现负责让自己的内部 SSH 持续满足同一契约。
 
 内置脚本随 Manager 发布。三个入口组成一个协作套件，Manager 启动时只接受完整内置套件或三个本地自定义文件：
 
@@ -32,18 +32,19 @@ scripts:
 
 自定义套件的三个文件由 Manager 启动时读取，必须都是本地普通文件；内置与自定义入口混合时配置校验直接失败。Manager 在领取 create/resume 后、首次执行脚本前，把本次实际使用的三个脚本及内容摘要写入当前 operation 本地快照，再原子发布到 Runtime 固定目录。同一 active operation 的重试和重启恢复继续使用已经发布且摘要相同的脚本；Manager 配置变化从下一次 create/resume 开始生效，不在执行中的 operation 内切换脚本。
 
-**设计如此：内置脚本是一个完整套件。**内置 start 依赖内置 init 创建的固定用户和目录，内置 resume 依赖内置 start 保存的 `GITEA_BUILTIN_*` 私有状态；这些实现数据不属于通用 Manager 契约，因此有效配置固定为完整内置套件或完整自定义套件。完整自定义套件可以使用自己的私有共享变量，只需提供相同的通用输出。
+**设计如此：内置脚本是一个完整的直接运行套件。**内置 start 依赖内置 init 创建的固定用户和目录，内置 resume 依赖内置 start 保存的 `GITEA_BUILTIN_*` 私有状态；这些实现数据不属于通用 Manager 契约，因此有效配置固定为完整内置套件或完整自定义套件。devcontainer 案例与其他自定义套件使用自己的私有共享变量，只需提供相同的通用输出。
 
-这些脚本由 Manager 以 root 执行，因此自定义来源属于 Manager 部署信任边界。repository 可以通过 devcontainer 配置和 lifecycle commands 自定义自己的开发环境，但不作为 `init.sh`、`start.sh` 或 `resume.sh` 的远程脚本来源。这样 create 在 clone 前就有确定的初始化入口，也不需要增加脚本下载和签名协议。
+这些脚本由 Manager 以 root 执行，因此自定义来源属于 Manager 部署信任边界。repository 中的 devcontainer 配置只有在管理员显式配置 devcontainer 自定义案例时才由该案例读取；repository 不能提供或替换 `init.sh`、`start.sh`、`resume.sh`。这样 create 在 clone 前就有确定的初始化入口，也不需要增加脚本下载和签名协议。
 
 实现验收点：
 
-- Manager 核心数据、RPC、结果结构和 Endpoint API 都没有直接运行/devcontainer、Docker、容器标识或容器用户字段。
+- Manager 核心数据、RPC、配置、结果结构和 Endpoint API 都没有 devcontainer、Docker、Node.js、CLI、容器标识或容器用户字段，也不探测 `.devcontainer` 文件。
 - 内置脚本和本地自定义脚本使用同一调用、共享环境、结果和 ready 契约。
 - 三个入口全部为 `builtin` 或全部为本地绝对路径；混合配置在 Manager 启动时给出明确错误。
 - 同一 active operation 在响应丢失、lease 续租和 Manager 重启后继续使用相同脚本内容；配置更新只影响之后开始的 create/resume。
 - 自定义脚本只从 Manager 本地配置读取，脚本发布不依赖 Gitea、repository 或额外下载接口。
 - 运行健康检查只使用 activate 的通用 internal SSH 输出；脚本套件仍由 init、start、resume 三个入口组成，健康检查不会调用项目命令或读取脚本私有实现状态。
+- 默认内置套件只实现实例内直接运行；devcontainer 案例只有作为完整自定义套件被显式配置时才执行。
 
 ## 调用与共享环境
 
@@ -176,7 +177,7 @@ lease_paused
 -> completed
 ```
 
-脚本成功结果、规范共享环境和下一本地阶段在一个本地提交边界内保存。进入 `lease_paused` 会终止 launcher 并停止 create/resume 实例；同版本续租后复检持久 workspace 和凭据，再重新执行通用 prepare、activate 与连通校验。脚本自行根据共享环境和 Runtime 文件恢复直接运行、devcontainer 或其他实现。旧 ready 快照保持 boot stage 单调，但不能跳过本次实例启动后的校验。
+脚本成功结果、规范共享环境和下一本地阶段在一个本地提交边界内保存。进入 `lease_paused` 会终止 launcher 并停止 create/resume 实例；同版本续租后复检持久 workspace 和凭据，再重新执行通用 prepare、activate 与连通校验。脚本自行根据共享环境和 Runtime 文件恢复自己的实现；Manager 不判断它是内置直接运行、devcontainer 案例还是其他自定义环境。旧 ready 快照保持 boot stage 单调，但不能跳过本次实例启动后的校验。
 
 实现验收点：
 
@@ -200,7 +201,7 @@ internal SSH 使用同一边界。activate 使用 `CODESPACE_GATEWAY_INTERNAL_SS
 - Endpoint API 对所有脚本实现都只接收 Incus 通信地址上的实际端口，没有 devcontainer 条件分支。
 - 内部环境的端口转发由脚本建立；Manager 只保存并连接实际地址和端口。
 - internal SSH 的用户、端口和 Host Key 来自通用共享输出，并在 ready 前由 Manager 实际连接校验。
-- Manager 不依赖固定授权文件路径；直接运行和 devcontainer 的 activate 都用同一公钥输入替换各自实际入口的授权内容。
+- Manager 不依赖固定授权文件路径；内置直接运行和自定义环境的 activate 都用同一公钥输入替换各自实际入口的授权内容。
 - 自定义脚本无法通过 Endpoint 请求指定其他 host，Runtime API 继续按 Runtime Token 和实时来源地址限制到当前 Codespace。
 - 内置与自定义脚本使用相同的 `public` 字段；省略命令行选项得到需要认证的入口，显式 `--public` 得到公共普通 Endpoint，workspace 的公共请求被拒绝。
 
@@ -219,22 +220,48 @@ CODESPACE_CREDENTIAL_GID=1000
 
 HTTP(S) remote 使用读取当前 Token 文件的 credential helper。首次尝试 SSH 前，内置脚本原子生成 Ed25519 密钥对，通过 Git SSH Key helper 登记公钥并写入可信 known_hosts。SSH 失败后回退到 HTTP(S) 成功时允许保留已经登记的公钥。`resume.sh prepare` 读取共享 workspace 路径，保留用户当前 HEAD，并只恢复实际 remote 的本地凭据配置，不 clone、fetch、checkout 或探测 repository 可达性。
 
-create 的内置 `start.sh prepare` 在 workspace 中查找 `.devcontainer/devcontainer.json` 或 `.devcontainer.json`：存在时选择固定版本 devcontainer CLI，否则选择直接运行方式。它把选择结果、配置相对路径、容器标识、有效用户和转发端口写入 `GITEA_BUILTIN_*` 共享变量和 Runtime 文件；内置 `resume.sh` 只读取该状态恢复原方式，不重新探测配置，Manager 也不读取这些值。
+内置 `start.sh activate` 始终在 Incus 实例中启动内部 sshd，交互用户为 `codespace`，使用本次 `CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY` 原子替换授权内容，并把实际端口、用户和 Host Key 指纹追加到 `CODESPACE_ENV`。内置 `resume.sh` 读取已经提交的 `CODESPACE_WORKSPACE_DIR`，恢复当前实际 Git remote 的本地凭据和实例内 sshd，不重新探测 repository 配置，也不引入第二层容器环境。
 
-- 直接运行：activate 在 Incus 实例中启动内部 sshd，交互用户为 `codespace`，并把实际 internal SSH 输出追加到 `CODESPACE_ENV`。
-- devcontainer：prepare 在实例内安装并启动所需 Docker、Node.js、devcontainer CLI 和转发工具，创建或恢复主容器并暂缓 repository lifecycle commands。内置实现把有效非 root 用户同步为 `1000:1000`，并自行把 Token、Git SSH、helper 与持久环境提供给容器。
-- devcontainer activate：在容器内补齐 OpenSSH、curl、shell 和 helper，配置用户 authorized_keys，启动容器 sshd，再在 Incus 实例内建立实际 SSH 转发端口。转发建立后写入通用 `CODESPACE_INTERNAL_SSH_*` 变量，然后通过 CLI 的用户命令入口执行适用的 lifecycle commands。
-- devcontainer Endpoint helper：先为容器逻辑端口建立实例实际端口转发，再把实际端口提交给通用 Endpoint API。Manager 和 Gitea 只保存实际端口，容器逻辑端口和容器标识保留在脚本状态中。
+内置脚本只安装直接运行需要的系统工具。它不会查找 `.devcontainer/devcontainer.json` 或 `.devcontainer.json`，不会安装 Docker、Node.js、devcontainer CLI 或容器端口转发工具。repository 中即使存在这些文件，使用内置套件时也把它们当作普通 workspace 文件。
 
-默认实现把 devcontainer 视为 Runtime 内部开发环境。create 期间 devcontainer 配置无效，以及 create/resume 确认有效用户为 root、用户同步失败、workspace 根存储损坏或容器归属冲突时返回 `unrecoverable_failed`；临时容器引擎、构建、包安装或网络错误返回 `recoverable_failed`。resume 缺少或无法解析 `GITEA_BUILTIN_*` 私有状态时统一返回 `recoverable_failed` 并回到 stopped，因为 Manager 不保存创建该 workspace 的脚本类型，无法区分部署从自定义套件切回内置套件和内置私有状态损坏；管理员可以恢复原脚本配置后重试。该结果不能作为 workspace 损坏依据。其他分类只属于内置脚本；自定义脚本按自己的实现给出同一通用 outcome。
+内置 create/resume 确认固定用户、workspace、Git remote 或实例根存储无法形成可信结果时返回 `unrecoverable_failed`；临时包安装、网络或 sshd 启动错误返回 `recoverable_failed`。内置私有状态缺失但通用 workspace 和固定直接运行结构仍可验证时由脚本重建；无法验证时按对应失败分类返回，不由 Manager 猜测恢复。
 
-**设计如此：内置脚本的直接运行/devcontainer 选择在 create 后保存在脚本私有状态中，resume 不重新探测。**这保证已有 workspace 使用同一种内部实现；同时 Manager 不持久化结构化的实现类型，因此从内置套件切换到自定义套件时由新套件负责读取或迁移自己的共享变量。从自定义套件切回内置套件但缺少内置私有状态时保持 stopped，避免因部署配置变化清理 workspace。
+**设计如此：默认内置实现只有一种直接运行行为。**内置脚本不根据 repository 内容切换资源模型，resume 也不需要判断 create 当时选择了哪一种内部环境。这使默认路径具备确定的依赖和恢复结果；需要 devcontainer 时，由管理员显式选择下一节的完整自定义套件。
 
 实现验收点：
 
-- apt/dnf/pacman 探测、固定 `codespace` 用户、sudo、clone 回退、直接运行/devcontainer 和 lifecycle commands 全部在内置脚本测试中覆盖，不进入 Manager 核心测试。
-- 内置直接运行与 devcontainer 最终都只向 Manager 提交相同的 workspace 路径、internal SSH 和实际 Endpoint 端口。
-- devcontainer 容器标识、用户和转发状态只存在于脚本私有环境或 Runtime 文件；Manager 当前快照不含对应结构化字段。
-- resume 使用脚本私有状态恢复原实现，保留 workspace HEAD，并且不依赖 repository payload 或网络可达性。
-- resume 缺少或无法解析内置私有状态时回到 stopped，恢复原脚本配置后可以再次 resume，不清理 workspace。
-- 完整自定义套件可以完全替换内置直接运行/devcontainer 行为，只要通过通用结果、共享环境和 ready 校验。
+- apt/dnf/pacman 探测、固定 `codespace` 用户、sudo、clone 回退、实例内 sshd 和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。
+- 内置脚本不读取 devcontainer 配置，不安装或调用 Docker、Node.js、devcontainer CLI，也不保存容器标识、容器用户或逻辑端口。
+- resume 保留 workspace HEAD，只恢复当前 remote 的凭据和实例内 sshd，不依赖 repository payload 或网络可达性。
+- 完整自定义套件可以替换内置直接运行行为，只要通过通用结果、共享环境和 ready 校验。
+
+## devcontainer 自定义脚本案例
+
+项目随文档提供一套完整、可运行的 devcontainer 自定义脚本案例：
+
+```text
+examples/devcontainer/init.sh
+examples/devcontainer/start.sh
+examples/devcontainer/resume.sh
+examples/devcontainer/README.md
+```
+
+管理员把三个路径作为完整自定义套件配置后，Manager 仍按本章通用顺序调用它们，不设置 devcontainer 模式或额外参数。案例自行完成以下工作：
+
+1. `init.sh` 安装或校验 Docker、Node.js、固定版本 devcontainer CLI 和实例内端口转发工具。案例 README 列出依赖版本、取得方式和校验值；Go 发布物不携带或解释这些依赖。
+2. `start.sh prepare` 使用固定 CLI 从 workspace 解析 devcontainer 配置，创建主容器，把固定 Token 文件、Git SSH、credential helper 和规范共享环境提供给容器，并按 CLI 语义执行 create 适用的 lifecycle commands。
+3. `start.sh activate` 在容器中准备非 root 用户、OpenSSH 和当前 Manager 公钥，启动容器 sshd，再在 Incus 实例通信地址上建立实际端口转发；最后通过通用 `CODESPACE_INTERNAL_SSH_*` 输出提交实际端口、用户和 Host Key。
+4. 案例 Endpoint helper 先把容器逻辑端口转发为 Incus 通信地址上的实际端口，再调用通用 Runtime Endpoint API。Manager 和 Gitea 只接收实际端口。
+5. `resume.sh` 只读取案例保存的 workspace、容器 identity、用户、转发和生命周期状态，恢复既有容器和入口；它不依赖 create repository payload，也不要求 Manager 保存结构化 devcontainer 字段。
+
+案例私有变量使用 `DEVCONTAINER_EXAMPLE_*` 前缀，作为不透明键值保存在 `CODESPACE_ENV`，需要的较大状态保存在 Runtime 根存储内。配置无效、有效用户为 root、用户同步失败、workspace 损坏或容器归属冲突返回 `unrecoverable_failed`；临时容器引擎、构建、包安装或网络错误返回 `recoverable_failed`。缺失或损坏案例私有状态时由案例根据自己能够证明的事实分类，Manager 只消费通用 outcome。
+
+**设计如此：devcontainer 支持由脚本契约提供，而不是由 Go 代码提供。**案例证明自定义套件可以创建嵌套开发环境、执行 lifecycle commands、转发 internal SSH 和 Endpoint；相同契约也能承载其他容器工具或企业开发环境。把 devcontainer 探测、CLI 版本和容器状态放入 Manager 会为一个案例增加专用分支，并使其他自定义环境无法使用同等能力。
+
+实现验收点：
+
+- devcontainer 案例只有作为三个完整自定义脚本路径被显式配置时执行；内置配置不会因 repository 文件自动切换到该案例。
+- Manager 的配置、Go 类型、RPC、本地结构化快照和状态机中没有 devcontainer、Docker、Node.js、CLI、容器 identity、容器用户或逻辑端口字段。
+- 案例通过通用结果提交凭据 UID/GID、workspace、internal SSH 和实际 Endpoint 端口；Manager 使用与内置脚本相同的 ready 校验。
+- 案例的 CLI、lifecycle commands、容器恢复和端口转发由案例端到端测试覆盖；Manager 核心测试使用通用模拟自定义脚本，不包含 devcontainer 条件分支。
+- stop 只停止 Incus 实例，resume 由案例恢复既有容器，delete 删除实例根存储及其中的案例状态；inventory 仍只枚举 Incus 实例。

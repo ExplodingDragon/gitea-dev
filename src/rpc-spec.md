@@ -108,10 +108,10 @@ service ManagerService {
 // --- RegisterManager ---
 
 message RegisterManagerRequest {
-  // The registration token shown in the Codespace manager settings page.
-  string registration_token = 1;
   // ManagerService protocol major version. Version 1 is required by this design.
-  int32 protocol_version = 2;
+  int32 protocol_version = 1;
+  // The registration token shown in the Codespace manager settings page.
+  string registration_token = 2;
 }
 
 message RegisterManagerResponse {
@@ -124,20 +124,20 @@ message RegisterManagerResponse {
 // --- DeclareManager ---
 
 message DeclareManagerRequest {
-  // Gateway scheme, DNS base domain, and optional port; no business path.
-  string gateway_url = 1;
-  string gateway_ssh_addr = 2;
-  repeated string tags = 3;
-  string version = 4;
-  string name = 5;
-  ManagerRuntimeState manager_runtime_state = 6;
-  string gateway_ssh_host_key_algorithm = 7;
-  string gateway_ssh_host_key_fingerprint_sha256 = 8;
-  int64 gateway_ssh_host_key_updated_unix = 9;
-  int32 capacity_total = 10;
-  int32 capacity_available = 11;
   // ManagerService protocol major version. It is independent of the display version.
-  int32 protocol_version = 12;
+  int32 protocol_version = 1;
+  // Gateway scheme, DNS base domain, and optional port; no business path.
+  string gateway_url = 2;
+  string gateway_ssh_addr = 3;
+  repeated string tags = 4;
+  string version = 5;
+  string name = 6;
+  ManagerRuntimeState manager_runtime_state = 7;
+  string gateway_ssh_host_key_algorithm = 8;
+  string gateway_ssh_host_key_fingerprint_sha256 = 9;
+  int64 gateway_ssh_host_key_updated_unix = 10;
+  int32 capacity_total = 11;
+  int32 capacity_available = 12;
 }
 
 message DeclareManagerResponse {
@@ -153,11 +153,13 @@ message DeclareManagerResponse {
 // --- FetchOperations ---
 
 message FetchOperationsRequest {
-  int32 capacity_available = 1;
-  repeated AcceptedOperationType accepted_operation_types = 2;
-  int32 max_operations = 3;
-  repeated ObservedOperation observed_operations = 4;
-  int32 cleanup_capacity_available = 5;
+  // ManagerService protocol major version. Every request carries the caller's version.
+  int32 protocol_version = 1;
+  int32 capacity_available = 2;
+  repeated AcceptedOperationType accepted_operation_types = 3;
+  int32 max_operations = 4;
+  repeated ObservedOperation observed_operations = 5;
+  int32 cleanup_capacity_available = 6;
 }
 
 message ObservedOperation {
@@ -229,9 +231,10 @@ message CreateOperationPayload {
 // --- FinalizeOperation ---
 
 message FinalizeOperationRequest {
-  string codespace_uuid = 1;
-  int64 operation_rversion = 2;
-  FinalResult final = 3;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
+  int64 operation_rversion = 3;
+  FinalResult final = 4;
 }
 
 message FinalResult {
@@ -258,11 +261,12 @@ message ResourceAbsent {}
 // --- UpdateLog ---
 
 message UpdateLogRequest {
-  string codespace_uuid = 1;
-  int64 operation_rversion = 2;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
+  int64 operation_rversion = 3;
   // Byte offset within the log file.
-  int64 offset = 3;
-  repeated LogLine lines = 4;
+  int64 offset = 4;
+  repeated LogLine lines = 5;
 }
 
 message LogLine {
@@ -279,10 +283,11 @@ message UpdateLogResponse {
 // --- ReportRuntimeMetadata ---
 
 message ReportRuntimeMetadataRequest {
-  string codespace_uuid = 1;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
   // JSON data matching the Runtime Metadata schema.
-  string metadata_json = 2;
-  int64 metadata_generation = 3;
+  string metadata_json = 3;
+  int64 metadata_generation = 4;
 }
 
 message ReportRuntimeMetadataResponse {}
@@ -290,7 +295,8 @@ message ReportRuntimeMetadataResponse {}
 // --- RequestGiteaToken ---
 
 message RequestGiteaTokenRequest {
-  string codespace_uuid = 1;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
 }
 
 message RequestGiteaTokenResponse {
@@ -303,9 +309,10 @@ message RequestGiteaTokenResponse {
 // --- EnsureCodespaceGitSSHKey ---
 
 message EnsureCodespaceGitSSHKeyRequest {
-  string codespace_uuid = 1;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
   // Canonical SSH wire-format public key blob parsed from the Runtime helper request.
-  bytes public_key = 2;
+  bytes public_key = 3;
 }
 
 message EnsureCodespaceGitSSHKeyResponse {
@@ -323,10 +330,11 @@ message EffectiveCodespaceRuntimeSettings {
 }
 
 message RequestIdleStopRequest {
-  string codespace_uuid = 1;
-  bool observed_auto_stop_enabled = 2;
-  int64 observed_idle_timeout_seconds = 3;
-  int64 observed_interaction_generation = 4;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
+  bool observed_auto_stop_enabled = 3;
+  int64 observed_idle_timeout_seconds = 4;
+  int64 observed_interaction_generation = 5;
 }
 
 message RequestIdleStopResponse {
@@ -350,7 +358,8 @@ message IdleStopNotApplicable {
 // Validates and consumes an OAuth2-style authorization code
 // issued by Gitea for a codespace endpoint open request.
 message ValidateOpenTokenRequest {
-  string code = 1;
+  int32 protocol_version = 1;
+  string code = 2;
 }
 
 message ValidateOpenTokenResponse {
@@ -371,8 +380,9 @@ message OpenTokenBinding {
 // --- ValidatePublicEndpoint ---
 
 message ValidatePublicEndpointRequest {
-  string codespace_uuid = 1;
-  string endpoint_id = 2;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
+  string endpoint_id = 3;
 }
 
 message ValidatePublicEndpointResponse {
@@ -387,10 +397,11 @@ message PublicEndpointAllowed {}
 // --- VerifySSHPublicKey ---
 
 message VerifySSHPublicKeyRequest {
+  int32 protocol_version = 1;
   // codespace_uuid parsed from SSH connection string (cs-{id} prefix).
-  string codespace_uuid = 1;
+  string codespace_uuid = 2;
   // SSH wire-format public key blob from the client authentication request.
-  bytes public_key = 2;
+  bytes public_key = 3;
 }
 
 message VerifySSHPublicKeyResponse {
@@ -408,10 +419,11 @@ message SSHAuthBinding {
 // --- ReportInstances ---
 
 message ReportInstancesRequest {
+  int32 protocol_version = 1;
   // Strictly increases for each complete local scan attempt.
-  int64 inventory_generation = 1;
+  int64 inventory_generation = 2;
   // Complete set of local Runtime Instance identifiers owned by this Manager.
-  repeated RuntimeInstanceRef instances = 2;
+  repeated RuntimeInstanceRef instances = 3;
 }
 
 message RuntimeInstanceRef {
@@ -457,12 +469,13 @@ message ClearOperationContext { int64 current_operation_rversion = 1; }
 // --- ReportRuntimeTransition ---
 
 message ReportRuntimeTransitionRequest {
-  string codespace_uuid = 1;
-  int64 runtime_generation = 2;
+  int32 protocol_version = 1;
+  string codespace_uuid = 2;
+  int64 runtime_generation = 3;
   // The latest Gitea-issued operation version observed before this fact was produced.
-  int64 observed_operation_rversion = 3;
+  int64 observed_operation_rversion = 4;
   // Only RUNTIME_STATE_STOPPED and RUNTIME_STATE_FAILED are valid.
-  RuntimeState runtime_state = 4;
+  RuntimeState runtime_state = 5;
 }
 
 message ReportRuntimeTransitionResponse {}
@@ -470,9 +483,10 @@ message ReportRuntimeTransitionResponse {}
 // --- RevalidateGatewaySession ---
 
 message RevalidateGatewaySessionRequest {
+  int32 protocol_version = 1;
   oneof session {
-    EndpointSessionBinding endpoint = 1;
-    SSHSessionBinding ssh = 2;
+    EndpointSessionBinding endpoint = 2;
+    SSHSessionBinding ssh = 3;
   }
 }
 
@@ -523,11 +537,13 @@ x-codespace-manager-id: <manager id>
 x-codespace-manager-secret: <manager secret>
 ```
 
-`RegisterManager` 使用 registration token 认证，token 通过 request body 传递。`RegisterManager` 和 `DeclareManager` 都必须提交 `protocol_version=1`。Register 在查询 registration token 前校验版本；Declare 在统一 Manager 身份认证后、更新 heartbeat 或声明快照前校验版本。
+`RegisterManager` 使用 registration token 认证，token 通过 request body 传递。每个 ManagerService request 都必须提交 `protocol_version=1`。Register 在查询 registration token 前校验版本；其他 RPC 先通过统一入口认证 Manager ID 和 secret，再在取得业务锁、更新 heartbeat/generation 或执行生命周期读写前校验版本。
 
-`protocol_version` 是 ManagerService 的主版本。第一版只支持版本 1，Gitea 同一时刻只实现一个主版本；只有会改变既有字段含义、状态推进或错误处理的不兼容变更才提高它。普通增加可由旧端忽略的 protobuf 字段时保持当前主版本。版本不匹配返回 `protocol_mismatch`，Register 不创建 Manager，Declare 不更新 heartbeat、地址、容量或运行状态。Manager 收到该错误后关闭入口和新的 Incus 修改，以明确错误退出。该字段与用于页面展示的软件 `version`、Manager 本地状态文件格式版本以及脚本结果版本互相独立。
+`protocol_version` 是 ManagerService 的主版本。当前设计只支持版本 1，Gitea 同一时刻只实现一个主版本；只有会改变既有字段含义、状态推进或错误处理的不兼容变更才提高它。普通增加可由旧端忽略的 protobuf 字段时保持当前主版本。版本不匹配返回 `protocol_mismatch`，当前请求不产生任何业务写入。Manager 收到该错误后关闭入口和新的 Incus 修改，以明确错误退出。该字段与用于页面展示的软件 `version`、Manager 本地状态文件格式版本以及脚本结果版本互相独立，也不保存到 Manager 数据库记录。
 
-**设计如此：ManagerService 不协商多个协议主版本。**Gitea 和 Manager 可以在保持主版本兼容时独立更新；需要提高主版本时，由部署方完成配套升级。单一版本校验可以在执行生命周期写入前拒绝不兼容客户端，也避免增加能力列表和分支状态机。
+**设计如此：每个请求都携带主版本，ManagerService 不协商多个协议主版本。**逐请求字段能拒绝仍持有有效 Secret 但协议不匹配的进程，也不会依赖最近一次 Declare 或数据库中的历史声明推测当前调用方版本。Gitea 和 Manager 可以在保持主版本兼容时独立更新；需要提高主版本时，由部署方完成配套升级。这个边界在执行生命周期写入前拒绝不兼容客户端，同时不增加能力列表和分支状态机。
+
+**设计如此：每个 request 的 `protocol_version` 固定为 protobuf 字段 1。**协议版本是所有请求共同且最先校验的前置字段，放在第一位可以从消息定义直接看出统一约定；其余业务字段从 2 开始连续编号，当前 wire contract 以这套完整布局为准。
 
 `CONTROL_PLANE_TIMEOUT` 到期返回 Connect `DeadlineExceeded`，caller 取消返回 `Canceled`；这两类传输终止不附 `FailureDetail`。已提交的短事务结果保持有效，除 `RegisterManager` 外的调用方按 operation、generation 或 offset 规则继续；`RegisterManager` 的不确定结果由管理员先检查未 Declare 的记录。
 
@@ -535,7 +551,7 @@ x-codespace-manager-secret: <manager secret>
 
 输入校验规则：
 
-- `RegisterManager.protocol_version` 和 `DeclareManager.protocol_version` 必须等于当前 ManagerService 主版本 1；0、负数和其他版本返回 `protocol_mismatch`，不能按旧客户端或默认行为继续。
+- 每个 request 的 `protocol_version` 必须等于当前 ManagerService 主版本 1；0、负数和其他版本返回 `protocol_mismatch`，不能按旧客户端或默认行为继续。Register 在 token 查询前拒绝；其他 RPC 在 Manager 身份认证后、任何业务读取结果或写入前拒绝。
 - enum 只接受各定义中明确列出的业务值；`UNSPECIFIED` 和未知数值返回 `invalid_argument`。这样新增枚举值不会被旧服务端误作默认行为。
 - `codespace_uuid` 只接受 Gitea 生成的 36 字符小写带连字符 UUID v4；其他形式在查询和构造锁 key 前返回 `invalid_argument`，保证一个 Codespace 只有一种外部表达。
 - 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0。inventory item 的 `observed_operation_rversion=0` 固定表示 Manager 没有可继续的完整 active operation 上下文，即使 Gitea 当前 `codespace.operation_rversion` 已经是正数也成立；正数固定表示 Manager 持有该版本的完整 active operation 上下文。该字段不传输本地历史最高版本，也不写回数据库版本。
@@ -555,6 +571,7 @@ x-codespace-manager-secret: <manager secret>
 - `gateway_url` 使用无尾随点的规范 ASCII DNS 主机名，每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符，并与 Gitea `ROOT_URL` 处于不同可注册域；`gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一。任一校验或唯一性冲突都不产生部分声明更新。
 - `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
 - Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 固定匹配 `^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`，每项必须包含布尔 `public`。`workspace` 项的 `public` 必须为 false，并继续使用无 ID 前缀的 workspace Host。
+- 每个 Endpoint 的 `label` 必须是合法 UTF-8；去除首尾 Unicode 空白后保存，按 Unicode 字符数计算的长度为 1 到 64，且不包含控制字符、`<` 或 `>`。Manager 与 Gitea 使用相同规则，不执行 Unicode 归一化、替换或自动清洗；非法 label 不写入本地路由或 Gitea cache。
 - Runtime Metadata 的 boot 上下文按状态校验：active create/resume 使用当前 operation 和适用的 `prepare-runtime|initialize-system|prepare-workspace|start-environment|publish-runtime|ready` 顺序，running 固定为 boot 版本不大于当前 operation 的 `ready`；stopped 且无 active operation 时拒绝 metadata。同一 boot 版本一旦 ready 就保持 ready。
 - `ReportRuntimeMetadataResponse` 为空。成功响应确认 Gitea 接受了该请求携带的 `metadata_generation + metadata_json`；Manager 使用发送前保存的 generation 和完整快照更新 ready 接受记录并判断是否还需发送本地更新版本。功能关闭返回 `state_unavailable`，Manager 保留本地快照和 generation 重试。
 - `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
@@ -569,13 +586,16 @@ x-codespace-manager-secret: <manager secret>
 - `RequestGiteaToken` 在功能启用、Manager 声明为 online 或 recovering 且 heartbeat 有效时，只接受三种阶段：已领取且租约未到期的 create、已领取且租约未到期的 resume，以及无 active operation 的 running。成功时返回或签发 Token，并始终返回规范化 `server_url`。active stop 创建前已经下发的 Token 仍按 running 阶段完成新请求授权，但该 worker 不能重新读取、签发或修复 Token；active stop、active delete 和站点排空下的 `RequestGiteaToken` 返回 `state_unavailable`。
 - create/resume payload 的 `git_protocol` 必须等于 Codespace 创建时固化的 `http|ssh` 首选项。create 同时下发两种规范 clone URL；所选脚本实际使用 SSH 时，通过 `EnsureCodespaceGitSSHKey` 创建或确认公钥，SSH remote 的 resume 复用同一密钥。请求公钥为空、无法解析、算法不是 Ed25519 或超过 Gitea SSH key 大小限制时返回 `invalid_argument`。
 - `EnsureCodespaceGitSSHKey` 只接受与调用方 Manager 绑定、当前已领取且期限未到期的 create/resume 初始化阶段；固化首选项为 `http` 或 `ssh` 都可以调用。create 可以在 HTTP(S) 首选失败后为 SSH fallback 调用；resume 由脚本仅在 workspace 当前实际 remote 为 SSH 时调用。绑定不存在时创建，绑定为相同公钥时幂等返回当前 `known_hosts_lines`；已有不同公钥或全局指纹冲突时返回 `key_conflict`，不替换当前绑定。响应至少包含一条与 Gitea SSH 对外 host 和有效端口匹配的规范化 Host Key 行。
+- User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一规范指纹锁并在事务内复查。Codespace 路径先取得 Codespace lock 再取得指纹锁；不同 Codespace 或不同 Key 类型并发提交相同公钥时只允许一个符合类型规则的创建结果，历史重复指纹返回数据完整性硬错误。
 - 所有编码后的 protobuf request 和 response 都不超过 `CONTROL_PLANE_MAX_MESSAGE_SIZE`；`UpdateLog.lines` 单行另受 `LOG_MAX_LINE_SIZE` 限制。日志按返回的消息上限分批，inventory、observed operation、Runtime Metadata 和单条日志物理行是必须能整体传输的协议单元。
 
 实现验收点：
 
-- Register 协议版本不匹配时不创建 Manager；Declare 不匹配时不更新 heartbeat 或声明快照，Manager 关闭入口和新动作后退出。
+- 任一 request 协议版本不匹配时不产生业务写入；Register 不查询 token 或创建 Manager，Declare 不更新 heartbeat 或声明快照，其他 RPC 不推进 operation、generation、日志、交互或清理结果。Manager 关闭入口和新动作后退出。
+- 全部 ManagerService request 的 `protocol_version` 都是字段 1，各请求业务字段从 2 开始连续编号。
+- Runtime Metadata 的 label 校验覆盖非法 UTF-8、去除首尾 Unicode 空白后为空、1/64/65 字符边界、控制字符、`<`、`>` 和合法中文；Manager 与 Gitea 对相同输入得到相同规范值和内容 hash。
 - 软件展示版本、ManagerService 主版本、本地状态格式版本和脚本结果版本使用不同字段，任一实现都不从另一个版本推导兼容性。
-- 除 `RegisterManager` 外的 RPC 都通过统一 interceptor 认证 Manager ID 和 secret。
+- 除 `RegisterManager` 外的 RPC 都通过统一 interceptor 认证 Manager ID 和 secret；所有 request 随后通过统一版本校验，handler 不各自遗漏该前置条件。
 - Manager 身份认证成功后，handler 从 request context 读取同一 Manager 记录。
 - 首次 Declare 响应在 64 KiB 读取上限内返回三个正数控制参数和规范 `gitea_web_url`；Manager 只在完整校验成功后原子启用这些参数并进入 online。URL 带 AppSubURL 时通过结构化 URL resolve 生成 Gitea 打开路由，不使用字符串拼接；非法响应保持 recovering 和零容量，后续成功 Declare 可以整体替换旧值。
 - 命令拒绝与访问判定使用文中规定的两种响应方式，不混合表达。

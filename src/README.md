@@ -6,11 +6,11 @@ Codespace 是 Gitea 内置的远程开发环境入口。
 
 | 主体 | 职责 |
 | --- | --- |
-| Gitea | repository、ref 与 commit 校验；用户身份与权限（复用 `CanRead(unit.Code)` 统一入口）；Codespace 生命周期状态；Codespace Manager 注册与认证（参考 Actions runner 注册模式）；独立 Codespace Gitea Token 和 Git SSH 公钥绑定；Gateway Open Token、公共 Endpoint 与已有 session 校验；用户工作区 SSH 与 Git SSH 认证判定；operation 日志存储与读取（基于 DBFS） |
+| Gitea | repository、ref 与 commit 校验；用户身份与权限（复用 `CanRead(unit.TypeCode)` 统一入口）；Codespace 生命周期状态；Codespace Manager 注册与认证（参考 Actions runner 注册模式）；独立 Codespace Gitea Token 和 Git SSH 公钥绑定；Gateway Open Token、公共 Endpoint 与已有 session 校验；用户工作区 SSH 与 Git SSH 认证判定；operation 日志存储与读取（基于 DBFS） |
 | Codespace Manager | 通过 Incus 创建、恢复、停止、删除 Runtime Instance；把 repository tag 映射为本地实例模板；执行可替换的本地初始化脚本；周期验证 running Codespace 的基础交互能力；管理 Runtime Token、Runtime HTTP API、Runtime Metadata、Endpoint upstream 和通信地址 |
 | Codespace Gateway（Manager `serve` 进程内组件） | 需要认证与公共 Endpoint 接入；用户 SSH 接入；Gateway session 和公共连接管理；通过 Manager 身份调用 Gitea 完成访问校验；到 Runtime Instance 的 HTTP/WebSocket 与 SSH channel 转发 |
 
-本文承担整体边界和阅读导航。生命周期转换以[状态机](state-machine.md)为完整定义，持久字段以[数据模型](data-model.md)为完整定义，通信字段与校验以[RPC 协议](rpc-spec.md)为完整定义，运行编排与恢复分别以[生命周期流程](lifecycle-flows.md)和[维护与恢复](maintenance-recovery.md)为完整定义，脚本输入、输出和默认行为以[脚本契约与内置实现](builtin-scripts.md)为完整定义；Gitea 与 Manager/Gateway 文档负责把这些规则落实到各自组件。总览和术语表保留跨组件规则的简要说明，组件章节会保留实现该组件所需的输入、结果和验收点。维护同一规则时先修改承担完整定义的专题文档，再同步相关摘要和组件行为，使每条规则有唯一的完整定义，同时让读者在当前章节取得足够的实现条件。
+本文承担整体边界和阅读导航。生命周期转换以[状态机](state-machine.md)为完整定义，持久字段以[数据模型](data-model.md)为完整定义，通信字段与校验以[RPC 协议](rpc-spec.md)为完整定义，Codespace Token 的精确 API 允许面以 [`codespace-token-routes.yaml`](codespace-token-routes.yaml) 为完整定义，运行编排与恢复分别以[生命周期流程](lifecycle-flows.md)和[维护与恢复](maintenance-recovery.md)为完整定义，脚本输入、输出和默认行为以[脚本契约与内置实现](builtin-scripts.md)为完整定义；Gitea 与 Manager/Gateway 文档负责把这些规则落实到各自组件。总览和术语表保留跨组件规则的简要说明，组件章节会保留实现该组件所需的输入、结果和验收点。维护同一规则时先修改承担完整定义的专题文档，再同步相关摘要和组件行为，使每条规则有唯一的完整定义，同时让读者在当前章节取得足够的实现条件。
 
 Gitea 管理生命周期、权限判断、Codespace Token 和 Git SSH 公钥绑定。Manager 只使用 Incus 管理运行环境，并在本地决定 tag 对应的是虚拟机还是系统容器；运行时专有配置和 Runtime Token 由 Manager 维护，Git SSH 私钥由 Runtime 保存。这样 Gitea 的状态机和协议不随实例类型变化，同时运行侧只有一套可实现、可测试的资源生命周期。
 
@@ -145,7 +145,7 @@ sequenceDiagram
 ## 核心原则
 
 - Gitea 只负责授权、状态、日志、Codespace Token、Git SSH 公钥绑定和跳转入口。
-- Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.Code)` 统一入口）、Token hash/Secret 工具、SSH key、登录限制、git、Pull Request 和 Actions task 领取模型；Codespace Token 使用独立表，不复用普通 PAT 行。
+- Codespace 复用 Gitea 现有用户、组织、仓库、权限（`CanRead(unit.TypeCode)` 统一入口）、Token hash/Secret 工具、SSH key、登录限制、git、Pull Request 和 Actions task 领取模型；Codespace Token 使用独立表，不复用普通 PAT 行。
 - create、认证打开、SSH、resume、stop、delete 和 logs 使用 Gitea 服务层统一用户权限判定入口。公共 Endpoint 使用独立的当前状态校验，不要求用户身份。两类入口都复用 Codespace、Manager 和 Runtime Metadata 的服务层判定，避免 handler 各自拼接生命周期条件。
 - 用户登录后，满足 Gitea 登录限制（`is_active`、`prohibit_login`、`must_change_password`、站点强制 2FA）且拥有 repository code-read 权限，就可在许可的仓库状态下创建 codespace。
 - repository 状态只参与 create 阶段的来源校验。create operation 完成、workspace 已初始化后，Codespace 按自身状态继续运行；repository 删除、归档、迁移、ref 移动或创建用户权限变化，只影响后续 Git HTTP(S)/SSH、LFS 和 repository API 的具体结果，每个请求仍由 Gitea 当前 repository、unit、分支保护和用户权限判定，不反向改变 Codespace 生命周期。
@@ -153,7 +153,7 @@ sequenceDiagram
 - Manager 使用 codespace 身份访问 repository，不直接使用自己身份。
 - Runtime 始终使用代表创建用户的 Codespace Gitea Token 调用开发协作 API；HTTP(S) remote 同时用它完成 Git smart HTTP，SSH remote 使用工作环境生成、只绑定当前 Codespace 仓库的专用 Key。两种 Git 入口都继续执行 Gitea 当前用户、repository、unit、分支保护和权限检查。
 - Git 首选协议在 Codespace 创建时按站点默认值固化。create 脚本同时得到 HTTP(S) 和 SSH clone URL，并选择实际 remote；内置脚本在带当前 UUID 标记的临时 workspace 中先尝试首选入口，clone/fetch 非零退出时清理该目录并用另一入口重试一次。Manager 校验 HEAD、最终 workspace 和实际 remote 的本地凭据配置。已有 Codespace 的 resume 只配置实际 remote 的本地凭据，站点默认值变化只影响新建对象。
-- Git SSH Key 使用 `KeyTypeCodespace` 和一对一关系表；鉴权成功后以创建者为真实用户且 `DeployKeyID=0`。普通用户 Key、Deploy Key 和 Gateway 用户 SSH Key 保持各自范围和生命周期。
+- Git SSH Key 使用 `KeyTypeCodespace` 和一对一关系表；鉴权成功后以创建者为真实用户且 `DeployKeyID=0`。User、Deploy 和 Codespace 三类公钥创建按同一规范指纹锁串行并在事务内复查，保留各自类型语义；普通用户 Key、Deploy Key 和 Gateway 用户 SSH Key 保持各自范围和生命周期。
 - Git、LFS 和按具体 method/route 标记的开发 API 在副作用前由 resolver 通过一次查询读取独立 Token 行、Codespace 工作状态、唯一 `repo_id` binding 和创建用户当前登录限制；仓库控制权、长期凭据、用户/组织/站点管理、Package 和其他 repository 请求保持拒绝。
 - **设计选择：Token 行的持久生命周期与单次请求授权分别判定。** Token 行随有效 create/resume 初始化期或 `running` 保留，并在这三个阶段直接用于绑定仓库的 Git/LFS/API；稳定 `stopped` 没有 Token。resume final failed/timeout、stop final、`failed`、`deleting` 或物理删除会物理删除 Token 行。active stop 创建前已有的 Token 可以继续使用，但 Manager 不能重新请求明文。站点排空或用户登录限制成立时，新请求分别返回状态不可用或登录受限；条件恢复且 Codespace 仍处于允许阶段时，同一 Token 可继续使用。repository 删除后 `repo_id` 写为 0，Token 仍可签发和保存，但 repository 请求均因没有匹配的绑定仓库而拒绝。
 - 同一 `operation_rversion` 的 create、resume、stop、delete 在 Manager 执行、日志重放和 final 重试层面必须幂等；普通 Web POST 只按请求到达时的当前资源状态处理，不承诺没有请求键或 tombstone 支撑的网络级幂等。
@@ -163,8 +163,9 @@ sequenceDiagram
 - stopped Runtime 只通过 Gitea 下发的 resume operation 恢复；Manager 在该 operation 内先运行 init 取得凭据身份，再申请并写入新 Gitea Token 和 Runtime Token，随后运行 resume prepare/activate。Manager 按 workspace 实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 ready 后才能 final done 进入 running。ready 不探测 repository 可达性；repository 删除后已有 workspace 仍可恢复，后续 Git/API 请求按当前 binding 和权限返回结果。面向用户的 open 和 Gateway SSH 等待 running。
 - Runtime inventory 差异只在 `ReportInstances` 请求内计算；Manager offline 由请求实时派生。单个 `reconcile_codespaces` Cron 不保存或重放 inventory，只处理数据库可判断的 operation 超时和 failed 到期清理。Token 创建与删除由签发和生命周期事务完成，不增加周期修复路径。
 - failed 保留期到期后由 Gitea 直接物理删除记录、Codespace Token、Git SSH Key 和日志，提交并释放 Codespace lock 后尽力清理 cache；Cron 不创建 Manager operation 或等待远端确认，原 Manager 身份仍有效时由后续成功的完整 inventory 对无记录 UUID 返回 `cleanup_local_runtime`。
-- Codespace Token 使用 `gcs_` 专用前缀和独立表；Web/API 认证入口先识别该前缀并进入 Codespace 专用认证分支。该分支验证失败时直接返回认证失败，普通密码、PAT、Session 或 Reverse Proxy 认证不再处理该凭据。resolver 通过一次候选查询验证 Token，并生成包含 Codespace、创建用户、仓库绑定和登录限制的请求内认证数据；后续权限检查复用这份数据。API 路由注册处按具体 method/route 标记开发操作。**设计理由：Codespace Token 是绑定仓库的开发凭据。**它支持 commit、Issue、Pull Request、Release、Wiki 和受限 Actions 操作；仓库删除、权限、Hook、Deploy Key、Actions Secret/Runner 等管理操作统一返回 403。直接 API 路由目标必须是绑定 repository，进入绑定 Issue/PR 后，由 Gitea 已有的 fork、commit、dependency、project 关系触发的关联写入继续按创建用户当前权限处理。新增 API route 只有明确标记为开发操作后才接受 Codespace Token。通知使用 Gitea 现有机制；SSH 认证限流由 Gateway 执行，Manager RPC 通过认证、双向消息大小和控制面超时限制资源使用。
+- Codespace Token 使用 `gcs_` 专用前缀和独立表；Web/API 认证入口先识别该前缀并进入 Codespace 专用认证分支。该分支验证失败时直接返回认证失败，普通密码、PAT、Session 或 Reverse Proxy 认证不再处理该凭据。resolver 通过一次候选查询验证 Token，并生成包含 Codespace、创建用户、仓库绑定和登录限制的请求内认证数据；后续权限检查复用这份数据。普通 API route 和 `RouterPathGroup` 具体 matcher 都在认证前按 [`codespace-token-routes.yaml`](codespace-token-routes.yaml) 的 method/path 写入类型化 marker，注册快照与清单通过测试保持一致。`signed_artifact` raw route 从开始就使用 HMAC 与 expires 独立认证，不解析普通身份凭据。**设计理由：Codespace Token 是绑定仓库的开发凭据。**它支持 commit、Issue、Pull Request、Release、Wiki 和受限 Actions 操作；仓库删除、权限、Hook、Deploy Key、Actions Secret/Runner 等管理操作统一返回 403。直接 API 路由目标必须是绑定 repository，进入绑定 Issue/PR 后，由 Gitea 已有的 fork、commit、dependency、project 关系触发的关联写入继续按创建用户当前权限处理。新增 API route 只有同时进入精确清单并安装对应 marker 后才接受 Codespace Token。通知使用 Gitea 现有机制；SSH 认证限流由 Gateway 执行，Manager RPC 通过认证、双向消息大小和控制面超时限制资源使用。
 - repository/ref/commit/config 前置校验失败直接返回创建错误，不产生残缺对象；来源数据完整但 Manager 不匹配或进入队列后的 create 失败，在同一 codespace 对象上进入 `failed`，由用户决定 delete 后重新创建。
+- repository Codespace 配置只接受单个 YAML mapping 和字段 `tag`，未知、重复或错误类型字段直接返回配置错误。tag 只选择 owner scope 已声明的开发能力和资源模板，不承担用户授权或信任等级；每个已声明模板都适用于该 scope 内符合创建权限的仓库代码。
 - 失败为终态，通过 delete 退出。
 - delete 成功后物理删除 Codespace、Codespace Token、Git SSH Key 和日志。
 - Manager 的并发容量由 Manager 自行控制；Fetch 分别以 `capacity_available` 和 `cleanup_capacity_available` 表达可立即承接的启动与清理任务数量，Gitea 不维护本地 worker 占用计数。
@@ -185,10 +186,11 @@ sequenceDiagram
 - SSH 认证限流与退避由 Gateway 按 source IP、codespace、source IP + codespace 和 public key hash 多维度执行，降低暴力破解风险并减少单一维度限流的误伤。
 - Manager/Gateway 只在本地结构化诊断日志中记录鉴权拒绝、限流、连接和恢复失败，不建立成功连接访问审计；用户 open、SSH、继续运行和 resume 推进用于空闲请求竞态的 `interaction_generation`，`last_active_unix` 仍只作为尽力更新的展示时间，写入失败不阻断访问。
 - repository 删除后 codespace 与 repository 不再保持强关联，Gitea 在删除事务中把 `repo_id` 写为 0，但不因 repository 删除单独改写主状态。`repo_id=0` 是来源 repository 已不可解析的机器状态；open、SSH、resume、stop、delete 和 logs 继续按 codespace 自身权限与状态判定，不依赖已经不存在的 repository row。
-- 会影响账户删除判定的关系写入统一使用 `owner_write_{owner_id}`：全部 repository 创建/转移/删除、package/version 写入、组织与 team 成员写入、Codespace 创建、Manager 注册和 registration token 变更都在锁内事务中复读 owner。多个 owner ID 去重升序取得，后续锁层级固定为 repository、Manager、Codespace。
-- repository 创建在 owner 写锁内提交可见关系，并在释放 owner 前把保护接续给新 repository lock，再执行耗时初始化；`CreateCodespace` 记录插入、repository 删除和 transfer 使用相同 repository key。只有实际修改 `owner_id` 的 transfer 同时取得原/新 owner 写锁，transfer 后 repository 关系跟随新 owner。
-- 用户或组织删除时，在任何 owner repository 删除前按 keyset 分批、逐 Codespace 短事务清理当前仍通过创建者、repository 或 Manager owner 关系关联的 Codespace、Codespace Token、Git SSH Key 和日志，并清理目标 owner 自有的 Manager、地址与 registration token。用户 purge 在组织成员和 package 阶段释放用户 owner 写锁，最终重新取得并复扫全部删除判定关系；管理员删除用户与自助删除调用同一服务。此前已单独删除 repository 的 `repo_id=0` Codespace 不再保留原 repository owner 关系。
-- Manager 删除时，持续持有 owner 和 Manager lock，按 UUID keyset 分批、逐 Codespace 短事务清理 binding、Codespace Token、Git SSH Key 和日志，空集合复检后删除 Manager 地址与 Manager；online、offline 和 recovering 都使用相同路径，不联系 Manager。
+- Codespace、Manager 和 registration token 这三类新增 owner 关系统一使用 `codespace_owner_{owner_id}`：写入在专用关系锁内复读 owner，账户删除在释放该锁执行现有 purge 阶段后重新取得并复扫。`owner_id=0` 使用 `codespace_owner_0` 串行化全局 Manager 与 registration token，不对应可删除账户。普通 repository、package、组织成员和 team 成员继续使用 Gitea 现有服务、purge 复扫与最终事务检查。
+- repository 删除、`CreateCodespace` 记录插入、重命名和 transfer start/accept/reject/cancel 使用同一 `repo_working_{repo_id}`，并在锁内复读适用记录；普通 repository 创建、push 和设置修改保持 Gitea 现有并发语义。`CreateCodespace` 还需按 ID 升序取得创建者和当前 repository owner 的 Codespace owner relation lock，因为它会新增这两类账户删除需要清理的关系。
+- 用户或组织删除时，先在 Codespace owner relation lock 内按 keyset 分批、逐 Codespace 短事务清理当前仍通过创建者、repository owner 或 Manager owner 关联的 Codespace、Codespace Token、Git SSH Key 和日志，并清理目标 owner 自有的 Manager、地址与 registration token。用户 purge 在组织成员和 package 阶段释放该关系锁，最终重新取得并复扫 Codespace 新增关系；管理员删除用户与自助删除调用同一服务。此前已单独删除 repository 的 `repo_id=0` Codespace 不再保留原 repository owner 关系。
+- Manager 删除时，持续持有对应 Codespace owner relation lock 和 Manager lock，按 UUID keyset 分批、逐 Codespace 短事务清理 binding、Codespace Token、Git SSH Key 和日志，空集合复检后删除 Manager 地址与 Manager；online、offline 和 recovering 都使用相同路径，不联系 Manager。
+- **设计如此：Codespace owner relation lock 不是 Gitea 的通用账户写锁。**它只解决本功能新增关系与账户删除的提交竞态；把全部 repository、package 和成员写入接入一把新锁会扩大改动范围，并重复 Gitea 已有的删除复扫机制。需要同时取得多类锁时，顺序固定为 Codespace owner relation、repository、Manager、Codespace。
 - **设计选择：Owner/Manager 删除对调用方同步完成，内部按有界批次和可重试短事务清理 Gitea 本地资源。**Owner 删除在全部删除判定关系与 Codespace 关联资源清空后返回成功，Manager 删除在绑定 Codespace 与地址清空后返回成功；数据库步骤失败时保留父记录，已经提交的子项保持删除，重试继续处理剩余项。账户清理绑定到其他 owner 或 `owner_id=0` Manager 的 Codespace 时只取得 Codespace lock，并由数据库复检保证旧 RPC 不能重建记录；全局 Manager、地址、registration token 及其无关 Codespace 保持有效。全局或其他仍有效 Manager 在后续完整 inventory 中清理无记录 UUID；随 owner 删除而失效的 Manager 无法继续认证，其运行资源由部署运维处理。账户删除结果因此不依赖运行侧当前可用性。
 - Codespace 日志存储在 DBFS，使用 byte offset 追加和读取。日志写入只涉及 DBFS 和当前日志元数据，不向生命周期状态机增加归档状态。
 - `manager_id=0` 的 codespace delete 在 Codespace lock 内使用带 UUID、版本、binding 和 operation 条件的事务物理删除；Fetch claim 使用对应条件更新。claim 先提交时 delete 重新读取并进入 `deleting`，delete 先提交时 claim 影响 0 行，因此无需为 claim 增加 Codespace lock。已经绑定 Manager 的 delete 由绑定 Manager 清理 Runtime。
@@ -209,7 +211,7 @@ sequenceDiagram
 - resolver 的一次候选查询生成当前请求使用的 Token、Codespace、仓库绑定和登录限制数据；后续权限检查复用该结果。并发状态变化先提交时当前请求被拒绝，查询先完成时当前请求按已取得的授权结果完成。
 - active stop 和排空模式不调用或放行 `RequestGiteaToken`；Manager 从本地 Runtime credential 文件恢复 stop 日志脱敏值，无法确认安全的缓冲日志不上传。
 - Token 行不由 Cron 修复；签发、状态转换和物理删除路径在各自 Codespace 事务中维护唯一当前行。
-- 用户或组织删除成功后，不存在指向目标 owner 的 repository、package、组织与 team 成员、Codespace、owner-scoped Manager 或 registration token 关系；分阶段释放 owner 写锁期间提交的关系由最终复扫清理或使删除保留禁用 owner 并返回错误。
+- 用户或组织删除成功后，不存在指向目标 owner 的 repository、package、组织与 team 成员、Codespace、owner-scoped Manager 或 registration token 关系；释放 Codespace owner relation lock 期间提交的本功能新增关系由最终复扫清理或使删除保留禁用 owner 并返回错误，其他关系由 Gitea 现有 purge 复扫与最终事务检查保证。
 - 删除普通用户或组织保留 `owner_id=0` 的全局 Manager、地址和 registration token，也保留与目标三条关系均无关的全局 Manager binding。
 - Manager 删除不经过运行侧回收流程，绑定 Gitea 资源通过有界短事务清理，最终空集合复检后删除 Manager。
 - 数据表、RPC、配置与管理界面均不包含单 Manager enable、disable、pause 或 quarantine 能力。
@@ -223,7 +225,8 @@ sequenceDiagram
 - `ENABLED=true` 时 HTTP 与 SSH 两种 Git 接入都在 Codespace 组件初始化前通过校验；排空模式允许关闭任一入口并继续完成 stop、delete 与管理清理。
 - Manager 本地版本基线丢失后，running 主状态对应 stopped Runtime 或无 active operation 的 failed inventory 可从 report transition action 取得当前版本；stopped 主状态对应 running Runtime 固定停止 Incus 实例并保留根存储，新的启动只来自 resume operation。Manager 持有正版本操作上下文但低于 Gitea 当前 active operation 时，failed inventory 可通过 refetch 取得当前 payload；版本相同时直接提交当前 operation 的 final failed；`observed_operation_rversion=0` 表示上下文缺失，只等待原租约超时。单 Codespace 不可恢复时可上报 failed 状态报告，Manager 整体离线本身不批量改写 Codespace。
 - running 只由当前 create/resume 的 ready metadata 和 Token 都完整的 final done 建立；同一 boot 版本 ready 不回退，resume 失败后清除本轮发布上下文并拒绝迟到快照，下一次 resume 从保留的 Incus 实例重建。
-- 每个 Codespace 只有一个串行 metadata 发布任务管理完整快照和 generation。`ReportRuntimeMetadata` 的成功空响应确认 Gitea 接受本次请求快照；请求携带当前 operation ready 时即可继续 final，后续 Endpoint generation 异步收敛。Endpoint 声明以字段形式保存在既有 Codespace 当前快照中，使路由、boot、internal SSH 和 generation 共享“临时文件、文件同步、rename、父目录同步”的提交点；提交后才替换内存路由并返回成功。进程重启读取完整旧版或新版时，通过 Fetch、inventory 和 Runtime 幂等请求恢复。同步期间新增入口暂不展示，已删除入口由 Gateway 当前路由复检拒绝。
+- 每个 Codespace 只有一个串行 metadata 发布任务管理完整快照和 generation。`ReportRuntimeMetadata` 的成功空响应确认 Gitea 接受本次请求快照；请求携带当前 operation ready 时即可继续 final，后续 Endpoint generation 异步收敛。Endpoint 声明以字段形式保存在既有 Codespace 当前快照中，使路由、boot、internal SSH 和 generation 共享“临时文件、文件同步、rename、父目录同步”的提交点；提交后才替换内存路由并返回成功。进程重启读取提交前或提交后的任一完整快照时，通过 Fetch、inventory 和 Runtime 幂等请求恢复。同步期间新增入口暂不展示，已删除入口由 Gateway 当前路由复检拒绝。
+- Endpoint label 使用 Manager 与 Gitea 共同执行的合法 UTF-8、去除首尾 Unicode 空白、1 到 64 个 Unicode 字符和禁止控制字符、`<`、`>` 规则；非法值不进入本地路由或 Gitea cache，合法值按普通文本展示。
 - Gateway 的 Open/SSH 最终检查、session 名额预留和登记使用 Codespace 本地协调锁；stop/delete/cleanup 和 Endpoint 路由变更通过同一锁取消连接中与已建立 session，不会在关闭扫描后补登记新连接。
 - Open Code 只在格式损坏、显式过期或全部实时校验通过后进入删除；暂时访问条件不满足时保留到原 TTL，成功 binding 一定对应已经删除的 code。
 - failed retention 清理不依赖 Manager 状态；原 Manager 身份仍有效时，删除后的无记录 Runtime 通过完整 inventory 取得清理指令。
