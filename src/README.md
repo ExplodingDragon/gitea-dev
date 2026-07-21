@@ -10,7 +10,7 @@ Codespace 是 Gitea 内置的远程开发环境入口。
 | Codespace Manager | 通过 Incus 创建、恢复、停止、删除 Runtime Instance；把 repository tag 映射为本地实例模板；执行可替换的本地初始化脚本；周期验证 running Codespace 的基础交互能力；管理 Runtime Token、Runtime HTTP API、Runtime Metadata、Endpoint upstream 和通信地址 |
 | Codespace Gateway（Manager `serve` 进程内组件） | 需要认证与公共 Endpoint 接入；用户 SSH 接入；Gateway session 和公共连接管理；通过 Manager 身份调用 Gitea 完成访问校验；到 Runtime Instance 的 HTTP/WebSocket 与 SSH channel 转发 |
 
-本文承担整体边界和阅读导航。生命周期转换以[状态机](state-machine.md)为完整定义，持久字段以[数据模型](data-model.md)为完整定义，通信字段与校验以[RPC 协议](rpc-spec.md)为完整定义，Codespace Token 的精确 API 允许面以 [`codespace-token-routes.yaml`](codespace-token-routes.yaml) 为完整定义，运行编排与恢复分别以[生命周期流程](lifecycle-flows.md)和[维护与恢复](maintenance-recovery.md)为完整定义，脚本输入、输出和默认行为以[脚本契约与内置实现](builtin-scripts.md)为完整定义；Gitea 与 Manager/Gateway 文档负责把这些规则落实到各自组件。总览和术语表保留跨组件规则的简要说明，组件章节会保留实现该组件所需的输入、结果和验收点。维护同一规则时先修改承担完整定义的专题文档，再同步相关摘要和组件行为，使每条规则有唯一的完整定义，同时让读者在当前章节取得足够的实现条件。
+本文承担整体边界和阅读导航。生命周期转换以[状态机](state-machine.md)为完整定义，持久字段以[数据模型](data-model.md)为完整定义，通信字段与校验以[RPC 协议](rpc-spec.md)为完整定义，Codespace Token 的精确 API 允许面以 [`codespace-token-routes.yaml`](codespace-token-routes.yaml) 为完整定义，运行编排与恢复分别以[生命周期流程](lifecycle-flows.md)和[维护与恢复](maintenance-recovery.md)为完整定义，脚本输入、输出、默认行为和 devcontainer 案例以[脚本契约、内置实现与 devcontainer 案例](builtin-scripts.md)为完整定义；Gitea 与 Manager/Gateway 文档负责把这些规则落实到各自组件。总览和术语表保留跨组件规则的简要说明，组件章节会保留实现该组件所需的输入、结果和验收点。维护同一规则时先修改承担完整定义的专题文档，再同步相关摘要和组件行为，使每条规则有唯一的完整定义，同时让读者在当前章节取得足够的实现条件。
 
 Gitea 管理生命周期、权限判断、Codespace Token 和 Git SSH 公钥绑定。Manager 只使用 Incus 管理运行环境，并在本地决定 tag 对应的是虚拟机还是系统容器；运行时专有配置和 Runtime Token 由 Manager 维护，Git SSH 私钥由 Runtime 保存。这样 Gitea 的状态机和协议不随实例类型变化，同时运行侧只有一套可实现、可测试的资源生命周期。
 
@@ -82,7 +82,7 @@ flowchart LR
 **Runtime 边界**
 - Manager 通过 Incus file/exec API 初始化 Runtime；Runtime 只通过受控 helper 调用 Manager Runtime HTTP API 的 Git SSH Key 和 Endpoint 接口。
 - Endpoint upstream 只由 Gateway 和 Manager 解析。
-- Manager 核心只执行 init、prepare、activate 的通用脚本契约；完整内置套件和完整本地自定义套件使用相同输入、共享环境、结果与 ready 校验。具体契约和默认实现见[脚本契约与内置实现](builtin-scripts.md)。
+- Manager 核心只执行 init、prepare、activate 的通用脚本契约；完整内置套件和完整本地自定义套件使用相同输入、共享环境、结果与 ready 校验。具体契约、默认实现和 devcontainer 自定义脚本案例见[脚本契约、内置实现与 devcontainer 案例](builtin-scripts.md)。
 
 用户 Endpoint HTTP、WebSocket 和 SSH 流量由 Manager/Gateway 在与 Runtime Instance 同一部署内直接解析 upstream 和内部 SSH 连接；Gitea 只处理鉴权和状态写入。WebSocket 与 SSH 是持续连接，普通 HTTP 按请求转发。
 

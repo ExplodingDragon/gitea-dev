@@ -528,6 +528,14 @@ message LogOffsetDetail {
 }
 ```
 
+实现验收点：
+
+- 共享 proto 包名为 `codespace.v1`，服务名为 `ManagerService`，Gitea 与 Manager 都使用同一份生成代码。
+- 每个 ManagerService request 都把 `protocol_version` 定义为 protobuf 字段 1；业务字段从 2 开始编号。
+- `ManagerService` 包含本章列出的注册、声明、生命周期、日志、Runtime Metadata、开发凭据、空闲停止、访问校验、inventory、runtime transition 和 session revalidate RPC。
+- operation、final、runtime、git protocol、idle stop reason 等枚举只把明确业务值作为可处理输入，`UNSPECIFIED` 用于输入校验失败。
+- response 中的 `oneof outcome` 穷尽表达访问判定、final、idle stop、inventory action、runtime transition 和 session revalidate 的互斥结果。
+
 ## 认证机制
 
 所有 RPC（除 `RegisterManager` 外）使用以下 HTTP header 认证：
