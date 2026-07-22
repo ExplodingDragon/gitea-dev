@@ -739,7 +739,7 @@ operation_status=running
 <p>resume failed 只在 Manager 已确认本轮启动的 Incus 实例停止后上报，因此 operation 事务先保留实例根存储并写回 stopped。主状态事务提交后，Gitea 尽力清除本次 resume 的 Runtime Metadata；Manager 清除本轮 boot 发布上下文，不恢复历史 ready。普通可恢复失败允许下一次 resume 使用更高 operation 版本重建；实例根存储损坏、Git SSH 密钥材料矛盾或 Gitea 公钥绑定冲突时，Manager 已持久化的 <code>unrecoverable_failed</code> boot 终态会在 final failed 后驱动现有 <code>ReportRuntimeTransition(failed)</code>。进程重启继续该报告；如果新 resume 已先创建，Manager 领取后直接 final failed，再次上报 failed。详细原因仍留在 Manager 日志，final 协议保持现有 done/failed 两值。</p>
 <p>Manager 负责报告 Gitea-issued operation 的动作结果，Gitea 负责把结果写成主状态、开发凭据生命周期绑定和日志追加窗口。State Finalization 在同一事务内完成这些写入，保证用户看到一致的生命周期结果。operation 完成后不保留 <code>done|failed</code> 状态，失败诊断从 Codespace 日志读取。</p>
 <p>State Finalization 首次完成 final、timeout、missing 或 transition 处理时写 <code>updated_unix=now</code>；queued resume/stop timeout 或 queued idle stop 取消即使保持原稳定主状态，也因 active operation 首次结束而更新时间。创建或替换 active operation 同样更新该字段。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、未取消 operation 的 open/SSH/继续运行/设置变更和相同结果的幂等重试不更新它，repository 删除仅把 <code>repo_id</code> 写为 0 时也不更新。这样 <code>updated_unix</code> 可以稳定表达生命周期变化，并作为 failed retention 起点，而不会被调度或普通交互活动延后。</p>
-<p>State Finalization 主事务提交后，仍保留 Codespace 记录的结果在释放该 Codespace keyed lock 前尽力追加内部状态摘要。摘要由独立的 DBFS 追加事务保证内容与日志元数据共同提交；摘要失败只记录服务端日志，不回滚主状态。delete done 已经物理删除记录和日志，直接跳过摘要；force/account/Manager delete 与 retention 清理同样不能重新创建日志。</p>
+<p>State Finalization 主事务提交后，仍保留 Codespace 记录的结果通过日志专用锁尽力追加内部状态摘要。摘要由独立的 DBFS 追加事务保证内容与日志元数据共同提交；摘要失败只记录服务端告警，不回滚主状态。delete done 已经物理删除记录和日志，直接跳过摘要；force/account/Manager delete 与 retention 清理同样不能重新创建日志。</p>
 <p>实现验收点：</p>
 <ul>
 <li>lease 只由 Fetch observed 批量续租；FinalizeOperation 不包含续租分支。boot stage 由 Runtime Metadata 和日志表达。</li>
@@ -752,7 +752,7 @@ operation_status=running
 <li>create/resume 的 final done 在当前 operation 版本 ready metadata 或 Token 行缺失时被拒绝，active operation 保持可重试；实际 remote 的本地凭据配置由 Manager 在 ready 前验证，Gitea final 不增加协议分支，成功后不再存在凭据刷新任务。</li>
 <li>resume failed、timeout 和 abort 在状态结果成立后尽力清除本次启动 metadata；迟到的同版本上报不能在无 active resume 时重新写入。</li>
 <li><code>updated_unix</code> 在创建记录、创建或替换 active operation，以及首次 final/timeout/missing/transition/queued idle stop 取消时更新；未改变 active operation 的交互或设置、claim、续租、metadata、日志、token 修复、幂等结果和 <code>repo_id</code> 置 0 不刷新该字段。</li>
-<li>保留 Codespace 记录的结果在主事务提交后、释放 Codespace lock 前单独追加内部摘要；物理删除跳过摘要，摘要失败不回滚已经接受的 final。</li>
+<li>保留 Codespace 记录的结果在主事务提交后通过日志专用锁单独追加内部摘要；物理删除跳过摘要，摘要失败不回滚已经接受的 final。</li>
 <li>deadline 到期后的 final 在请求路径立即触发按 operation 类型定义的 timeout；请求目标与 timeout 目标相同返回幂等，否则返回 stale。Manager runtime state 不延长 deadline，且与 Fetch/Cron 并发时只有一个条件更新生效。</li>
 <li>codespace 已物理删除时返回 <code>outcome.resource_absent</code>；worker 清除本地 operation 上下文、结束该 operation 的上报并触发完整 inventory。<code>resource_absent</code> 本身不授权删除 Runtime；当前 inventory 查询明确无记录时再返回 <code>cleanup_local_runtime</code>。UUID 不复用，也不保存 operation 历史或 tombstone。</li>
 <li>站点排空后已领取的 create/resume 只能 final failed，已领取或新领取的 stop/delete 可以正常完成。</li>
@@ -773,7 +773,7 @@ operation_status=running
 <li>日志总大小由 <code>LOG_MAX_SIZE</code> 控制。普通日志可用上限为 <code>LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE</code>，超过后返回 log size exceeded 分类并写入明确截断摘要。</li>
 <li>服务端固定预留 <code>LOG_FINAL_SUMMARY_RESERVE</code>；达到普通日志上限后拒绝原始行，但内部最终摘要仍可写入预留空间。</li>
 <li>keyed lock 内发现普通 batch 将使当前文件首次跨过普通日志上限时，只写一条截断摘要；文件已经达到上限后的普通行直接返回 <code>log_size_exceeded</code>，不再写摘要。截断摘要和最终摘要共同受 <code>LOG_MAX_SIZE</code> 硬上限约束。</li>
-<li>Manager 在 final 前先上传 operation 最终摘要。对于仍保留 Codespace 记录的结果，Gitea 在 State Finalization 主事务提交后、释放 Codespace keyed lock 前使用剩余预留空间尽力追加内部状态摘要；该 DBFS 追加事务失败或预留耗尽时只记录服务端日志，不回滚生命周期状态。物理删除路径跳过摘要并删除整份日志。</li>
+<li>Manager 在 final 前先上传 operation 最终摘要。对于仍保留 Codespace 记录的结果，Gitea 在 State Finalization 主事务提交后，通过日志专用锁使用剩余预留空间尽力追加内部状态摘要；该 DBFS 追加事务失败或预留耗尽时只记录服务端告警，不回滚生命周期状态。物理删除路径跳过摘要并删除整份日志。</li>
 <li>成功追加和内容一致的幂等重放都返回服务端当前 <code>next_offset</code>；该值是脱敏和规范化编码后的真实文件末尾。</li>
 <li>offset conflict/gap 返回 <code>FailureDetail</code> 和 <code>LogOffsetDetail(current_offset)</code>；Manager 从服务端位置恢复，不根据本地原始 message 估算 offset。</li>
 </ul>
@@ -1234,7 +1234,7 @@ missing = expected - reported
 delete 和 failed retention 删除整份单文件日志，不按 operation 历史截断。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 从未创建 DBFS 日志的 Codespace 仍可物理删除；缺失文件幂等成功，真实 DBFS 错误回滚当前本地删除事务。</li>
-<li><input disabled="" type="checkbox"/>
+<li><input disabled="" type="checkbox" checked=""/>
 UI 和下载读取同一份已脱敏内容。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 组织和站点治理权限不授权日志读取；管理员只有在本人就是创建者时才能通过创建者对象路由读取自己的日志。</li>
