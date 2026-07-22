@@ -266,12 +266,12 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 
 实现验收点：
 
-- queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。
-- Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。
+- [x] queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。
+- [x] Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。
 - [x] `codespace_manager_token.token` 唯一索引和 Codespace UUID 主键阻止对应重复记录。
 - [x] Manager 地址唯一性由数据库约束保证；并发冲突不会产生两个持有同一 Gateway 或 SSH 地址的 Manager。
 - [x] 每个 Codespace 最多存在一个 Gitea Token，Token hash 不重复，末八位只用于缩小候选范围。
-- 每个 Codespace 最多存在一个 Git SSH Key binding，每个 key ID 最多属于一个 Codespace。
+- [x] 每个 Codespace 最多存在一个 Git SSH Key binding，每个 key ID 最多属于一个 Codespace。
 
 ## Gitea 缓存与对象锁
 
