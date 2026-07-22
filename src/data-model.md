@@ -40,7 +40,7 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、Man
 
 日志元数据字段参考 Actions `ActionTask`（`models/actions/task.go`）。
 
-repository owner 通过 `repository.owner_id` 表示，不在 codespace 表中重复存 `owner_id`。repository 删除后 `repo_id` 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 `codespace.uuid`、`user_id` 和 `manager_id` 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。Codespace Gitea Token 与 Git SSH Key 在 `repo_id=0` 时都拒绝 repository 访问。用户或组织删除在任何 owner repository 删除前，通过现有 `user_id`、`repo_id -> repository.owner_id` 和 `manager_id -> codespace_manager.owner_id` 收集关联 Codespace，并按 keyset 分批、逐项短事务删除 Gitea 资源，因此不需要增加冗余 owner 字段。repository 此前已单独删除时，`repo_id=0` 表示与原 repository owner 的关系已经有意丢弃，后续只按创建者和 Manager owner 关系处理。
+repository owner 通过 `repository.owner_id` 表示，不在 codespace 表中重复存 `owner_id`。repository 删除后 `repo_id` 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 `codespace.uuid`、`user_id` 和 `manager_id` 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。Codespace Gitea Token 在 `repo_id=0` 时没有绑定仓库能力，但公开只读目标仍按 Gitea 现有公开访问规则处理；Git SSH Key 不能匹配任何仓库。用户或组织删除在任何 owner repository 删除前，通过现有 `user_id`、`repo_id -> repository.owner_id` 和 `manager_id -> codespace_manager.owner_id` 收集关联 Codespace，并按 keyset 分批、逐项短事务删除 Gitea 资源，因此不需要增加冗余 owner 字段。repository 此前已单独删除时，`repo_id=0` 表示与原 repository owner 的关系已经有意丢弃，后续只按创建者和 Manager owner 关系处理。
 
 Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUID v4，数据库、Web 路径、RPC 和 Manager 持久状态统一使用 36 字符小写带连字符形式。外部输入先做严格格式校验，大小写不同、无连字符或其他非规范形式返回 `invalid_argument`，不能在规范化前参与查询或构造 lock key。`uuid32` 只表示从规范 UUID 删除四个连字符后的 32 字符结果；需要 UUID 的 helper 参数统一命名为 `codespaceUUID`，避免与数字数据库 ID 混淆。单一表达保证同一对象只对应一个数据库键、一个 `codespace_{uuid}` lock key 和一组 Gateway host。
 
@@ -103,9 +103,9 @@ Manager 删除由服务层先按 `codespace.manager_id` 收集并删除绑定 Co
 | `created` | 创建时间戳 | xorm auto（与 `action_runner_token` 一致，不使用 `_unix` 后缀） |
 | `updated` | 更新时间戳 | xorm auto |
 
-Registration Token 明文存储并可复用，支持同一 owner 用当前 token 注册多个 Manager。`owner_id` 与 Gitea repository owner 语义一致，组织是 `user` 表中 `type=organization` 的 owner 记录。GetOrCreate 在行不存在时插入，Rotate 原地替换随机 token，Deactivate 和 owner 删除物理删除该行。
+Registration Token 明文存储并可复用，支持同一 owner 用当前 token 注册多个 Manager。`owner_id` 与 Gitea repository owner 语义一致，组织是 `user` 表中 `type=organization` 的 owner 记录。settings 页面进入时通过 GetOrCreate 确保当前行存在；重置原地替换随机 token；owner 删除物理删除该行。
 
-**设计理由：Registration Token 表示 owner 当前有效的注册入口。**每个 owner 最多保存一行；轮换时原地替换，停用时物理删除。认证只需按记录是否存在判断当前入口，失败诊断写入服务端日志，因此数据表无需保存 inactive、软删除或轮换历史。
+**设计理由：Registration Token 表示 owner 当前有效的注册入口。**每个 owner 最多保存一行；重置原地替换。认证只需按记录是否存在判断当前入口，失败诊断写入服务端日志，因此数据表无需保存 inactive、软删除或轮换历史。
 
 ### codespace_gitea_token
 
@@ -120,11 +120,11 @@ Registration Token 明文存储并可复用，支持同一 owner 用当前 token
 
 Token 固定为 `gcs_` 加 32 个安全随机字节的小写十六进制编码。`token_hash` 对包含前缀的完整 Token 调用 Gitea 现有带盐 hash helper；认证按末八位查询候选并以常量时间比较 verifier。`token_encrypted` 只在 `RequestGiteaToken` 重新交付当前凭据时解密，API、Git HTTP 和 LFS 认证不解密。
 
-本表只保存无法从 Codespace 关系推导的凭据材料。用户、仓库和工作状态从当前 Codespace 记录读取；固定 category scope `write:issue,write:repository,read:user` 和 API 允许面由 Codespace Token 类型派生；物理删除 Token 行表示吊销。因此 `user_id`、`repo_id`、scope、Codespace 状态、revoked、expired 和 updated 都由现有关系或生命周期动作给出，无需在 Token 表重复保存。单一来源可以避免状态、仓库或权限在多张表之间不同步。
+本表只保存无法从 Codespace 关系推导的凭据材料。用户、仓库和工作状态从当前 Codespace 记录读取；固定 category scope `write:issue,write:repository,read:user` 和 API 入口策略由 Codespace Token 类型派生；物理删除 Token 行表示吊销。因此 `user_id`、`repo_id`、scope、Codespace 状态、revoked、expired 和 updated 都由现有关系或生命周期动作给出，无需在 Token 表重复保存。单一来源可以避免状态、仓库或权限在多张表之间不同步。
 
 **设计理由：`codespace_gitea_token` 使用 `codespace_uuid` 作为主键。**本表与 Codespace 是严格一对一关系，认证 resolver 的一次查询直接生成当前请求所需数据，也没有其他关系按 Token 行 ID 引用该记录。该主键同时表达所属 Codespace 和当前凭据唯一性，减少一个不参与查询或关联的代理键。
 
-**设计选择：Codespace Gitea Token 使用独立凭据类型和独立表。**Codespace Token 和 PAT 都代表真实用户，但 Codespace Token 还受 Codespace 工作状态、单仓库绑定和固定 API 允许面约束。认证入口按 `gcs_` 前缀进入专用分支，凭据记录或绑定异常时直接返回认证失败。普通 PAT 继续由 `access_token` 表、PAT 页面和 PAT API 管理，两类凭据的生命周期互不影响。
+**设计选择：Codespace Gitea Token 使用独立凭据类型和独立表。**Codespace Token 和 PAT 都代表真实用户，但 Codespace Token 还受 Codespace 工作状态、单仓库绑定和固定 API 入口策略约束。认证入口按 `gcs_` 前缀进入专用分支，凭据记录或绑定异常时直接返回认证失败。普通 PAT 继续由 `access_token` 表、PAT 页面和 PAT API 管理，两类凭据的生命周期互不影响。
 
 ### codespace_ssh_key
 
@@ -196,7 +196,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - Manager 归属只由 `owner_id` 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。
 - 每个 Manager 成功 Declare 后恰有一条 `gateway` 和一条 `ssh` 地址记录；同类型地址不能被两个 Manager 使用。
 - Manager 表字段与上表一致；身份有效性、运行可用性、领取意愿和永久撤销分别由记录存在性、runtime state、Fetch 容量声明和直接删除表达。
-- 每个 owner 最多存在一行 registration token；轮换更新该行，停用和 owner 删除后该行物理不存在。
+- 每个 owner 最多存在一行 registration token；重置更新该行，owner 删除后该行物理不存在。
 - 用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 `repo_id` 不保留原 owner 历史，也不需要新增冗余 owner 字段。
 - Manager 删除物理清理绑定 Codespace、Token、Git SSH Key、日志、Manager 地址行和 Manager row，不新增删除状态、墓碑或远端确认字段。
 
@@ -294,7 +294,7 @@ Codespace owner relation lock 只保护 CreateCodespace、Manager 和 registrati
 
 | 写路径 | 取得的 lock |
 | --- | --- |
-| registration token GetOrCreate、轮换、停用；全部 Manager 注册（包括 `owner_id=0`） | Codespace owner relation |
+| registration token GetOrCreate、重置；全部 Manager 注册（包括 `owner_id=0`） | Codespace owner relation |
 | Declare 完整快照与 Gateway/SSH 地址写入 | Manager |
 | 完整 `FetchOperations` 请求 | Manager；处理 running operation 或 queued timeout 时再取得对应 Codespace |
 | `ReportInstances` | 接受 inventory generation 使用数据库条件写入；逐项需要写 Codespace 时取得对应 Codespace |
@@ -395,7 +395,7 @@ CreateCodespace、Manager 注册/删除和 registration token 变更在 Codespac
 - `boot.stage` 只允许 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime`、`ready`。create 与 resume 都由 Manager 按通用 init/prepare/activate 顺序推进；脚本内部的包管理器、Git 和运行环境子步骤只写日志，不增加状态枚举。同一 `boot.operation_rversion` 只前进，已经接受 `ready` 后保持 `ready`。
 - `started_unix > 0`，`last_update_unix >= started_unix`；同一 operation 启动上下文的 `started_unix` 保持不变，阶段推进或状态刷新更新 `last_update_unix`。
 - active create/resume 上报的 `boot.operation_rversion` 等于当前 operation。running 快照固定为 `ready`，boot 版本不大于当前 `codespace.operation_rversion`；stopped 且无 active operation 时不发布 Runtime Metadata。resume failed、timeout 或 abort 后，Manager 清除本轮 boot 发布上下文，迟到的本次 resume 版本上报因 active operation 已结束而被拒绝；下一次 resume 使用更高 operation 版本从保留的 Incus 实例重建完整快照。
-- create 和 resume 的 `final done` 都要求当前快照的 boot 版本等于当前 operation 且 `stage=ready`。resume 在 active operation 内申请 Token、写入 Runtime credential 并上报 ready；Gitea 还要求当前 Token 行完整，才把主状态从 stopped 改为 running。Manager 在 ready 前根据本地实际 remote 验证 HTTP helper 或 SSH 密钥、公钥绑定与 known_hosts；该结果不进入 Runtime Metadata，Gitea final 不重复判断实际协议。旧版本的 ready 不能完成当前恢复；cache miss 时 Manager 用正 generation 重建当前 operation 快照。Manager 保留最新 boot 终态的 `operation_type + operation_rversion + outcome`，其中 outcome 为 `done|recoverable_failed|unrecoverable_failed`，用于重启恢复和不可恢复 resume 在 final failed 后继续上报 failed。`done` 和 `recoverable_failed` 可由下一次合法初始化替换；`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成。stopped 主状态存在已领取且租约未到期的 active resume 时，初始化所需的 Gitea Token 与已有 Git SSH Key 可用于恢复本地凭据配置；面向用户的 open 和 Gateway SSH 仍等待 `final done` 原子写入 running。**设计如此：ready 证明已初始化 workspace 的本地凭据配置和交互入口完整，不证明 repository 仍然存在或可访问；`repo_id=0` 时仍可恢复 running，实际 Git/API 请求由 Gitea 拒绝。**
+- create 和 resume 的 `final done` 都要求当前快照的 boot 版本等于当前 operation 且 `stage=ready`。resume 在 active operation 内申请 Token、写入 Runtime credential 并上报 ready；Gitea 还要求当前 Token 行完整，才把主状态从 stopped 改为 running。Manager 在 ready 前根据本地实际 remote 验证 HTTP helper 或 SSH 密钥、公钥绑定与 known_hosts；该结果不进入 Runtime Metadata，Gitea final 不重复判断实际协议。旧版本的 ready 不能完成当前恢复；cache miss 时 Manager 用正 generation 重建当前 operation 快照。Manager 保留最新 boot 终态的 `operation_type + operation_rversion + outcome`，其中 outcome 为 `done|recoverable_failed|unrecoverable_failed`，用于重启恢复和不可恢复 resume 在 final failed 后继续上报 failed。`done` 和 `recoverable_failed` 可由下一次合法初始化替换；`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成。stopped 主状态存在已领取且租约未到期的 active resume 时，初始化所需的 Gitea Token 与已有 Git SSH Key 可用于恢复本地凭据配置；面向用户的 open 和 Gateway SSH 仍等待 `final done` 原子写入 running。**设计如此：ready 证明已初始化 workspace 的本地凭据配置和交互入口完整，不证明 repository 仍然存在或可访问；`repo_id=0` 时仍可恢复 running，Git HTTP(S)、LFS 和 repository API 没有绑定仓库能力但保留公开只读访问，写入、管理、私有或不可见目标由 Gitea 拒绝。Git SSH Key 不能匹配任何仓库。**
 - `endpoint_id` 由 Manager 上报，固定匹配 `^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`，并在同一 `codespace_uuid` 内保持唯一。该规则明确排除首尾连字符，最长 ID 与分隔符、32 位 UUID 组成恰好 63 字节的普通 Endpoint DNS label。
 - Endpoint 数量不超过协议固定上限 64，规范化 JSON 不超过 `RUNTIME_METADATA_MAX_SIZE`。
 - 不同 codespace 可以使用相同 `endpoint_id`。

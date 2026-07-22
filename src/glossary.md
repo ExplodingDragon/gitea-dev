@@ -60,7 +60,7 @@ Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。`st
 
 <span id="registration-token"></span>
 ### Registration Token
-管理员为 owner scope 创建的当前明文注册凭据，存储在 `codespace_manager_token` 表，每个 owner 最多一行。Manager 通过 `RegisterManager` 注册并获得 manager secret；Registration Token 轮换会原地替换该行，停用会物理删除该行，不保存历史。
+管理员为 owner scope 使用的当前明文注册凭据，存储在 `codespace_manager_token` 表，每个 owner 最多一行。settings 页面进入时自动确保当前行存在；Manager 通过 `RegisterManager` 注册并获得 manager secret；Registration Token 重置会原地替换该行，不保存历史，owner scope 删除时物理删除该行。
 
 <span id="runtime-token"></span>
 ### Runtime Token
@@ -68,7 +68,7 @@ Manager 签发给 Runtime Instance 调用 Runtime HTTP API 的 token。
 
 <span id="manager-secret"></span>
 ### Manager Secret
-Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 的轮换或停用不影响已注册 Manager。
+Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 重置不影响已注册 Manager。
 
 <span id="runtime-metadata"></span>
 ### Runtime Metadata
