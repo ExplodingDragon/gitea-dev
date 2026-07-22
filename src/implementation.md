@@ -19,8 +19,8 @@ Runtime HTTP API 由 Manager 实现，路由与 Gitea route 分离。
 
 实现验收点：
 
-- Web handler、Manager RPC handler、服务层和数据模型之间没有反向依赖。
-- Runtime HTTP API 不注册到 Gitea router。
+- [x] Web handler、Manager RPC handler、服务层和数据模型之间没有反向依赖。
+- [x] Runtime HTTP API 不注册到 Gitea router。
 
 ## 共享协议与控制面接入
 
@@ -64,7 +64,7 @@ make lint-backend
 实现验收点：
 
 - 实现命名、主状态、operation 类型和路由与最终设计文档一致。
-- Gitea 不包含 Incus 驱动、Git SSH 私钥或本地容量计数。
+- [x] Gitea 不包含 Incus 驱动、Codespace Git SSH 私钥或运行侧本地容量计数。Gitea 只读取站点 SSH host key 的公钥材料生成 `known_hosts`，这是用户连接 Gitea SSH 入口需要的校验材料，不是 Codespace 的 Git SSH 私钥。
 
 ## 测试组织
 
