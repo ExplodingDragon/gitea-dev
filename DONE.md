@@ -45,3 +45,11 @@
 - `gitea`: `go test ./models/codespace ./services/codespace ./routers/web/codespace ./routers/api/codespace/manager`
 - `codespace`: `go test ./...`
 - 根项目、`gitea`、`codespace-proto-go`、`codespace`: `git diff --check`
+
+## /goal
+
+参考 `src` 下的设计文档，开始对 `gitea`、`codespace-proto-go`、`codespace` 做完整实施。实施时参考 Gitea 的现有代码并遵循 Go 的规范开发。Gitea 的约束非常严格，要参考 Gitea Actions 的测试覆盖方式补充测试，完全按照 Gitea 的规范实现，不能为了测试写临时代码。
+
+数据库使用 SQLite。Manager 也要完整实施到可用状态，并做好抽象，为后续添加其他 backend 做准备。开发过程中碰到的问题和设计变更要同步更新到 `src` 文档中；每次实现前先看文档确认，而不是凭感觉实现，保证设计与实施双向对应。
+
+Gitea 的测试要参考现有写法和规范，Gitea 的集成测试也需要补充覆盖边界条件。不要自定义 `GOCACHE` 等环境变量，直接使用系统默认环境。Gitea 测试方式参考 Gitea 的文档。
