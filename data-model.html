@@ -282,24 +282,38 @@
 <p>**设计理由：专用 Key 类型保留创建者语义。**普通用户 Key 会认证为该用户对全部仓库的账户凭据，Deploy Key 会认证为仓库部署凭据；两者都不能表达“只代表创建者访问当前 Codespace 绑定仓库”。一对一关系和每次 SSH 命令的当前权限检查提供了所需范围，不需要引入 SSH 证书、证书续期或新的密钥服务。</p>
 <p>实现验收点：</p>
 <ul>
-<li>新 UUID 由 Gitea 生成且始终为规范小写 UUID v4；非规范外部 UUID 在查询和加锁前拒绝，同一 UUID 只有一个 lock key 和 <code>uuid32</code>。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+新 UUID 由 Gitea 生成且始终为规范小写 UUID v4；非规范外部 UUID 在查询和加锁前拒绝，同一 UUID 只有一个 lock key 和 <code>uuid32</code>。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 数据迁移创建文中列出的真实字段和非空默认值；模型校验只允许文中列出的状态、operation 类型和运行态值。</li>
-<li>active operation 完成后 operation 字段清空，<code>operation_rversion</code> 和最新状态报告 generation 保留当前值。</li>
-<li>每个 active operation 都保存 <code>user</code> 或 <code>idle</code> 来源，完成、超时、取消或物理删除时与其他 active operation 字段一同清空。</li>
-<li>数据库 operation 与 generation 的 0 值只用于尚未产生版本，有效版本从 1 开始，递增不会溢出回绕；inventory 的 observed operation 为 0 时只表达 Manager 缺少完整 active operation 上下文，数据库版本继续采用当前持久值。</li>
-<li>running operation 的总执行期限固定为 <code>operation_started_unix + OPERATION_MAX_DURATION</code>。<code>operation_deadline_unix</code> 保存本次 lease 截止时间与总执行期限中的较早值；未接近总期限时相对有效时长等于配置的精确 lease 毫秒数，最后一次授权返回到总期限为止、向下取整的正整数毫秒数。</li>
-<li><code>auto_stop_mode</code> 明确区分站点默认、自定义和永不自动暂停；自定义值通过站点范围校验，<code>never</code> 不通过超时 0 隐式表达。</li>
-<li>站点默认自动暂停时间变化后，<code>default</code> 对象无需批量更新数据库即可在下一次设置下发中得到新的有效超时。</li>
-<li><code>last_active_unix</code> 不参与自动暂停；Manager/Gateway 仅按实时连接和本地单调空闲计时发起请求，Gitea 用当前启用状态、超时和 <code>interaction_generation</code> 重新授权。</li>
-<li>Codespace 的更新只写该动作负责的字段；除记录创建和 repository 删除置 0 外，其他更新均不写 <code>repo_id</code>。</li>
-<li>任一版本耗尽时返回 <code>version_exhausted</code> 且不产生部分写入；不依赖新 operation 版本的 force delete 仍可清理 Codespace。</li>
-<li>Codespace 主表不包含 Token ID 或 Token 明文；普通 <code>access_token</code> 表不创建 Codespace Token。</li>
-<li><code>codespace_gitea_token</code> 的主键为 <code>codespace_uuid</code>，且模型中只有表格列出的字段。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+active operation 完成后 operation 字段清空，<code>operation_rversion</code> 和最新状态报告 generation 保留当前值。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+每个 active operation 都保存 <code>user</code> 或 <code>idle</code> 来源，完成、超时、取消或物理删除时与其他 active operation 字段一同清空。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+数据库 operation 与 generation 的 0 值只用于尚未产生版本，有效版本从 1 开始，递增不会溢出回绕；inventory 的 observed operation 为 0 时只表达 Manager 缺少完整 active operation 上下文，数据库版本继续采用当前持久值。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+running operation 的总执行期限固定为 <code>operation_started_unix + OPERATION_MAX_DURATION</code>。<code>operation_deadline_unix</code> 保存本次 lease 截止时间与总执行期限中的较早值；未接近总期限时相对有效时长等于配置的精确 lease 毫秒数，最后一次授权返回到总期限为止、向下取整的正整数毫秒数。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>auto_stop_mode</code> 明确区分站点默认、自定义和永不自动暂停；自定义值通过站点范围校验，<code>never</code> 不通过超时 0 隐式表达。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+站点默认自动暂停时间变化后，<code>default</code> 对象无需批量更新数据库即可在下一次设置下发中得到新的有效超时。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>last_active_unix</code> 不参与自动暂停；Manager/Gateway 仅按实时连接和本地单调空闲计时发起请求，Gitea 用当前启用状态、超时和 <code>interaction_generation</code> 重新授权。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Codespace 的更新只写该动作负责的字段；除记录创建和 repository 删除置 0 外，其他更新均不写 <code>repo_id</code>。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+任一版本耗尽时返回 <code>version_exhausted</code> 且不产生部分写入；不依赖新 operation 版本的 force delete 仍可清理 Codespace。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Codespace 主表不包含 Token ID 或 Token 明文；普通 <code>access_token</code> 表不创建 Codespace Token。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>codespace_gitea_token</code> 的主键为 <code>codespace_uuid</code>，且模型中只有表格列出的字段。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 正式迁移只接受本文定义的 Codespace 表和字段。发现同名但结构不匹配的既有表时返回包含表名、缺失字段和处理方式的迁移硬错误，由管理员备份并清理后重试。这样迁移结果始终对应当前目标 schema，避免用猜测规则生成生命周期状态。</li>
-<li>新记录在 create 时固化站点当前首选 <code>git_protocol</code>，后续配置变化不改写已有记录。</li>
-<li>每个 Codespace 最多存在一行 <code>codespace_gitea_token</code>；数据库只保存 Gitea Secret 密文，认证只读取 salt/hash，不读取或解密密文。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+新记录在 create 时固化站点当前首选 <code>git_protocol</code>，后续配置变化不改写已有记录。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+每个 Codespace 最多存在一行 <code>codespace_gitea_token</code>；数据库只保存 Gitea Secret 密文，认证只读取 salt/hash，不读取或解密密文。</li>
 <li>每个 Codespace 最多存在一行 <code>codespace_ssh_key</code>，其 <code>key_id</code> 唯一关联一个 <code>KeyTypeCodespace</code> 公钥；create 实际尝试 SSH remote 时可以创建该关系，HTTP(S) remote 且未尝试 SSH 时可以没有该关系。关系表不重复保存用户、仓库、状态或权限。</li>
 <li><code>KeyTypeCodespace</code> PublicKey 的名称、owner、内容、指纹、写模式、登录源与验证状态使用文中固定值；实际读写能力仍由每次 Git SSH 命令的创建用户权限决定。</li>
 <li>缺失公钥绑定时可以创建，相同公钥确保请求幂等；已有不同公钥或跨对象指纹冲突时返回 <code>key_conflict</code>，任何初始化请求都不能替换现有公钥。</li>
@@ -308,14 +322,20 @@
 <li><code>serv</code>、普通 Key 转换和全部按 ID 修改入口使用穷尽类型分支；未知类型在启动 Git 子进程或修改数据库前返回硬错误，不能落入用户或 Deploy 默认分支。</li>
 <li>stop final、stopped、resume 失败或超时保留 Codespace Key；failed、deleting 和全部物理删除路径在状态事务中删除 Key。repository 删除后 Key 可保留但不能访问任何仓库。</li>
 <li>Gitea 与 Manager 的持久状态中不存在 Git SSH 私钥；外部 <code>authorized_keys</code> 残留的已删除 key ID 仍会被数据库鉴权拒绝。</li>
-<li><code>gcs_</code> Token 使用现有 Gitea 带盐 hash helper 和常量时间比较；密文解密结果必须重新通过同一 verifier 才能返回。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>gcs_</code> Token 使用现有 Gitea 带盐 hash helper 和常量时间比较；密文解密结果必须重新通过同一 verifier 才能返回。</li>
 <li><code>inventory_generation</code> 通过条件事务只接受高于当前值的新请求。等于或低于当前值返回 stale；正数 observed operation 高于 Gitea 当前版本时返回 Manager 级 <code>state_history_conflict</code>，且不更新 generation 或处理 inventory 差异。</li>
 <li>Fetch 的 observed operation 都是正数；Gitea 在任何租约、超时或领取写入前批量预检仍存在且绑定当前 Manager 的记录，observed 版本高于当前 <code>operation_rversion</code> 时整次返回 <code>state_history_conflict</code>。无记录或 binding 不匹配由完整 inventory 处理，因此数据模型不需要保存 operation 历史或删除墓碑。</li>
-<li>Manager secret 的长度、hex 格式和 <code>SHA-256(salt_bytes || secret_bytes)</code> 计算在注册签发和后续认证路径一致；Manager 记录删除后，对应摘要随记录一并删除。</li>
-<li>Manager 归属只由 <code>owner_id</code> 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。</li>
-<li>每个 Manager 成功 Declare 后恰有一条 <code>gateway</code> 和一条 <code>ssh</code> 地址记录；同类型地址不能被两个 Manager 使用。</li>
-<li>Manager 表字段与上表一致；身份有效性、运行可用性、领取意愿和永久撤销分别由记录存在性、runtime state、Fetch 容量声明和直接删除表达。</li>
-<li>每个 owner 最多存在一行 registration token；重置更新该行，owner 删除后该行物理不存在。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager secret 的长度、hex 格式和 <code>SHA-256(salt_bytes || secret_bytes)</code> 计算在注册签发和后续认证路径一致；Manager 记录删除后，对应摘要随记录一并删除。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager 归属只由 <code>owner_id</code> 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+每个 Manager 成功 Declare 后恰有一条 <code>gateway</code> 和一条 <code>ssh</code> 地址记录；同类型地址不能被两个 Manager 使用。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager 表字段与上表一致；身份有效性、运行可用性、领取意愿和永久撤销分别由记录存在性、runtime state、Fetch 容量声明和直接删除表达。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+每个 owner 最多存在一行 registration token；重置更新该行，owner 删除后该行物理不存在。</li>
 <li>用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 <code>repo_id</code> 不保留原 owner 历史，也不需要新增冗余 owner 字段。</li>
 <li>Manager 删除物理清理绑定 Codespace、Token、Git SSH Key、日志、Manager 地址行和 Manager row，不新增删除状态、墓碑或远端确认字段。</li>
 </ul>
@@ -344,14 +364,22 @@
 </ul>
 <p>实现验收点：</p>
 <ul>
-<li>Declare metadata 经过固定 key 校验后覆盖写入规范化 JSON。</li>
-<li><code>gateway</code> 地址规范化后只保留 scheme、DNS base domain 和可选 port，不保存业务 path。</li>
-<li>不同 Manager 不能写入相同类型的规范化地址，冲突声明不覆盖原地址或 metadata。</li>
-<li>两类规范化地址均不超过 512 bytes，服务层在写入前拒绝超限值，数据库不发生静默截断。</li>
-<li>修改后的完整声明要么整体覆盖旧快照，要么全部保持旧值。</li>
-<li>管理页面可展示 Manager 当前版本，但版本不参与生命周期状态推进。</li>
-<li>管理页面可展示 Gateway SSH algorithm、SHA256 fingerprint 和更新时间。</li>
-<li>容量快照只用于展示与诊断，不参与后续 Fetch 领取判断；<code>cleanup_capacity_available</code> 只属于单次 Fetch 请求，不写入数据库或 <code>meta_json</code>。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Declare metadata 经过固定 key 校验后覆盖写入规范化 JSON。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>gateway</code> 地址规范化后只保留 scheme、DNS base domain 和可选 port，不保存业务 path。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+不同 Manager 不能写入相同类型的规范化地址，冲突声明不覆盖原地址或 metadata。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+两类规范化地址均不超过 512 bytes，服务层在写入前拒绝超限值，数据库不发生静默截断。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+修改后的完整声明要么整体覆盖旧快照，要么全部保持旧值。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+管理页面可展示 Manager 当前版本，但版本不参与生命周期状态推进。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+管理页面可展示 Gateway SSH algorithm、SHA256 fingerprint 和更新时间。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+容量快照只用于展示与诊断，不参与后续 Fetch 领取判断；<code>cleanup_capacity_available</code> 只属于单次 Fetch 请求，不写入数据库或 <code>meta_json</code>。</li>
 </ul>
 <h2 id="索引"><a class="header" href="#索引">索引</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>表</th><th>索引列</th></tr></thead><tbody>
@@ -381,9 +409,12 @@
 <ul>
 <li>queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。</li>
 <li>Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。</li>
-<li><code>codespace_manager_token.token</code> 唯一索引和 Codespace UUID 主键阻止对应重复记录。</li>
-<li>Manager 地址唯一性由数据库约束保证；并发冲突不会产生两个持有同一 Gateway 或 SSH 地址的 Manager。</li>
-<li>每个 Codespace 最多存在一个 Gitea Token，Token hash 不重复，末八位只用于缩小候选范围。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>codespace_manager_token.token</code> 唯一索引和 Codespace UUID 主键阻止对应重复记录。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager 地址唯一性由数据库约束保证；并发冲突不会产生两个持有同一 Gateway 或 SSH 地址的 Manager。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+每个 Codespace 最多存在一个 Gitea Token，Token hash 不重复，末八位只用于缩小候选范围。</li>
 <li>每个 Codespace 最多存在一个 Git SSH Key binding，每个 key ID 最多属于一个 Codespace。</li>
 </ul>
 <h2 id="gitea-缓存与对象锁"><a class="header" href="#gitea-缓存与对象锁">Gitea 缓存与对象锁</a></h2>
