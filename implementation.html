@@ -172,11 +172,22 @@ modules/codespace/
 <li>Web handler、Manager RPC handler、服务层和数据模型之间没有反向依赖。</li>
 <li>Runtime HTTP API 不注册到 Gitea router。</li>
 </ul>
+<h2 id="共享协议与控制面接入"><a class="header" href="#共享协议与控制面接入">共享协议与控制面接入</a></h2>
+<p>Gitea、Codespace Manager 和测试代码共同依赖 <code>codespace-proto-go</code> 中的 <code>codespace.v1.ManagerService</code> 生成代码。该模块只保存 <code>.proto</code> 源和生成的 Go binding，不保存 Gitea 服务逻辑或 Manager 本地执行逻辑。三模块同仓开发时，<code>go.work</code> 与各实现模块的本地 <code>replace</code> 共同指向当前工作区协议模块；这样每次改动 proto 后，Gitea 与 Manager 会在同一份字段编号和服务名上编译，避免实现方解析到远端尚不存在或语义不同的协议版本。</p>
+<p>Gitea 侧 ManagerService handler 采用 Actions runner 的 Connect handler 形态：路由层只负责 Connect handler、Manager header 认证、统一协议版本校验和错误分类；服务层负责 Manager 注册、声明、状态事务和数据写入；模型层只保存表结构与可复用校验。<code>RegisterManager</code> 只使用 request body 中的 registration token，其他 RPC 使用 <code>x-codespace-manager-id</code> 和 <code>x-codespace-manager-secret</code>。所有 request 的 <code>protocol_version</code> 都由统一入口在业务读取和写入前检查。</p>
+<p>ManagerService 的每个 RPC 只有在对应服务层事务已经实现并有测试覆盖后才返回业务成功。尚未接入状态事务的 RPC 使用 Connect 明确错误表达当前不可用，不返回空成功响应。这样调用方不会把未完成路径误判为已经推进生命周期，也能保证后续补齐实现时不会破坏已经建立的 Register/Declare 认证边界。</p>
+<p>实现验收点：</p>
+<ul>
+<li><code>codespace-proto-go</code> 生成的服务名为 <code>codespace.v1.ManagerService</code>，Gitea 与 Manager 的 Connect 路由、客户端和测试都使用该服务名。</li>
+<li>Gitea 和 Manager 编译时引用同一个本地协议模块；修改 <code>.proto</code> 后必须重新生成 Go binding 并运行协议字段测试。</li>
+<li>Gitea ManagerService handler 与 Actions runner 一样通过 Connect handler 挂载，除 <code>RegisterManager</code> 外的 RPC 都先认证 Manager，再校验 <code>protocol_version=1</code>。</li>
+<li>未实现服务层事务的 ManagerService RPC 返回明确 Connect 错误，不写数据库，也不返回会被 Manager 解释为成功的空响应。</li>
+</ul>
 <h2 id="实现目标"><a class="header" href="#实现目标">实现目标</a></h2>
 <p>本文档是最终设计基线。</p>
 <p>实现以本文档描述的 Gitea 内置 codespace 模型为准：</p>
 <ul>
-<li>路由、proto name、table 和 runtime option form 使用本文档定义的新命名。统一命名让 Web、RPC、DB 和文档保持一一对应，减少 prototype 遗留概念进入正式实现。</li>
+<li>路由、proto name、table 和 runtime option form 使用本文档定义的 Codespace 命名。统一命名让 Web、RPC、DB 和文档保持一一对应，开发和测试可以按同一组名称定位行为。</li>
 <li>Runtime 选型由 Manager 本地配置和 repository tag 匹配决定。Gitea UI 保持为创建、打开和管理入口，用户在前端选择代码上下文，管理员在 Manager 侧维护运行能力。</li>
 <li>生命周期入口使用 <code>create / open / resume / stop / delete</code>。这些动作覆盖用户需要的完整生命周期，并与状态机中的 operation 类型保持一致。</li>
 <li>主状态使用 <code>creating / running / stopped / deleting / failed</code>。<code>queued / booting / stopping / resuming / metadata_rebuilding / recovering</code> 由主状态、operation 字段和 Manager 运行态派生，用于 UI 和失败分类，不写入 <code>codespace.status</code>。</li>
@@ -217,7 +228,7 @@ make lint-backend
 <p>实现验收点：</p>
 <ul>
 <li>models 测试覆盖规范小写 UUID v4 生成与非规范输入拒绝、generation 的 0 初始值、有效值从 1 开始、checked increment 不回绕、operation 版本耗尽无部分写入、Manager generation 耗尽停止 RPC 并要求删除后重新注册、与 keyset 排序一致的索引、<code>codespace_gitea_token</code> 的 Codespace UUID 主键、hash 唯一约束和末八位索引、<code>codespace_manager_address</code> 的 Manager/type 与 type/address 双唯一约束，以及 registration token 的 owner/token 双唯一约束和无 inactive/deleted 字段。</li>
-<li>models 测试覆盖正式迁移创建全新 Codespace 表、同名不兼容废弃表产生明确硬错误、新记录固化站点默认协议、<code>codespace_ssh_key</code> 的 Codespace/key 双唯一约束，以及一条关系只对应一个 <code>KeyTypeCodespace</code> PublicKey；不读取或转换废弃实现的数据。</li>
+<li>models 测试覆盖正式迁移创建全新 Codespace 表、同名但结构不匹配的既有表产生明确硬错误、新记录固化站点默认协议、<code>codespace_ssh_key</code> 的 Codespace/key 双唯一约束，以及一条关系只对应一个 <code>KeyTypeCodespace</code> PublicKey；迁移只接受当前目标结构，错误提示包含表名和缺失字段。</li>
 <li>Git SSH 服务测试覆盖关系缺失时创建、相同公钥幂等、不同公钥冲突、全局指纹冲突、User/Deploy/Codespace 三类创建入口使用同一 PublicKey 指纹锁并在事务内复查、不同 Codespace 与跨类型并发相同指纹只产生一个符合类型规则的结果、Deploy 只复用 Deploy PublicKey、历史重复指纹硬错误、内置 SSH 与 <code>AuthorizedKeysCommand</code> 直接使用数据库、外部 authorized_keys 文件同步失败重试、<code>cmd/serv</code> 与 private serv 的专用类型分流、普通用户 Key 按 ID 管理拒绝该类型，以及 stop/resume 失败保留 Key、failed/deleting/全部物理删除路径清理关系与 PublicKey。</li>
 <li>Git SSH 鉴权集成测试覆盖 active create、active resume、running 和稳定 stopped 阶段、当前仓库 binding、<code>repo_id=0</code>、登录限制、code unit 和读写权限、保护分支、upload-pack/receive-pack/LFS；active create/resume 与 running 允许使用，稳定 stopped 拒绝。hook 使用创建用户且 <code>DeployKeyID=0</code>，其他仓库、wiki、upload-archive 和 push-to-create 在启动 subprocess 前拒绝。</li>
 <li>Runtime API 测试覆盖使用 SSH 的脚本在首次连接前原子生成 Ed25519 密钥、create 重试与 resume 校验并复用已落盘密钥、Manager 只转发公钥、known_hosts 严格校验、resume 保留 HEAD，以及密钥文件缺失、公私钥不匹配或返回 <code>key_conflict</code> 时保存 <code>unrecoverable_failed</code>。create 直接收敛到 failed；resume 停止本轮启动、final failed 后继续上报 failed，测试在两个请求之间重启和创建更高 resume，确认不可恢复结果不会停留在 stopped。</li>
@@ -277,7 +288,7 @@ make lint-backend
 <li>Incus 通信测试覆盖展开设备的显式 <code>hwaddr</code>、实例自动生成的 <code>volatile.&lt;device&gt;.hwaddr</code>、Instance State 中 MAC 到来宾接口、地址族与子网过滤和恰好一个地址；同一地址同时用于 Runtime API 来源绑定、Endpoint upstream 和内部 SSH。测试在地址缺失、重复、变化和临时 Incus 不可用时确认准入关闭且不产生错误路由或立即上报 failed。</li>
 <li>Codespace 健康检查测试覆盖稳定 <code>running</code> / ready 选择、轮次开始时的 UUID 集合、本轮新进入对象延后到下一轮、本轮成功传输业务数据的内部 SSH session 形成成功结果、UUID 分散调度、<code>min(capacity_total,32)</code> 检查池、单 UUID 单请求、固定 SSH exec 命令、严格 Host Key、无 PTY/环境、使用配置的超时（默认 10 秒）和 4 KiB 输出上限。测试确认首次可恢复失败关闭新准入、30 秒复检只累计单对象次数、成功清零、生命周期条件变化移出本轮并清零；本轮全部仍符合条件的对象取得首次结果且未触发共享故障暂停后，连续 3 次失败的对象才持久化 <code>health_stop_pending</code>、停止实例并幂等上报 <code>stopped</code>。repository、workspace 内容、普通 Endpoint 和用户进程不参与检查，内置套件和任意完整自定义套件都只通过通用 internal SSH 接受检查。</li>
 <li>健康检查批量故障测试确认每个 UUID 的首次健康结果只形成一个样本、复检不重复进入分母，并按固定阶段构造至少 3 个 UUID 且失败比例低于、等于和高于 50% 的边界。测试覆盖恰好 3 个 UUID 分散到整个周期时，第一个对象即使先达到 3 次失败也等待第三个首次健康结果；达到批量条件后暂停健康驱动的停止、声明零 create/resume 容量并让 <code>/api/healthz</code> 返回 warn，未达到时才推进单对象停止。少于 3 个对象时完成全部首次健康结果后使用单对象规则；恢复轮次按对象数量使用三个成功或全部成功规则。Incus server/project、状态目录和内部 client key 前置失败不累计单对象次数；暂停期间用户 stop/delete、已有 operation 和 inventory 继续。测试在 pending 写入前后、实例停止前后和 stopped 报告响应丢失时重启，确认不会批量 failed、删除根存储或重复推进 generation。</li>
-<li>Incus 生命周期测试覆盖 create 创建 stopped 实例后启动、两个 Token 文件的临时写入/权限/<code>fsync</code>/rename、所选三个脚本和 launcher 的摘要固定与原子发布、prepare/activate 分段、正常关机超时后强制停止、delete 全量确认实例缺失和 cleanup_pending 崩溃续做。虚拟机测试验证 guest agent 可用前 file/exec API 保持等待，系统容器走同一 Manager 代码路径。内置脚本另行覆盖 apt/dnf/pacman 探测、固定非 root 用户与 sudo、create 临时 workspace/锁定 SHA/原子发布、resume 保留用户 HEAD 和直接 internal SSH，不读取 devcontainer 配置。devcontainer 案例作为完整自定义套件做独立端到端测试，覆盖固定 CLI、lifecycle commands、容器恢复、internal SSH 和 Endpoint 端口转发；Manager 核心测试不包含 devcontainer 分支。</li>
+<li>Incus 生命周期测试覆盖 create 创建 stopped 实例后启动、两个 Token 文件的临时写入/权限/<code>fsync</code>/rename、所选三个脚本和 launcher 的摘要固定与原子发布、prepare/activate 分段、正常关机超时后强制停止、delete 全量确认实例缺失和 cleanup_pending 崩溃续做。虚拟机测试验证 guest agent 可用前 file/exec API 保持等待，系统容器走同一 Manager 代码路径。内置脚本另行覆盖 apt/dnf/pacman 探测、固定非 root 用户与 sudo、create 临时 workspace/锁定 SHA/原子发布、resume 保留用户 HEAD 和直接 internal SSH，并确认 repository 中的 devcontainer 文件按普通 workspace 内容保留。devcontainer 案例作为完整自定义套件做独立端到端测试，覆盖固定 CLI、lifecycle commands、容器恢复、internal SSH 和 Endpoint 端口转发；Manager 核心测试使用通用自定义脚本模拟覆盖同一契约。</li>
 <li>Runtime Token 测试确认 create/resume 轮换、普通 Manager 重启不轮换、明文不进入 Incus 配置/exec 参数/日志。测试分别在持久化 <code>write_credentials</code>、写完第一个文件、写完两个文件、提交 verifier 和推进后续阶段后崩溃：active create/resume 都关闭 Runtime API，回到 <code>write_credentials</code> 生成新 Runtime Token 并重做 prepare/activate/校验；boot stage 不回退，create 最终失败进入 failed，resume 最终失败回到 stopped。稳定 running 的 Gitea Token 文件缺失时重取同一值并写回，Runtime Token 文件与 verifier 不一致时关闭准入、停止实例、上报 stopped，并由下一次 resume 生成新值。</li>
 <li>Manager metadata 发布测试确认每个 Codespace 只有一个 generation 写入者且同一时刻最多一个请求；boot、Endpoint、internal SSH、恢复和周期刷新并发时只发布当前完整快照。任一成功空响应对应的请求快照包含当前 operation ready 就解除 create/resume 等待，即使本地已有更高 Endpoint generation；发布任务仍继续到最新 generation。resume final failed 后清除本轮发布上下文，stopped 阶段不发布历史 ready；<code>unrecoverable_failed</code> 随后继续上报 failed。</li>
 <li>Codespace 当前快照故障测试固定临时文件写入、文件 fsync、rename、父目录 fsync、内存快照替换、外部动作和响应返回各边界。父目录同步成功前不发布内存结果、不调用依赖新状态的 RPC 或 Incus 动作，也不返回成功；rename 后父目录同步失败时关闭准入并重试，持续失败以固定存储错误退出。进程重启读取提交前或提交后的任一完整快照时，Fetch、inventory、cleanup 和 Runtime POST/PUT/DELETE 都能幂等收敛。Manager Secret 测试确认注册后只保存注册响应返回的一份凭据，registration token 变化不改变该凭据，Manager 记录删除后认证失败。</li>

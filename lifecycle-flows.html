@@ -293,8 +293,8 @@
 <h3 id="系统初始化与环境启动"><a class="header" href="#系统初始化与环境启动">系统初始化与环境启动</a></h3>
 <p>create 的 running operation 是首次环境初始化阶段，页面可派生展示为 <code>booting</code>。</p>
 <p>Manager 创建或启动 Incus 实例并确认 file/exec API 可用后，原子发布本次 operation 固定使用的 <code>init.sh</code>、<code>start.sh</code> 和 <code>resume.sh</code>。每轮 create/resume 先以 root 执行 <code>init.sh</code>，再按 operation 依次执行 <code>start.sh|resume.sh prepare</code> 和 <code>start.sh|resume.sh activate</code>。三者共享 <code>flock</code> 和 <code>CODESPACE_ENV</code>，stdout/stderr 进入同一 operation 日志；每次调用使用独立结果文件，Manager 只在结果与共享环境同时通过校验后推进本地阶段。</p>
-<p>脚本可以使用 Manager 内置版本，也可以由部署方通过本地配置替换。Manager 核心只理解 init、prepare、activate、共享环境和通用输出，不理解软件包管理器、工作用户名称、直接运行、devcontainer、内部容器或端口转发。完整契约和当前内置实现见<a href="builtin-scripts.html">脚本契约与内置实现</a>。</p>
-<p>**设计如此：devcontainer 只是一套完整自定义脚本案例，不是内置模式。**Manager 和 Gitea 的状态、RPC、当前快照与 Endpoint API 都不保存 devcontainer 运行方式、容器标识、容器用户或逻辑端口；管理员显式配置该案例的三个脚本后，由脚本自行读取 repository 配置并提供相同 workspace、Git 本地配置、internal SSH 和实际 Endpoint 端口。这样既证明自定义开发环境能够接入，也不要求 Go 代码支持某一种容器工具。</p>
+<p>脚本可以使用 Manager 内置版本，也可以由部署方通过本地配置替换。Manager 核心固定消费 init、prepare、activate、共享环境和通用输出；软件包管理器、工作用户名称、直接运行、devcontainer、内部容器和端口转发都由具体脚本实现。完整契约、当前内置实现和 devcontainer 案例见<a href="builtin-scripts.html">脚本契约、内置实现与 devcontainer 案例</a>。</p>
+<p>**设计如此：devcontainer 是完整自定义脚本案例，内置路径保持直接运行。**Manager 和 Gitea 的状态、RPC、当前快照与 Endpoint API 只保存通用脚本结果、共享环境、internal SSH 和 Incus 通信地址上的实际 Endpoint 端口；管理员显式配置该案例的三个脚本后，由脚本自行读取 repository 配置并提供相同 workspace、Git 本地配置、internal SSH 和实际 Endpoint 端口。这样既证明自定义开发环境能够接入，也让 Go 代码的职责稳定在通用契约和 Incus 实例生命周期上。</p>
 <p>每次脚本调用的结果只包含 <code>outcome</code> 和固定 boot stage。<code>done</code> 提交本次 <code>CODESPACE_ENV</code> 追加并进入下一阶段；<code>recoverable_failed</code> 在 lease 内重试；<code>unrecoverable_failed</code> 沿 create/resume 已定义结果收敛。Manager 主动取消时丢弃本次结果和环境追加，其他结果缺失、损坏或 schema 不匹配按可恢复失败处理。脚本不接收 <code>operation_rversion</code>，退出码只用于诊断。</p>
 <p>create 脚本取得两种规范 clone URL、首选协议和锁定 commit SHA，输出最终 workspace 路径。Manager 只在该目录 HEAD 等于锁定 SHA，且实际 remote 的本地凭据配置有效时接受 prepare。resume 脚本不取得 repository payload，使用已保存 workspace、实际 remote 和共享环境恢复本地凭据与交互入口，并保留用户当前 HEAD。默认脚本的临时目录、协议回退、Git SSH 密钥和直接运行行为集中定义在<a href="builtin-scripts.html#%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC%E5%AE%9E%E7%8E%B0">内置脚本实现</a>；devcontainer 案例单独定义在<a href="builtin-scripts.html#devcontainer-%E8%87%AA%E5%AE%9A%E4%B9%89%E8%84%9A%E6%9C%AC%E6%A1%88%E4%BE%8B">自定义脚本案例</a>。</p>
 <p>**设计如此：resume 的 ready 证明 workspace、本地凭据配置和交互入口已经恢复，不证明来源 repository 当前存在或可访问。**repository 删除后 <code>repo_id=0</code>，Manager 仍按已保存 remote 配置 HTTP helper 或确认 SSH 密钥与 known_hosts，Codespace 可以恢复到 running；之后的 pull、push 和 repository API 请求由 Gitea 正常拒绝。</p>
@@ -305,7 +305,7 @@
 <p>三个脚本通过 <code>&gt;&gt; "$CODESPACE_ENV"</code> 追加共享变量，非预定义变量由最后一行覆盖前值。Manager 预定义输入的同名追加覆盖无效并在规范化时移除。只有当前调用结果为 done 时，Manager 才解析、规范化并原子提交本次追加；失败或取消恢复调用前环境。完整变量表、优先级、持久化和校验规则见<a href="builtin-scripts.html#%E8%B0%83%E7%94%A8%E4%B8%8E%E5%85%B1%E4%BA%AB%E7%8E%AF%E5%A2%83">调用与共享环境</a>。</p>
 <h3 id="脚本实现边界"><a class="header" href="#脚本实现边界">脚本实现边界</a></h3>
 <p>内置脚本固定在 Incus 实例内直接运行，并只保存 <code>GITEA_BUILTIN_*</code> 私有状态。完整自定义套件可以通过 <code>CODESPACE_ENV</code> 保存自己的实现选择、内部环境和转发状态，并最终输出同一组通用 workspace 与 internal SSH 变量。Manager 只保存规范共享环境，不解析其中的实现私有变量。</p>
-<p>Endpoint helper 始终向 Manager 提交 Incus 通信地址上已经可以访问的实际端口和明确的 <code>public</code> 布尔值。helper 默认要求认证，只有显式 <code>--public</code> 才公开普通 Endpoint；<code>workspace</code> 固定要求认证。**设计如此：持有 Runtime Token 的工作环境进程是 Endpoint 声明主体，<code>--public</code> 是 Runtime 提交的访问方式，不表示 Gitea 页面再次确认。**需要内部容器的自定义脚本先在实例内建立转发，再登记实际端口；devcontainer 案例也只使用这条通用规则。Manager 的路由只保存该实际端口与访问方式，容器逻辑端口与内部转发由脚本保存和恢复。</p>
+<p>Endpoint helper 始终向 Manager 提交 Incus 通信地址上已经可以访问的实际端口和明确的 <code>public</code> 布尔值。helper 默认要求认证，只有显式 <code>--public</code> 才公开普通 Endpoint；<code>workspace</code> 固定要求认证。**设计如此：持有 Runtime Token 的工作环境进程是 Endpoint 声明主体，<code>--public</code> 是 Runtime 提交的访问方式。**Gitea 页面展示已经提交的当前结果，并在访问时复检生命周期和权限。需要内部容器的自定义脚本先在实例内建立转发，再登记实际端口；devcontainer 案例也只使用这条通用规则。Manager 的路由只保存该实际端口与访问方式，容器逻辑端口与内部转发由脚本保存和恢复。</p>
 <p>**设计如此：脚本实现可以变化，Incus 实例边界保持不变。**stop、delete 和 inventory 只管理 Incus 实例；内部环境的安装、恢复、端口转发和用户选择由当前脚本负责。默认直接运行行为见<a href="builtin-scripts.html#%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC%E5%AE%9E%E7%8E%B0">内置脚本实现</a>，devcontainer 作为完整自定义案例见<a href="builtin-scripts.html#devcontainer-%E8%87%AA%E5%AE%9A%E4%B9%89%E8%84%9A%E6%9C%AC%E6%A1%88%E4%BE%8B">自定义脚本案例</a>。</p>
 <p>Manager 的启动编排如下。图中的步骤是 Manager 本地执行阶段；Gitea 数据库仍只保存主状态和 active operation，具体脚本步骤不写入主状态：</p>
 <pre class="mermaid">flowchart TB
@@ -416,7 +416,7 @@
 <li>stopped Runtime 只能由 Gitea 下发的 resume operation 启动；inventory 发现无对应 operation 的 running Runtime 时停止 Incus 实例并保留根存储。</li>
 <li>Manager 向 create 脚本提供两种 clone URL、首选协议和锁定 SHA，并校验脚本提交的最终 workspace、HEAD 和实际 remote 本地凭据。内置脚本的临时目录、协议回退与崩溃恢复按独立脚本文档实现。</li>
 <li>create/resume 均先以 root 运行幂等 <code>init.sh</code>，再分别运行 prepare 和 activate；create 校验锁定 SHA，resume 不修改用户当前 HEAD。</li>
-<li>内置脚本的 apt/dnf/pacman、固定用户、直接运行和 internal SSH 由独立文档的实现验收点覆盖；devcontainer 案例另以完整自定义套件覆盖 CLI、lifecycle commands、恢复和端口转发。Manager 核心测试只验证通用脚本契约和输出，不增加 devcontainer 分支。</li>
+<li>内置脚本的 apt/dnf/pacman、固定用户、直接运行和 internal SSH 由独立文档的实现验收点覆盖；devcontainer 案例另以完整自定义套件覆盖 CLI、lifecycle commands、恢复和端口转发。Manager 核心测试通过通用自定义脚本模拟覆盖同一脚本契约和输出。</li>
 <li>lease pulse 停止或本地截止点到达时 launcher 终止进程组，Manager 停止 create/resume 实例并保留 operation 上下文；同版本续租前不继续 Runtime 修改，Manager 崩溃后脚本也不能无限运行。</li>
 <li><code>lease_paused</code> 后重新启动实例时复检持久 workspace、凭据和共享环境，并重新执行 prepare、activate 与连通校验；旧 ready 快照不能直接触发 final，boot stage 也不向 Gitea 回退。</li>
 <li>Runtime Token 通过固定文件交付，create/resume 时轮换，普通 Manager 重启不轮换。active create/resume 在凭据提交中断或文件与 verifier 不一致时回到 <code>write_credentials</code> 重做本轮后续步骤；稳定 running 的不一致关闭入口、停止实例并上报 stopped，下一次 resume 重新生成。</li>
