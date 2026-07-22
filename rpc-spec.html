@@ -737,8 +737,10 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>SSH 公钥只用于 <code>VerifySSHPublicKey</code> 的本次新连接认证。<code>RevalidateGatewaySession</code> 的 SSH binding 固定为 <code>user_id + codespace_uuid</code>；公钥删除拒绝后续新连接，已有 transport 继续按用户登录状态、功能开关、生命周期、Manager/metadata、TTL、空闲超时和周期复检收敛。</li>
 <li><code>RequestGiteaToken</code> 在功能启用、Manager 声明为 online 或 recovering 且 heartbeat 有效时，只接受三种阶段：已领取且租约未到期的 create、已领取且租约未到期的 resume，以及无 active operation 的 running。成功时返回或签发 Token，并始终返回规范化 <code>server_url</code>。active stop 创建前已经下发的 Token 仍按 running 阶段完成新请求授权，但该 worker 不能重新读取、签发或修复 Token；active stop、active delete 和站点排空下的 <code>RequestGiteaToken</code> 返回 <code>state_unavailable</code>。</li>
 <li>create/resume payload 的 <code>git_protocol</code> 必须等于 Codespace 创建时固化的 <code>http|ssh</code> 首选项。create 同时下发两种规范 clone URL；所选脚本实际使用 SSH 时，通过 <code>EnsureCodespaceGitSSHKey</code> 创建或确认公钥，SSH remote 的 resume 复用同一密钥。请求公钥为空、无法解析、算法不是 Ed25519 或超过 Gitea SSH key 大小限制时返回 <code>invalid_argument</code>。</li>
-<li><code>EnsureCodespaceGitSSHKey</code> 只接受与调用方 Manager 绑定、当前已领取且期限未到期的 create/resume 初始化阶段；固化首选项为 <code>http</code> 或 <code>ssh</code> 都可以调用。create 可以在 HTTP(S) 首选失败后为 SSH fallback 调用；resume 由脚本仅在 workspace 当前实际 remote 为 SSH 时调用。绑定不存在时创建，绑定为相同公钥时幂等返回当前 <code>known_hosts_lines</code>；已有不同公钥或全局指纹冲突时返回 <code>key_conflict</code>，不替换当前绑定。响应至少包含一条与 Gitea SSH 对外 host 和有效端口匹配的规范化 Host Key 行。</li>
-<li>User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一规范指纹锁并在事务内复查。Codespace 路径先取得 Codespace lock 再取得指纹锁；不同 Codespace 或不同 Key 类型并发提交相同公钥时只允许一个符合类型规则的创建结果，历史重复指纹返回数据完整性硬错误。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>EnsureCodespaceGitSSHKey</code> 只接受与调用方 Manager 绑定、当前已领取且期限未到期的 create/resume 初始化阶段；固化首选项为 <code>http</code> 或 <code>ssh</code> 都可以调用。create 可以在 HTTP(S) 首选失败后为 SSH fallback 调用；resume 由脚本仅在 workspace 当前实际 remote 为 SSH 时调用。绑定不存在时创建，绑定为相同公钥时幂等返回当前 <code>known_hosts_lines</code>；已有不同公钥或全局指纹冲突时返回 <code>key_conflict</code>，不替换当前绑定。响应至少包含一条与 Gitea SSH 对外 host 和有效端口匹配的规范化 Host Key 行。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一规范指纹锁并在事务内复查。Codespace 路径先取得 Codespace lock 再取得指纹锁；不同 Codespace 或不同 Key 类型并发提交相同公钥时只允许一个符合类型规则的创建结果，历史重复指纹返回数据完整性硬错误。</li>
 <li>所有编码后的 protobuf request 和 response 都不超过 <code>CONTROL_PLANE_MAX_MESSAGE_SIZE</code>；<code>UpdateLog.lines</code> 单行另受 <code>LOG_MAX_LINE_SIZE</code> 限制。日志按返回的消息上限分批，inventory、observed operation、Runtime Metadata 和单条日志物理行是必须能整体传输的协议单元。</li>
 </ul>
 <p>实现验收点：</p>
@@ -785,8 +787,10 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>active create、active resume 和无 active operation 的 running 可以请求 Token；active stop 返回 <code>state_unavailable</code>，但创建 stop 前已有的 Token 继续按 running 阶段授权到 stop final。</li>
 <li>create/resume 初始化阶段可以取得并使用 Token；本次 operation 的 ready metadata 和 Token 行缺一时，final done 被拒绝。</li>
 <li>create/resume payload 始终携带已固化的 <code>git_protocol</code> 作为首次 clone 首选项；create 同时携带 HTTP(S)/SSH URL。脚本实际尝试 SSH 前通过 <code>EnsureCodespaceGitSSHKey</code> 创建或确认公钥；之后改用 HTTP(S) 成功时，已经登记的公钥按 Codespace 生命周期保留。</li>
-<li><code>EnsureCodespaceGitSSHKey</code> 请求只携带 UUID 和公钥字节；用户、仓库、初始化阶段和生命周期状态由服务端当前关系取得，响应只返回 Runtime 建立严格 SSH Host Key 校验所需的规范化行。</li>
-<li>相同公钥和响应丢失可以幂等重试；不同公钥不会替换当前绑定。公钥不携带 operation 版本，Manager 使用本地 operation 上下文把 Runtime 请求关联到当前生命周期操作。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>EnsureCodespaceGitSSHKey</code> 请求只携带 UUID 和公钥字节；用户、仓库、初始化阶段和生命周期状态由服务端当前关系取得，响应只返回 Runtime 建立严格 SSH Host Key 校验所需的规范化行。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+相同公钥和响应丢失可以幂等重试；不同公钥不会替换当前绑定。公钥不携带 operation 版本，Manager 使用本地 operation 上下文把 Runtime 请求关联到当前生命周期操作。</li>
 </ul>
 <h2 id="传输"><a class="header" href="#传输">传输</a></h2>
 <ul>
@@ -811,7 +815,8 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>final result 携带 Manager 本地保存的原 operation 类型；active operation 存在时严格校验，清空后只按相同版本和目标主状态判断重复 final。</li>
 <li>普通命令拒绝返回 <code>FailureDetail</code>；只有 generation stale 和日志 offset 错误增加对应专用 detail，generation conflict 不附 stale detail。<code>FinalizeOperation</code> 的四种正常处理结果、<code>RequestIdleStop</code> 的三种竞态结果和访问判定分别使用自身 response oneof。</li>
 <li>HTTP 和 HTTPS transport 下生成的 handler、认证 header、failure detail 和幂等行为一致。</li>
-<li><code>EnsureCodespaceGitSSHKey</code> 的公钥使用 SSH wire bytes；响应只传输规范化 known_hosts 行，不重复传输可由 Codespace 推导的用户、仓库、状态或协议字段。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>EnsureCodespaceGitSSHKey</code> 的公钥使用 SSH wire bytes；响应只传输规范化 known_hosts 行，不重复传输可由 Codespace 推导的用户、仓库、状态或协议字段。</li>
 </ul>
 
                     </main>
