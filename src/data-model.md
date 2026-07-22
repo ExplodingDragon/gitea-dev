@@ -178,7 +178,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - 任一版本耗尽时返回 `version_exhausted` 且不产生部分写入；不依赖新 operation 版本的 force delete 仍可清理 Codespace。
 - Codespace 主表不包含 Token ID 或 Token 明文；普通 `access_token` 表不创建 Codespace Token。
 - `codespace_gitea_token` 的主键为 `codespace_uuid`，且模型中只有表格列出的字段。
-- 正式迁移只接受本文定义的 Codespace 表和字段。发现同名但结构不匹配的既有表时返回包含表名、缺失字段和处理方式的迁移硬错误，由管理员备份并清理后重试。这样迁移结果始终对应当前目标 schema，避免用猜测规则生成生命周期状态。
+- [x] 正式迁移只接受本文定义的 Codespace 表和字段。发现同名但结构不匹配的既有表时返回包含表名、缺失字段和处理方式的迁移硬错误，由管理员备份并清理后重试。这样迁移结果始终对应当前目标 schema，避免用猜测规则生成生命周期状态。
 - 新记录在 create 时固化站点当前首选 `git_protocol`，后续配置变化不改写已有记录。
 - 每个 Codespace 最多存在一行 `codespace_gitea_token`；数据库只保存 Gitea Secret 密文，认证只读取 salt/hash，不读取或解密密文。
 - 每个 Codespace 最多存在一行 `codespace_ssh_key`，其 `key_id` 唯一关联一个 `KeyTypeCodespace` 公钥；create 实际尝试 SSH remote 时可以创建该关系，HTTP(S) remote 且未尝试 SSH 时可以没有该关系。关系表不重复保存用户、仓库、状态或权限。

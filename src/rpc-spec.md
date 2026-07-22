@@ -531,7 +531,7 @@ message LogOffsetDetail {
 实现验收点：
 
 - 共享 proto 包名为 `codespace.v1`，服务名为 `ManagerService`，Gitea 与 Manager 都使用同一份生成代码。
-- 每个 ManagerService request 都把 `protocol_version` 定义为 protobuf 字段 1；业务字段从 2 开始编号。
+- [x] 每个 ManagerService request 都把 `protocol_version` 定义为 protobuf 字段 1；业务字段从 2 开始编号。
 - `ManagerService` 包含本章列出的注册、声明、生命周期、日志、Runtime Metadata、开发凭据、空闲停止、访问校验、inventory、runtime transition 和 session revalidate RPC。
 - operation、final、runtime、git protocol、idle stop reason 等枚举只把明确业务值作为可处理输入，`UNSPECIFIED` 用于输入校验失败。
 - response 中的 `oneof outcome` 穷尽表达访问判定、final、idle stop、inventory action、runtime transition 和 session revalidate 的互斥结果。
@@ -559,7 +559,7 @@ x-codespace-manager-secret: <manager secret>
 
 输入校验规则：
 
-- 每个 request 的 `protocol_version` 必须等于当前 ManagerService 主版本 1；0、负数和其他版本返回 `protocol_mismatch`，不能按旧客户端或默认行为继续。Register 在 token 查询前拒绝；其他 RPC 在 Manager 身份认证后、任何业务读取结果或写入前拒绝。
+- [x] 每个 request 的 `protocol_version` 必须等于当前 ManagerService 主版本 1；0、负数和其他版本返回 `protocol_mismatch`，不能按旧客户端或默认行为继续。Register 在 token 查询前拒绝；其他 RPC 在 Manager 身份认证后、任何业务读取结果或写入前拒绝。
 - enum 只接受各定义中明确列出的业务值；`UNSPECIFIED` 和未知数值返回 `invalid_argument`。这样新增枚举值不会被旧服务端误作默认行为。
 - `codespace_uuid` 只接受 Gitea 生成的 36 字符小写带连字符 UUID v4；其他形式在查询和构造锁 key 前返回 `invalid_argument`，保证一个 Codespace 只有一种外部表达。
 - 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0。inventory item 的 `observed_operation_rversion=0` 固定表示 Manager 没有可继续的完整 active operation 上下文，即使 Gitea 当前 `codespace.operation_rversion` 已经是正数也成立；正数固定表示 Manager 持有该版本的完整 active operation 上下文。该字段不传输本地历史最高版本，也不写回数据库版本。
@@ -599,11 +599,11 @@ x-codespace-manager-secret: <manager secret>
 
 实现验收点：
 
-- 任一 request 协议版本不匹配时不产生业务写入；Register 不查询 token 或创建 Manager，Declare 不更新 heartbeat 或声明快照，其他 RPC 不推进 operation、generation、日志、交互或清理结果。Manager 关闭入口和新动作后退出。
-- 全部 ManagerService request 的 `protocol_version` 都是字段 1，各请求业务字段从 2 开始连续编号。
+- [x] 任一 request 协议版本不匹配时不产生业务写入；Register 不查询 token 或创建 Manager，Declare 不更新 heartbeat 或声明快照，其他 RPC 不推进 operation、generation、日志、交互或清理结果。Manager 关闭入口和新动作后退出。
+- [x] 全部 ManagerService request 的 `protocol_version` 都是字段 1，各请求业务字段从 2 开始连续编号。
 - Runtime Metadata 的 label 校验覆盖非法 UTF-8、去除首尾 Unicode 空白后为空、1/64/65 字符边界、控制字符、`<`、`>` 和合法中文；Manager 与 Gitea 对相同输入得到相同规范值和内容 hash。
 - 软件展示版本、ManagerService 主版本、本地状态格式版本和脚本结果版本使用不同字段，任一实现都不从另一个版本推导兼容性。
-- 除 `RegisterManager` 外的 RPC 都通过统一 interceptor 认证 Manager ID 和 secret；所有 request 随后通过统一版本校验，handler 不各自遗漏该前置条件。
+- [x] 除 `RegisterManager` 外的 RPC 都通过统一 interceptor 认证 Manager ID 和 secret；所有 request 随后通过统一版本校验，handler 不各自遗漏该前置条件。
 - Manager 身份认证成功后，handler 从 request context 读取同一 Manager 记录。
 - 首次 Declare 响应在 64 KiB 读取上限内返回三个正数控制参数和规范 `gitea_web_url`；Manager 只在完整校验成功后原子启用这些参数并进入 online。URL 带 AppSubURL 时通过结构化 URL resolve 生成 Gitea 打开路由，不使用字符串拼接；非法响应保持 recovering 和零容量，后续成功 Declare 可以整体替换旧值。
 - 命令拒绝与访问判定使用文中规定的两种响应方式，不混合表达。

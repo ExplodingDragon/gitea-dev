@@ -34,7 +34,7 @@ ManagerService 的每个 RPC 只有在对应服务层事务已经实现并有测
 
 - `codespace-proto-go` 生成的服务名为 `codespace.v1.ManagerService`，Gitea 与 Manager 的 Connect 路由、客户端和测试都使用该服务名。
 - Gitea 和 Manager 编译时引用同一个本地协议模块；修改 `.proto` 后必须重新生成 Go binding 并运行协议字段测试。
-- Gitea ManagerService handler 与 Actions runner 一样通过 Connect handler 挂载，除 `RegisterManager` 外的 RPC 都先认证 Manager，再校验 `protocol_version=1`。
+- [x] Gitea ManagerService handler 与 Actions runner 一样通过 Connect handler 挂载，除 `RegisterManager` 外的 RPC 都先认证 Manager，再校验 `protocol_version=1`。
 - 未实现服务层事务的 ManagerService RPC 返回明确 Connect 错误，不写数据库，也不返回会被 Manager 解释为成功的空响应。
 
 ## 实现目标
