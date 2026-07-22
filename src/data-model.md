@@ -181,14 +181,14 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] 正式迁移只接受本文定义的 Codespace 表和字段。发现同名但结构不匹配的既有表时返回包含表名、缺失字段和处理方式的迁移硬错误，由管理员备份并清理后重试。这样迁移结果始终对应当前目标 schema，避免用猜测规则生成生命周期状态。
 - [x] 新记录在 create 时固化站点当前首选 `git_protocol`，后续配置变化不改写已有记录。
 - [x] 每个 Codespace 最多存在一行 `codespace_gitea_token`；数据库只保存 Gitea Secret 密文，认证只读取 salt/hash，不读取或解密密文。
-- 每个 Codespace 最多存在一行 `codespace_ssh_key`，其 `key_id` 唯一关联一个 `KeyTypeCodespace` 公钥；create 实际尝试 SSH remote 时可以创建该关系，HTTP(S) remote 且未尝试 SSH 时可以没有该关系。关系表不重复保存用户、仓库、状态或权限。
-- `KeyTypeCodespace` PublicKey 的名称、owner、内容、指纹、写模式、登录源与验证状态使用文中固定值；实际读写能力仍由每次 Git SSH 命令的创建用户权限决定。
-- 缺失公钥绑定时可以创建，相同公钥确保请求幂等；已有不同公钥或跨对象指纹冲突时返回 `key_conflict`，任何初始化请求都不能替换现有公钥。
-- User、Deploy 和 Codespace 公钥创建按同一规范指纹锁串行，并在各自事务内复查；交叉并发只允许一个创建结果，Deploy 仅复用既有 Deploy PublicKey，历史重复指纹返回数据完整性硬错误。
-- Codespace Key 不出现在普通用户 Key、Deploy Key、公开用户 Key 导出或签名 Key 查询中；这些查询使用正向类型条件，不依赖 `NotKeytype`。SSH 强制命令只能由 key ID 解析到绑定 Codespace。
-- `serv`、普通 Key 转换和全部按 ID 修改入口使用穷尽类型分支；未知类型在启动 Git 子进程或修改数据库前返回硬错误，不能落入用户或 Deploy 默认分支。
-- stop final、stopped、resume 失败或超时保留 Codespace Key；failed、deleting 和全部物理删除路径在状态事务中删除 Key。repository 删除后 Key 可保留但不能访问任何仓库。
-- Gitea 与 Manager 的持久状态中不存在 Git SSH 私钥；外部 `authorized_keys` 残留的已删除 key ID 仍会被数据库鉴权拒绝。
+- [x] 每个 Codespace 最多存在一行 `codespace_ssh_key`，其 `key_id` 唯一关联一个 `KeyTypeCodespace` 公钥；create 实际尝试 SSH remote 时可以创建该关系，HTTP(S) remote 且未尝试 SSH 时可以没有该关系。关系表不重复保存用户、仓库、状态或权限。
+- [x] `KeyTypeCodespace` PublicKey 的名称、owner、内容、指纹、写模式、登录源与验证状态使用文中固定值；实际读写能力仍由每次 Git SSH 命令的创建用户权限决定。
+- [x] 缺失公钥绑定时可以创建，相同公钥确保请求幂等；已有不同公钥或跨对象指纹冲突时返回 `key_conflict`，任何初始化请求都不能替换现有公钥。
+- [x] User、Deploy 和 Codespace 公钥创建按同一规范指纹锁串行，并在各自事务内复查；交叉并发只允许一个创建结果，Deploy 仅复用既有 Deploy PublicKey，历史重复指纹返回数据完整性硬错误。
+- [x] Codespace Key 不出现在普通用户 Key、Deploy Key、公开用户 Key 导出或签名 Key 查询中；这些查询使用正向类型条件，不依赖 `NotKeytype`。SSH 强制命令只能由 key ID 解析到绑定 Codespace。
+- [x] `serv`、普通 Key 转换和全部按 ID 修改入口使用穷尽类型分支；未知类型在启动 Git 子进程或修改数据库前返回硬错误，不能落入用户或 Deploy 默认分支。
+- [x] stop final、stopped、resume 失败或超时保留 Codespace Key；failed、deleting 和全部物理删除路径在状态事务中删除 Key。repository 删除后 Key 可保留但不能访问任何仓库。
+- [x] Gitea 与 Manager 的持久状态中不存在 Git SSH 私钥；外部 `authorized_keys` 残留的已删除 key ID 仍会被数据库鉴权拒绝。
 - [x] `gcs_` Token 使用现有 Gitea 带盐 hash helper 和常量时间比较；密文解密结果必须重新通过同一 verifier 才能返回。
 - `inventory_generation` 通过条件事务只接受高于当前值的新请求。等于或低于当前值返回 stale；正数 observed operation 高于 Gitea 当前版本时返回 Manager 级 `state_history_conflict`，且不更新 generation 或处理 inventory 差异。
 - Fetch 的 observed operation 都是正数；Gitea 在任何租约、超时或领取写入前批量预检仍存在且绑定当前 Manager 的记录，observed 版本高于当前 `operation_rversion` 时整次返回 `state_history_conflict`。无记录或 binding 不匹配由完整 inventory 处理，因此数据模型不需要保存 operation 历史或删除墓碑。
