@@ -201,13 +201,13 @@
 <p>Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。<code>start.sh</code> 在首次 SSH clone 前生成 Ed25519 密钥对，create 重试和 SSH remote 的 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 <code>EnsureCodespaceGitSSHKey</code> 确认到 Gitea 的 <code>codespace_ssh_key</code>。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 <code>running</code> 可以使用，稳定 <code>stopped</code> 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key、Manager 连接内部 sshd 的 client key 是三个独立凭据。</p>
 <p><span id="registration-token"></span></p>
 <h3 id="registration-token"><a class="header" href="#registration-token">Registration Token</a></h3>
-<p>管理员为 owner scope 创建的当前明文注册凭据，存储在 <code>codespace_manager_token</code> 表，每个 owner 最多一行。Manager 通过 <code>RegisterManager</code> 注册并获得 manager secret；Registration Token 轮换会原地替换该行，停用会物理删除该行，不保存历史。</p>
+<p>管理员为 owner scope 使用的当前明文注册凭据，存储在 <code>codespace_manager_token</code> 表，每个 owner 最多一行。settings 页面进入时自动确保当前行存在；Manager 通过 <code>RegisterManager</code> 注册并获得 manager secret；Registration Token 重置会原地替换该行，不保存历史，owner scope 删除时物理删除该行。</p>
 <p><span id="runtime-token"></span></p>
 <h3 id="runtime-token"><a class="header" href="#runtime-token">Runtime Token</a></h3>
 <p>Manager 签发给 Runtime Instance 调用 Runtime HTTP API 的 token。</p>
 <p><span id="manager-secret"></span></p>
 <h3 id="manager-secret"><a class="header" href="#manager-secret">Manager Secret</a></h3>
-<p>Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 的轮换或停用不影响已注册 Manager。</p>
+<p>Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 重置不影响已注册 Manager。</p>
 <p><span id="runtime-metadata"></span></p>
 <h3 id="runtime-metadata"><a class="header" href="#runtime-metadata">Runtime Metadata</a></h3>
 <p>Manager 上报到 Gitea 缓存的 Endpoint、internal SSH 和 boot 当前完整快照。每个 Codespace 由一个发布任务管理单调递增的 <code>metadata_generation</code>；缓存未命中后直接重发当前快照，外部缓存实现在 TTL 内保留的合法快照可以继续使用。<code>running</code> 对应已经完成的 <code>ready</code> boot，启动中的阶段只出现在 active create/resume。</p>

@@ -241,16 +241,16 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <p>registration token 设计：</p>
 <ul>
 <li>registration token 存放在 <code>codespace_manager_token</code> 表。</li>
-<li>页面进入 Codespace 管理界面时，Gitea 按当前 scope 查询 registration token 行。</li>
-<li>当前 scope 没有记录时，Gitea 创建新的 token 并展示给管理员。</li>
+<li>页面进入 Codespace 管理界面时，Gitea 按当前 scope 取得当前 registration token；当前 scope 没有记录时创建新 token 并展示给管理员。</li>
 <li>数据库保存明文 <code>token</code> 和唯一 <code>owner_id</code>；token 也使用唯一索引，使 <code>RegisterManager</code> 可以直接定位当前入口。</li>
 <li>registration token 行存在且提交明文匹配时有效，可用于注册多个 Manager。</li>
 <li>registration token 负责创建 Manager 身份，manager secret 负责证明已注册 Manager 身份。</li>
-<li>GetOrCreate、轮换、停用和 RegisterManager 都按 owner scope 使用 keyed lock，包括 global scope 的 <code>owner_id=0</code>。轮换在同一行原地替换随机 token，停用物理删除该行；并发注册与凭据变更因此只有明确的事务先后。</li>
-<li>RegisterManager 先按唯一 token 索引读取候选 owner，只用来选择 Codespace owner relation lock；锁内再次读取同一 token 行并匹配明文后才认证成功。锁前读取与锁内复读之间发生的轮换、停用或 owner 删除会使注册返回 unauthenticated。</li>
+<li>settings 页面提供和 Actions runner 一致的复制与重置入口。重置在同一行原地替换随机 token，旧 token 立即失效；已经注册的 Manager secret 不受影响。</li>
+<li>GetOrCreate、重置和 RegisterManager 都按 owner scope 使用 keyed lock，包括 global scope 的 <code>owner_id=0</code>。并发注册与凭据变更因此只有明确的事务先后。</li>
+<li>RegisterManager 先按唯一 token 索引读取候选 owner，只用来选择 Codespace owner relation lock；锁内再次读取同一 token 行并匹配明文后才认证成功。锁前读取与锁内复读之间发生重置或 owner 删除会使注册返回 unauthenticated。</li>
 </ul>
 <p>Registration Token 明文保存——它是管理员复制给 Manager 完成首次注册的入口凭据。唯一索引用于让 <code>RegisterManager</code> 通过提交 token 直接定位注册入口。Registration Token 和 Manager Secret 承担不同职责，注册入口和已注册 Manager 通信身份分别管理。</p>
-<p>**设计理由：Registration Token 表只保存每个 owner 当前有效的注册入口。**轮换原地替换，停用物理删除；记录存在性即可完成认证判断。注册失败通过服务端日志诊断，因此凭据历史无需进入数据库或保留任务。</p>
+<p>**设计理由：Registration Token 表只保存每个 owner 当前有效的注册入口。**settings 页面自动保证当前 token 存在，重置原地替换；记录存在性即可完成认证判断。注册失败通过服务端日志诊断，因此凭据历史无需进入数据库或保留任务。用户或组织删除清理对应 owner scope 时，registration token 行随 owner 关系一并物理删除。</p>
 <p>实现验收点：</p>
 <ul>
 <li>global Codespace 管理页读取或创建 <code>owner_id=0</code> 的当前 token。</li>
@@ -264,8 +264,8 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>注册成功后数据库保存 <code>secret_hash / secret_salt</code>。</li>
 <li>注册响应不确定时 CLI 不自动重试，管理页可以识别并删除从未 Declare 的注册记录。</li>
 <li>ManagerService 认证成功后 request context 中可取得 Manager 记录。</li>
-<li>同一 owner scope 的并发 GetOrCreate 最终只有一行；Rotate 原地替换，Deactivate 物理删除且不保留历史行。</li>
-<li>RegisterManager 与 token 变更使用同一 Codespace owner relation lock，global scope 使用 <code>codespace_owner_0</code>。</li>
+<li>同一 owner scope 的并发 GetOrCreate 最终只有一行；重置原地替换且不保留历史行。</li>
+<li>RegisterManager 与 token 重置使用同一 Codespace owner relation lock，global scope 使用 <code>codespace_owner_0</code>。</li>
 <li>RegisterManager 只有在 Codespace owner relation lock 内复读 token 并验证成功后才创建 Manager；锁前查询只定位 owner。</li>
 <li>同一 Manager 状态目录启动第二个 <code>serve</code> 进程时，第二个进程在发出任何 RPC 前因独占锁失败而退出。</li>
 <li>每个并行 Manager 进程均使用独立的 <code>manager_id</code>、secret 和状态目录；复制身份到其他状态目录时服务端按同一身份处理，检测到版本或 generation 冲突后进入既有保守硬错误流程。</li>
@@ -697,7 +697,7 @@ interaction_generation
 <li>manager secret 只用于已注册 Manager 调用后续 ManagerService RPC。</li>
 <li>manager secret 明文只在 <code>RegisterManager</code> 成功时展示一次。</li>
 <li>manager secret 从 <code>RegisterManager</code> 成功起保持有效，删除对应 Manager 记录时失效。Manager 本地只保存注册响应返回的这一份 secret。</li>
-<li>registration token 的轮换或停用只改变之后能否调用 <code>RegisterManager</code>，不改变已经注册 Manager 的 secret、identity 或 Codespace binding。</li>
+<li>registration token 重置只改变之后能否调用 <code>RegisterManager</code>，不改变已经注册 Manager 的 secret、identity 或 Codespace binding。</li>
 <li>Manager secret 丢失或该身份需要撤销时，管理员使用现有 Manager 删除流程撤销身份，再以新的 registration token 注册新的 Manager。Manager 删除对 Gitea 数据和部署侧残留的处理继续使用本章既有规则。</li>
 </ul>
 <p>Manager Secret 使用 salt/hash 保存，是因为它是 ManagerService 的长期通信凭据。Gitea 保存可验证值即可完成认证，Manager 本地保存明文 secret 并负责后续 RPC 调用。**设计如此：Manager Secret 与 Manager 记录具有相同生命周期，不提供独立轮换状态。**当前部署没有不中断迁移既有 binding 的凭据轮换需求；使用删除和重新注册处理身份替换，可以保持认证状态只有“记录存在且 secret 匹配”或“记录不存在”两种结果。</p>
@@ -708,7 +708,7 @@ interaction_generation
 <li>ManagerService 认证使用 <code>manager_id</code> 定位 Manager。</li>
 <li>ManagerService 认证使用 <code>secret_salt</code> 计算提交 secret 的 hash。</li>
 <li>ManagerService 认证使用常量时间比较 hash。</li>
-<li>registration token 轮换或停用后，已注册 Manager 继续使用原 manager secret 调用 RPC。</li>
+<li>registration token 重置后，已注册 Manager 继续使用原 manager secret 调用 RPC。</li>
 <li>Manager 记录删除后原 secret 无法认证；<code>manager_unregistered</code> 或明确认证失败时，Manager 关闭全部本地入口、强制停止 Incus 实例并停止 RPC，实例根存储和状态目录继续保留。</li>
 </ul>
 <h3 id="runtime-token"><a class="header" href="#runtime-token">Runtime Token</a></h3>
