@@ -190,15 +190,15 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] stop final、stopped、resume 失败或超时保留 Codespace Key；failed、deleting 和全部物理删除路径在状态事务中删除 Key。repository 删除后 Key 可保留但不能访问任何仓库。
 - [x] Gitea 与 Manager 的持久状态中不存在 Git SSH 私钥；外部 `authorized_keys` 残留的已删除 key ID 仍会被数据库鉴权拒绝。
 - [x] `gcs_` Token 使用现有 Gitea 带盐 hash helper 和常量时间比较；密文解密结果必须重新通过同一 verifier 才能返回。
-- `inventory_generation` 通过条件事务只接受高于当前值的新请求。等于或低于当前值返回 stale；正数 observed operation 高于 Gitea 当前版本时返回 Manager 级 `state_history_conflict`，且不更新 generation 或处理 inventory 差异。
-- Fetch 的 observed operation 都是正数；Gitea 在任何租约、超时或领取写入前批量预检仍存在且绑定当前 Manager 的记录，observed 版本高于当前 `operation_rversion` 时整次返回 `state_history_conflict`。无记录或 binding 不匹配由完整 inventory 处理，因此数据模型不需要保存 operation 历史或删除墓碑。
+- [x] `inventory_generation` 通过条件事务只接受高于当前值的新请求。等于或低于当前值返回 stale；正数 observed operation 高于 Gitea 当前版本时返回 Manager 级 `state_history_conflict`，且不更新 generation 或处理 inventory 差异。
+- [x] Fetch 的 observed operation 都是正数；Gitea 在任何租约、超时或领取写入前批量预检仍存在且绑定当前 Manager 的记录，observed 版本高于当前 `operation_rversion` 时整次返回 `state_history_conflict`。无记录或 binding 不匹配由完整 inventory 处理，因此数据模型不需要保存 operation 历史或删除墓碑。
 - [x] Manager secret 的长度、hex 格式和 `SHA-256(salt_bytes || secret_bytes)` 计算在注册签发和后续认证路径一致；Manager 记录删除后，对应摘要随记录一并删除。
 - [x] Manager 归属只由 `owner_id` 表达，不保存无法从 registration token 推导且不参与权限判定的创建者字段。
 - [x] 每个 Manager 成功 Declare 后恰有一条 `gateway` 和一条 `ssh` 地址记录；同类型地址不能被两个 Manager 使用。
 - [x] Manager 表字段与上表一致；身份有效性、运行可用性、领取意愿和永久撤销分别由记录存在性、runtime state、Fetch 容量声明和直接删除表达。
 - [x] 每个 owner 最多存在一行 registration token；重置更新该行，owner 删除后该行物理不存在。
-- 用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 `repo_id` 不保留原 owner 历史，也不需要新增冗余 owner 字段。
-- Manager 删除物理清理绑定 Codespace、Token、Git SSH Key、日志、Manager 地址行和 Manager row，不新增删除状态、墓碑或远端确认字段。
+- [x] 用户或组织删除在 repository 删除前通过现有关系完成前置清理；已经为 0 的 `repo_id` 不保留原 owner 历史，也不需要新增冗余 owner 字段。
+- [x] Manager 删除物理清理绑定 Codespace、Token、Git SSH Key、日志、Manager 地址行和 Manager row，不新增删除状态、墓碑或远端确认字段。
 
 ## Manager Metadata 结构
 
