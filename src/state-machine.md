@@ -455,7 +455,7 @@ State Finalization 在同一事务内执行：
 7. 清空包括 `operation_trigger` 在内的 active operation 字段。
 8. 封闭当前运行中日志追加窗口。
 
-主事务提交后，如果 Codespace 记录仍然存在，final、timeout、missing 和 failed 状态报告会在释放该 Codespace keyed lock 前尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端日志，不回滚已经成立的生命周期结果。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，因此跳过内部摘要，不再创建日志。这样主状态写入不依赖诊断文本，同时同一 Codespace 的下一次 operation 会在本次摘要写入尝试结束后开始。
+主事务提交后，如果 Codespace 记录仍然存在，final、timeout、missing 和 Runtime 状态报告会通过日志专用锁尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端告警，不回滚已经成立的生命周期结果。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，因此跳过内部摘要，不再创建日志。这样主状态写入不依赖诊断文本，也不会让高频日志路径绑定生命周期锁。
 
 active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后不再声称能够验证已经删除的原类型，而是按相同 `operation_rversion` 和请求目标主状态判断幂等：create/resume done 对应 running，resume failed 和 stop done 对应 stopped，create/stop/delete failed 对应 failed。当前主状态匹配时返回 `idempotent_done`，不匹配时返回 `stale_operation`。codespace 已物理删除时返回 `resource_absent`。Manager 按 outcome 处理当前上下文：
 
@@ -520,7 +520,7 @@ stateDiagram-v2
 - create/resume final done 要求当前版本 ready metadata 和 Token 行；Manager 在发布 ready 前验证实际 remote 对应的 HTTP helper 或完整 SSH Key 关系。Key 不携带 operation 版本。
 - final、timeout、取消和物理删除都清空 `operation_trigger`；该来源只供 Gitea 内部判定 queued idle stop 是否可取消。
 - `updated_unix` 仅在创建记录、创建或替换 active operation，以及首次 final/timeout/missing/transition/queued idle stop 取消时更新；未改变 active operation 的交互或设置、claim、续租和幂等结果不刷新该字段。
-- Gitea 只为仍保留记录的状态结果在主事务提交后、释放 Codespace lock 前尝试写内部摘要；物理删除路径跳过摘要，摘要失败不回滚生命周期结果。
+- Gitea 只为仍保留记录的状态结果在主事务提交后，通过日志专用锁尝试写内部摘要；物理删除路径跳过摘要，摘要失败不回滚生命周期结果。
 - final 的 operation 类型与 active operation 不一致时拒绝；active 已清空时按相同版本和请求映射的目标主状态返回确定的幂等结果。
 - active operation 存在时，当前版本的 final 携带错误有效 operation 类型返回 `stale_operation`；Manager 停止该 worker 并从 observed 集合省略旧上下文，Gitea 按原 deadline 超时，随后由完整 inventory 收敛 Runtime 差异。active 已清空时直接由 inventory 处理当前差异。非法枚举始终返回 `invalid_argument`。
 - active operation 清空后的幂等只证明相同版本已经到达相同目标主状态，不再证明原 operation 类型仍可从数据库恢复。
