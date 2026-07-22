@@ -1262,13 +1262,13 @@ GET /-/codespaces/{uuid}/logs?offset=<byte_offset>&limit=<max_bytes>
 
 实现验收点：
 
-- 日志读取按 byte offset 稳定分页，`next_offset` 可直接用于下一次请求。
-- `lines` 保留原换行符；非法参数返回 400，非行起点或超过 EOF 的 offset 返回 409 和可恢复的 `current_offset`。
-- 超过请求 limit 的单行可单独返回且不会造成无限重试。
-- delete 和 failed retention 删除整份单文件日志，不按 operation 历史截断。
-- 从未创建 DBFS 日志的 Codespace 仍可物理删除；缺失文件幂等成功，真实 DBFS 错误回滚当前本地删除事务。
-- UI 和下载读取同一份已脱敏内容。
-- 组织和站点治理权限不授权日志读取；管理员只有在本人就是创建者时才能通过创建者对象路由读取自己的日志。
+- [x] 日志读取按 byte offset 稳定分页，`next_offset` 可直接用于下一次请求。
+- [x] `lines` 保留原换行符；非法参数返回 400，非行起点或超过 EOF 的 offset 返回 409 和可恢复的 `current_offset`。
+- [x] 超过请求 limit 的单行可单独返回且不会造成无限重试。
+- [x] delete 和 failed retention 删除整份单文件日志，不按 operation 历史截断。
+- [x] 从未创建 DBFS 日志的 Codespace 仍可物理删除；缺失文件幂等成功，真实 DBFS 错误回滚当前本地删除事务。
+- [ ] UI 和下载读取同一份已脱敏内容。
+- [x] 组织和站点治理权限不授权日志读取；管理员只有在本人就是创建者时才能通过创建者对象路由读取自己的日志。
 
 ## Runtime 开发凭据
 

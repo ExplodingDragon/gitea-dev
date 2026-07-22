@@ -298,7 +298,8 @@ Codespace owner relation lock 只保护 CreateCodespace、Manager 和 registrati
 | Declare 完整快照与 Gateway/SSH 地址写入 | Manager |
 | 完整 `FetchOperations` 请求 | Manager；处理 running operation 或 queued timeout 时再取得对应 Codespace |
 | `ReportInstances` | 接受 inventory generation 使用数据库条件写入；逐项需要写 Codespace 时取得对应 Codespace |
-| `FinalizeOperation`、`UpdateLog`、`ReportRuntimeMetadata`、`ReportRuntimeTransition`、`RequestGiteaToken`、`EnsureCodespaceGitSSHKey`、`RequestIdleStop` | Codespace |
+| `FinalizeOperation`、`ReportRuntimeMetadata`、`ReportRuntimeTransition`、`RequestGiteaToken`、`EnsureCodespaceGitSSHKey`、`RequestIdleStop` | Codespace |
+| `UpdateLog` 和 Gitea 内部日志追加 | 日志追加，key 为 `codespace_log_{codespace_uuid}` |
 | State Finalization、用户对单个 Codespace 的生命周期动作和自动暂停设置、Open Code 签发/消费、Gateway SSH 成功认证、开发凭据签发/登记/吊销、单 Codespace 物理删除、reconciliation | Codespace |
 | Manager 删除 | 全程持有 Codespace owner relation、Manager；按 UUID keyset 每次取得一个绑定 Codespace |
 | 用户或组织删除 | 在 Codespace 前置清理、复扫和最终删除阶段持有目标 Codespace owner relation；删除该 owner 自有 Manager 时再取得一个 Manager，删除其余关联 Codespace 时每次只取得一个 Codespace |
@@ -454,7 +455,7 @@ codespace_log/{codespace_uuid}.log
 - 每条存储日志都是已脱敏单行。
 - Manager 上报结构化 `timestamp_unix_nano + message`；Gitea 统一编码为 UTF-8 `[RFC3339Nano] message\n`。
 - `UpdateLog` 成功响应返回规范化、脱敏并写入后的 `next_offset`；Manager 以该服务端值推进下一次追加。
-- message 包含换行时，Manager 在提交前按换行拆成多条物理日志行；存储层每个 `lines[]` 元素只接受一行，渲染器按物理行顺序展示。
+- message 包含换行时，Manager 在提交前按换行拆成多条物理日志行；Gitea 存储层每个 `lines[]` 元素只接受一行并拒绝仍包含换行的元素，渲染器按物理行顺序展示。这样每个元素都能稳定映射到一个 byte offset，分页时不需要重新解释 Manager 的原始文本。
 - 按 `log_indexes` 提供的行号到 byte offset 映射进行 seek 读取。
 - `GET /-/codespaces/{uuid}/logs` 使用 byte offset 分页读取，返回 `offset / next_offset / eof / lines / truncated`。
 - 读取 offset 必须为 0、文件末尾或 `log_indexes` 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。
@@ -462,21 +463,22 @@ codespace_log/{codespace_uuid}.log
 - delete 成功后删除 codespace 日志。
 - `failed` 日志保留到用户 delete，或 `reconcile_codespaces` 按 `OLDER_THAN` 到期清理。
 - 日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。
-- Gitea 单实例内使用按 `codespace_uuid` 分片的 keyed lock 串行化日志追加；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 `log_size/log_line_count/log_indexes` 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。
-- 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE` 时，拒绝该 batch 并只写一条固定截断摘要；文件已经达到该上限后的普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 `LOG_MAX_SIZE`，最终摘要优先使用剩余预留空间。现有大小和摘要元数据足以完成判断。
+- Gitea 单实例内使用按 `codespace_uuid` 分片的日志追加 keyed lock 串行化日志追加，key 为 `codespace_log_{codespace_uuid}`；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 `log_size/log_line_count/log_indexes` 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。
+- **设计如此：日志追加使用专用锁，而不是复用交互和生命周期的 Codespace lock。**日志写入只修改 DBFS 文件和 `codespace` 行里的日志元数据，专用锁可以保证日志连续 offset 与元数据一致，同时避免高频日志上报阻塞 open、SSH、Token 和空闲停止等交互路径。生命周期结果仍通过 operation 版本、状态复读和物理删除事务与日志路径闭合。
+- 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE` 时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 `LOG_MAX_SIZE`，最终摘要优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。
 - Manager 在 final 前写 operation 最终摘要。对于仍保留 Codespace 记录的 final、timeout、missing 和 failed 状态报告，Gitea 在主事务提交后、释放 Codespace keyed lock 前使用剩余预留空间尽力追加内部状态摘要；该独立 DBFS 事务失败或空间耗尽时只记录服务端日志，不回滚生命周期结果。delete done、Gitea 直接删除和 retention 清理跳过摘要，避免删除后重新创建日志。
 
 日志存储在 DBFS 单文件中，`codespace` 行保存当前日志元数据。只有当前 `operation_status=running` 且 `operation_rversion` 匹配时允许追加日志。DBFS 写入与生命周期事务边界明确，日志归档状态不会进入 Codespace 状态机。
 
 实现验收点：
 
-- 同一 codespace 的并发日志追加被串行化，两个相同 offset、不同内容的请求只有一个可以写入。
-- DBFS 内容与 `log_size/log_line_count/log_indexes` 在同一数据库事务中提交或回滚。
-- message 中的换行被拆成多条物理日志行，行数、索引和分页结果一致。
-- offset 按服务端规范化编码后的完整字节计算，读取不拆分 UTF-8 字符或物理日志行。
-- 超过请求 limit 的物理行可以单独分页返回，非法行中 offset 返回该物理行的服务端起点，响应仍遵守服务端读取硬上限。
-- 达到普通日志上限后只出现一条截断摘要，最终文件大小不超过 `LOG_MAX_SIZE`。
-- 内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。
-- codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。
-- 物理删除调用 DBFS Remove 时把 `fs.ErrNotExist` 视为幂等成功；其他 DBFS 错误回滚当前本地删除事务。尚未写入日志的合法 Codespace 因此不会阻塞资源清理。
-- offset conflict/gap 返回服务端当前 offset，Manager 不通过本地编码结果猜测恢复位置。
+- [x] 同一 codespace 的日志追加通过 `codespace_log_{codespace_uuid}` 串行化，两个相同 offset、不同内容的请求只有一个可以写入。
+- [x] DBFS 内容与 `log_size/log_line_count/log_indexes` 在同一数据库事务中提交或回滚。
+- [x] Manager 把含换行 message 拆成多个 `lines[]` 元素后提交；Gitea 对每个元素生成一条物理日志行，并拒绝仍包含换行的元素，行数、索引和分页结果一致。
+- [x] offset 按服务端规范化编码后的完整字节计算，读取不拆分 UTF-8 字符或物理日志行。
+- [x] 超过请求 limit 的物理行可以单独分页返回，非法行中 offset 返回该物理行的服务端起点，响应仍遵守服务端读取硬上限。
+- [x] 达到普通日志上限后只出现一条截断摘要，普通 batch 被拒绝，最终文件大小不超过 `LOG_MAX_SIZE`。
+- [ ] 内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。
+- [x] codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。
+- [x] 物理删除调用 DBFS Remove 时把 `fs.ErrNotExist` 视为幂等成功；其他 DBFS 错误回滚当前本地删除事务。尚未写入日志的合法 Codespace 因此不会阻塞资源清理。
+- [x] offset conflict/gap 返回服务端当前 offset，Manager 不通过本地编码结果猜测恢复位置。
