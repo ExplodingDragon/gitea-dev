@@ -343,7 +343,7 @@
 <li>resume 完全使用已初始化 workspace，在进入 running 前申请新 Gitea Token、按实际 remote 配置 Runtime Git 凭据并上报 ready，不重新读取 repository payload、探测 repository 可达性或 checkout 初始 commit。</li>
 <li><code>operation_rversion</code> 只协商 Gitea 下发动作；主动 Runtime 状态报告、完整 inventory 和 Runtime Metadata 分别使用只保存最新值的 generation 拒绝旧上报。</li>
 <li>Manager 通过 Fetch 的容量和接受类型控制是否领取新 create/resume；该选择不改变已有 operation、Codespace、Token 或会话。Manager 采用四个互相独立的信号：记录存在表示身份有效，心跳状态表示运行可用性，Fetch 的容量和接受类型表示本次领取意愿，删除记录表示永久撤销身份。这个模型让身份、可用性和调度意愿各自只有一个来源，避免单一管理开关同时改变 operation、Token、Gateway session 和 Runtime transition。</li>
-<li><code>[codespace] GIT_PROTOCOL=http|ssh</code> 选择新建 Codespace 的首次 clone 首选协议并固化到记录。功能启用时只校验首选协议的接入能力：默认 <code>http</code> 要求 <code>DISABLE_HTTP_GIT=false</code>；选择 <code>ssh</code> 时要求 SSH 服务可用并能取得可信 Host Key。这样默认安装不会因为未配置外部 SSH known_hosts 阻止启动，管理员明确选择 SSH 首选协议时仍会在启动阶段得到配置错误。</li>
+<li><code>[codespace] GIT_PROTOCOL=http|ssh</code> 选择新建 Codespace 的首次 clone 首选协议并固化到记录。功能启用时先推导当前可用的 Git clone 能力：HTTP 由 <code>[repository] DISABLE_HTTP_GIT=false</code> 提供；SSH 由可用 SSH 服务和可信 Host Key 提供。默认 <code>http</code> 且外部 SSH 没有配置 <code>[codespace] GIT_SSH_KNOWN_HOSTS</code> 时，SSH clone 明确关闭，create payload 的 <code>repo_clone_ssh_url</code> 为空，HTTP clone 仍可运行。HTTP 被关闭且 SSH 又没有可信 Host Key 时拒绝启动，因为没有任何可用 clone 能力。<strong>设计如此：</strong><code>GIT_SSH_KNOWN_HOSTS</code> 是 Runtime 严格校验 Gitea SSH 服务身份的信任材料，不是启用 Codespace 的前置开关；默认 HTTP 部署不应因为没有外部 SSH Host Key 而无法启动。</li>
 <li><code>[codespace] ENABLED=false</code> 是排空模式：禁止新运行、交互、新的空闲 stop 创建和开发凭据登记，但保留已有 idle stop 的幂等查询与执行、其他 stop/delete/abort/final、管理清理、凭据识别与 Cron；此时可以关闭 HTTP Git 或 SSH，重新启用后按现有持久状态和当前自动暂停设置继续。</li>
 <li>测试按 models、services、RPC routes、Web routes 和 integration 分层组织，分别覆盖数据模型、状态事务、权限/token 边界和跨层生命周期流程。</li>
 </ul>
@@ -368,7 +368,7 @@
 <li>Manager/Gateway 重启后通过数据库当前 operation、最新 generation 和本地持久数据恢复；恢复 worker 先暂停，只有服务端成功续租返回的相对时长建立新本地执行边界。重启本身不触发生命周期写入。</li>
 <li>Manager online 只表示控制面恢复；每个 Codespace 的本地 session 准入在进程启动时关闭，完成凭据、SSH、路由和当前 ready 重报后逐项开放，外部 cache 保留旧 ready 不能提前建连。</li>
 <li>自动暂停只由 Manager 的 live session 与单调计时触发，Gitea 当前策略和交互版本授权；延迟设置快照不能创建错误 stop，请求丢失或重启后已创建的 idle stop 由普通 Fetch 恢复，never 不影响手动 stop/delete 和账户管理动作。</li>
-<li><code>ENABLED=true</code> 时 HTTP 与 SSH 两种 Git 接入都在 Codespace 组件初始化前通过校验；排空模式允许关闭任一入口并继续完成 stop、delete 与管理清理。</li>
+<li><code>ENABLED=true</code> 时 Gitea 在 Codespace 组件初始化前推导 Git clone 能力；首选协议必须可用，至少一种 clone 能力可用。SSH clone 关闭时 create payload 不下发 SSH URL，<code>EnsureCodespaceGitSSHKey</code> 返回状态不可用；排空模式允许关闭任一入口并继续完成 stop、delete 与管理清理。</li>
 <li>Manager 本地版本基线丢失后，running 主状态对应 stopped Runtime 或无 active operation 的 failed inventory 可从 report transition action 取得当前版本；stopped 主状态对应 running Runtime 固定停止 Incus 实例并保留根存储，新的启动只来自 resume operation。Manager 持有正版本操作上下文但低于 Gitea 当前 active operation 时，failed inventory 可通过 refetch 取得当前 payload；版本相同时直接提交当前 operation 的 final failed；<code>observed_operation_rversion=0</code> 表示上下文缺失，只等待原租约超时。单 Codespace 不可恢复时可上报 failed 状态报告，Manager 整体离线本身不批量改写 Codespace。</li>
 <li>running 只由当前 create/resume 的 ready metadata 和 Token 都完整的 final done 建立；同一 boot 版本 ready 不回退，resume 失败后清除本轮发布上下文并拒绝迟到快照，下一次 resume 从保留的 Incus 实例重建。</li>
 <li>每个 Codespace 只有一个串行 metadata 发布任务管理完整快照和 generation。<code>ReportRuntimeMetadata</code> 的成功空响应确认 Gitea 接受本次请求快照；请求携带当前 operation ready 时即可继续 final，后续 Endpoint generation 异步收敛。Endpoint 声明以字段形式保存在既有 Codespace 当前快照中，使路由、boot、internal SSH 和 generation 共享“临时文件、文件同步、rename、父目录同步”的提交点；提交后才替换内存路由并返回成功。进程重启读取提交前或提交后的任一完整快照时，通过 Fetch、inventory 和 Runtime 幂等请求恢复。同步期间新增入口暂不展示，已删除入口由 Gateway 当前路由复检拒绝。</li>

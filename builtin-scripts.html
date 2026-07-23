@@ -184,9 +184,12 @@
 <ul>
 <li>Manager 核心数据、RPC、配置、结果结构和 Endpoint API 只包含通用脚本契约字段；devcontainer、Docker、Node.js、CLI、容器标识和容器用户作为案例私有状态由自定义脚本保存。</li>
 <li>内置脚本和本地自定义脚本使用同一调用、共享环境、结果和 ready 契约。</li>
-<li>三个入口全部为 <code>builtin</code> 或全部为本地绝对路径；混合配置在 Manager 启动时给出明确错误。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+配置层要求三个入口全部为 <code>builtin</code> 或全部为本地绝对普通文件；混合配置、相对路径和不可访问文件会在 Manager 启动配置校验时报错。</li>
 <li>同一 active operation 在响应丢失、lease 续租和 Manager 重启后继续使用相同脚本内容；配置更新只影响之后开始的 create/resume。</li>
-<li>自定义脚本只从 Manager 本地配置读取，脚本发布不依赖 Gitea、repository 或额外下载接口。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+自定义脚本入口只从 Manager 本地配置读取；配置校验不接受 repository 路径、下载 URL 或相对路径。</li>
+<li>脚本发布、内容摘要、同一 active operation 复用相同脚本内容，以及脚本写入 Runtime 固定目录仍由后续脚本执行状态机实现。</li>
 <li>运行健康检查只使用 activate 的通用 internal SSH 输出；脚本套件仍由 init、start、resume 三个入口组成，健康检查不会调用项目命令或读取脚本私有实现状态。</li>
 <li>默认内置套件只实现实例内直接运行；devcontainer 案例只有作为完整自定义套件被显式配置时才执行。</li>
 </ul>
@@ -264,9 +267,11 @@ start.sh activate | resume.sh activate
 <p>实现验收点：</p>
 <ul>
 <li>三个脚本只通过 <code>CODESPACE_ENV</code> 共享和覆盖非预定义变量，Manager 在成功阶段后保存规范结果。</li>
-<li>动态文件路径只使用 <code>CODESPACE_ENV</code> 和 <code>CODESPACE_RESULT</code>；Token 与 Git SSH 材料使用文档定义的固定路径。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Gitea Token 与 Runtime Token 使用文档定义的固定路径，并由 create/resume 写入实例文件系统；prepare/activate 仍保留环境变量作为本次进程快照。</li>
+<li>动态文件路径只使用 <code>CODESPACE_ENV</code> 和 <code>CODESPACE_RESULT</code>；Git SSH 材料使用文档定义的固定路径。完整脚本契约落地后，Token 文件 owner、共享环境和结果文件也由同一阶段机制校验。</li>
 <li>init 时固定 Token 路径已经确定但凭据尚未写入；prepare 和 activate 取得当前 Token 环境快照与 Gitea 对外地址。</li>
-<li>create 取得两种 clone URL、首选协议和锁定 ref；resume 不取得 repository 输入，只使用持久 workspace 与共享环境。</li>
+<li>create 取得当前可用协议的 clone URL、首选协议和锁定 ref；禁用协议字段为空。resume 不取得 repository 输入，只使用持久 workspace 与共享环境。</li>
 <li>同一变量被多次追加时最后值进入下一阶段；失败或取消调用的追加不生效，成功调用后的规范环境跨 stop/resume 保存。</li>
 <li>脚本追加预定义变量时当前调用不受影响，Manager 规范化时移除该行，后续调用仍使用 Manager 当前注入值。</li>
 <li>Manager 使用解析器读取环境文件，不执行其中的 shell 内容；只读输入在每次调用时覆盖共享同名值。</li>
@@ -310,11 +315,13 @@ start.sh activate | resume.sh activate
 <p>**设计如此：Runtime 内部的进程具有同一个 Codespace 权限边界。**用户在实例内拥有 sudo，容器不是额外授权边界；Runtime Token 与 Incus 来源地址负责防止跨 Codespace 调用，Endpoint 和 internal SSH 的实际连通校验负责防止脚本发布不可达目标。因此 Manager 不需要理解内部容器标识。</p>
 <p>实现验收点：</p>
 <ul>
-<li>Endpoint API 对所有脚本实现都只接收 Incus 通信地址上的实际端口；devcontainer 案例先在脚本内完成转发，再提交同一实际端口字段。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Endpoint API 对所有脚本实现都只接收 Incus 通信地址上的实际端口；devcontainer 案例先在脚本内完成转发，再提交同一实际端口字段。当前 Runtime API 会从请求 source IP 解析 Incus 通信网卡地址，Endpoint 请求体不能指定 host。</li>
 <li>内部环境的端口转发由脚本建立；Manager 只保存并连接实际地址和端口。</li>
 <li>internal SSH 的用户、端口和 Host Key 来自通用共享输出，并在 ready 前由 Manager 实际连接校验。</li>
 <li>Manager 不依赖固定授权文件路径；内置直接运行和自定义环境的 activate 都用同一公钥输入替换各自实际入口的授权内容。</li>
-<li>自定义脚本无法通过 Endpoint 请求指定其他 host，Runtime API 继续按 Runtime Token 和实时来源地址限制到当前 Codespace。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+自定义脚本无法通过 Endpoint 请求指定其他 host，Runtime API 继续按 Runtime Token 和实时来源地址限制到当前 Codespace。设计如此是为了让脚本只声明“本实例通信地址上的端口”，避免脚本把 Gateway 路由指向其他主机。</li>
 <li>内置与自定义脚本使用相同的 <code>public</code> 字段；省略命令行选项得到需要认证的入口，显式 <code>--public</code> 得到公共普通 Endpoint，workspace 的公共请求被拒绝。</li>
 </ul>
 <h2 id="内置脚本实现"><a class="header" href="#内置脚本实现">内置脚本实现</a></h2>
@@ -323,15 +330,16 @@ start.sh activate | resume.sh activate
 <pre><code class="language-text">CODESPACE_CREDENTIAL_UID=1000
 CODESPACE_CREDENTIAL_GID=1000
 </code></pre>
-<p>内置 <code>start.sh prepare</code> 以 <code>codespace</code> 用户使用 <code>/workspaces/.gitea-create-{codespace_uuid}</code>。初始化标记记录 UUID、repo ID、锁定 SHA 和两种 clone URL。首选协议的 clone/fetch 非零退出时只清理带当前标记的临时目录，再用另一协议重试一次；本地前置错误和 HEAD 校验失败不切换协议。HEAD 等于锁定 SHA 后，脚本原子 rename 到默认 <code>/workspaces/{repo_name}</code>，并把最终绝对路径追加到 <code>CODESPACE_ENV</code>。已有无匹配标记的目标目录返回 workspace 冲突。</p>
-<p>HTTP(S) remote 使用读取当前 Token 文件的 credential helper。首次尝试 SSH 前，内置脚本原子生成 Ed25519 密钥对，通过 Git SSH Key helper 登记公钥并写入可信 known_hosts。SSH 失败后回退到 HTTP(S) 成功时允许保留已经登记的公钥。<code>resume.sh prepare</code> 读取共享 workspace 路径，保留用户当前 HEAD，并只恢复实际 remote 的本地凭据配置，不 clone、fetch、checkout 或探测 repository 可达性。</p>
+<p>内置 <code>start.sh prepare</code> 以 <code>codespace</code> 用户使用 <code>/workspaces/.gitea-create-{codespace_uuid}</code>。初始化标记记录 UUID、repo ID、锁定 SHA 和本次 payload 中非空的 clone URL。首选协议的 clone/fetch 非零退出且另一种 URL 非空时，只清理带当前标记的临时目录并重试一次；本地前置错误、没有备用 URL 和 HEAD 校验失败不切换协议。HEAD 等于锁定 SHA 后，脚本原子 rename 到默认 <code>/workspaces/{repo_name}</code>，并把最终绝对路径追加到 <code>CODESPACE_ENV</code>。已有无匹配标记的目标目录返回 workspace 冲突。</p>
+<p>HTTP(S) remote 使用读取当前 Token 文件的 credential helper。payload 提供非空 SSH URL 且脚本实际尝试 SSH 前，内置脚本原子生成 Ed25519 密钥对，通过 Git SSH Key helper 登记公钥并写入可信 known_hosts。SSH 失败后回退到 HTTP(S) 成功时允许保留已经登记的公钥。SSH URL 为空表示 Gitea 当前没有启用 Codespace SSH clone，脚本不生成 Git SSH Key，也不调用 Git SSH Key helper。<code>resume.sh prepare</code> 读取共享 workspace 路径，保留用户当前 HEAD，并只恢复实际 remote 的本地凭据配置，不 clone、fetch、checkout 或探测 repository 可达性。</p>
 <p>内置 <code>start.sh activate</code> 始终在 Incus 实例中启动内部 sshd，交互用户为 <code>codespace</code>，使用本次 <code>CODESPACE_GATEWAY_INTERNAL_SSH_PUBLIC_KEY</code> 原子替换授权内容，并把实际端口、用户和 Host Key 指纹追加到 <code>CODESPACE_ENV</code>。内置 <code>resume.sh</code> 读取已经提交的 <code>CODESPACE_WORKSPACE_DIR</code>，恢复当前实际 Git remote 的本地凭据和实例内 sshd，不重新探测 repository 配置，也不引入第二层容器环境。</p>
 <p>内置脚本只安装直接运行需要的系统工具。使用内置套件时，repository 中的 <code>.devcontainer/devcontainer.json</code> 或 <code>.devcontainer.json</code> 按普通 workspace 文件保留；Docker、Node.js、devcontainer CLI 和容器端口转发工具由选择该案例的自定义脚本准备。</p>
 <p>内置 create/resume 确认固定用户、workspace、Git remote 或实例根存储无法形成可信结果时返回 <code>unrecoverable_failed</code>；临时包安装、网络或 sshd 启动错误返回 <code>recoverable_failed</code>。内置私有状态缺失但通用 workspace 和固定直接运行结构仍可验证时由脚本重建；无法验证时按对应失败分类返回，不由 Manager 猜测恢复。</p>
 <p>**设计如此：默认内置实现只有一种直接运行行为。**内置脚本的输入完全来自 Manager 下发的 operation payload 和共享环境，因此 create 与 resume 使用同一套可验证的依赖和恢复结果。需要 devcontainer 时，由管理员显式选择下一节的完整自定义套件，由该套件解释 repository 中的 devcontainer 配置。</p>
 <p>实现验收点：</p>
 <ul>
-<li>apt/dnf/pacman 探测、固定 <code>codespace</code> 用户、sudo、clone 回退、实例内 sshd 和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。</li>
+<li>apt/dnf/pacman 探测、固定 <code>codespace</code> 用户、sudo、基于非空 clone URL 的回退、实例内 sshd 和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。</li>
+<li>SSH URL 为空时内置脚本只配置 HTTP(S) remote 和 credential helper，不创建 Git SSH Key、不写 Git known_hosts、不调用 Git SSH Key helper。</li>
 <li>内置脚本测试确认 repository 中的 devcontainer 文件按普通 workspace 内容保留，直接运行路径只准备固定用户、workspace、Git 凭据、internal SSH 和实际 Endpoint 端口。</li>
 <li>resume 保留 workspace HEAD，只恢复当前 remote 的凭据和实例内 sshd，不依赖 repository payload 或网络可达性。</li>
 <li>完整自定义套件可以替换内置直接运行行为，只要通过通用结果、共享环境和 ready 校验。</li>

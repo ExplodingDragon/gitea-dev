@@ -244,7 +244,7 @@
 <li>本次 <code>FetchOperations</code> 的 <code>capacity_available</code> 大于 0 时才领取 create/resume。</li>
 <li>Fetch 使用本次 <code>capacity_available</code> 限制 create/resume，并另行提交 <code>cleanup_capacity_available</code> 限制 stop/delete；Gitea 使用最近成功 Declare 的 <code>capacity_total</code> 校验启动容量范围。Declare 容量同时用于管理页面展示和诊断，清理容量只属于单次 Fetch。</li>
 <li>领取提交后，operation 保持归属于领取它的 Manager；同一 Fetch 在 payload 构造失败时按 UUID、版本、Manager 和 running 状态做条件回退。系统错误或响应丢失保留 binding 和原 deadline，Manager 未持久化上下文时由普通 timeout 收敛。</li>
-<li>create payload 中的 <code>repo_web_url</code> 和其他 Web URL 以配置的 <code>ROOT_URL</code>（<code>setting.AppURL</code>，包含 <code>AppSubURL</code>）构造；<code>repo_clone_http_url</code> 与 <code>repo_clone_ssh_url</code> 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 和 SSH clone URL。三类 URL 都使用 payload 构造时重新读取的当前 owner/repository 名称。Fetch 是 Manager 发起的控制面请求，不能用该请求的 Host 或浏览器转发头推导对外地址；Manager 按 payload 原值注入，<code>git_protocol</code> 表示首次首选项。内置脚本在首选地址的 clone/fetch 非零退出时清理当前受控临时 workspace 并用另一地址重试，本地前置错误和 HEAD 校验失败不切换协议；自定义脚本可以选择任一地址。部署方负责让 Runtime 可访问两种已启用的 Git 接入面和 Web URL。</li>
+<li>create payload 中的 <code>repo_web_url</code> 和其他 Web URL 以配置的 <code>ROOT_URL</code>（<code>setting.AppURL</code>，包含 <code>AppSubURL</code>）构造；<code>repo_clone_http_url</code> 与 <code>repo_clone_ssh_url</code> 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 和 SSH clone URL，只有对应 clone 能力可用时才非空。三类 URL 都使用 payload 构造时重新读取的当前 owner/repository 名称。Fetch 是 Manager 发起的控制面请求，不能用该请求的 Host 或浏览器转发头推导对外地址；Manager 按 payload 原值注入，<code>git_protocol</code> 表示首次首选项，并且必须对应一个非空 clone URL。内置脚本在首选地址的 clone/fetch 非零退出且另一种 URL 非空时清理当前受控临时 workspace 并重试，本地前置错误和 HEAD 校验失败不切换协议；自定义脚本可以选择任一非空地址。部署方负责让 Runtime 可访问已启用的 Git 接入面和 Web URL。</li>
 <li>并发领取失败不是系统错误。</li>
 <li>queued create 在最终条件 UPDATE 中重新确认 repository 仍存在，并使用该语句看到的当前 owner 做 scope 匹配；<code>repo_tag</code> 仍使用创建时已经固定的值。repository transfer 与 claim 并发时，claim 先成立则 binding 固定，transfer 先成立则旧 owner Manager 领取失败；领取后 transfer 不再影响 binding。</li>
 </ul>
@@ -296,12 +296,12 @@
 <p>脚本可以使用 Manager 内置版本，也可以由部署方通过本地配置替换。Manager 核心固定消费 init、prepare、activate、共享环境和通用输出；软件包管理器、工作用户名称、直接运行、devcontainer、内部容器和端口转发都由具体脚本实现。完整契约、当前内置实现和 devcontainer 案例见<a href="builtin-scripts.html">脚本契约、内置实现与 devcontainer 案例</a>。</p>
 <p>**设计如此：devcontainer 是完整自定义脚本案例，内置路径保持直接运行。**Manager 和 Gitea 的状态、RPC、当前快照与 Endpoint API 只保存通用脚本结果、共享环境、internal SSH 和 Incus 通信地址上的实际 Endpoint 端口；管理员显式配置该案例的三个脚本后，由脚本自行读取 repository 配置并提供相同 workspace、Git 本地配置、internal SSH 和实际 Endpoint 端口。这样既证明自定义开发环境能够接入，也让 Go 代码的职责稳定在通用契约和 Incus 实例生命周期上。</p>
 <p>每次脚本调用的结果只包含 <code>outcome</code> 和固定 boot stage。<code>done</code> 提交本次 <code>CODESPACE_ENV</code> 追加并进入下一阶段；<code>recoverable_failed</code> 在 lease 内重试；<code>unrecoverable_failed</code> 沿 create/resume 已定义结果收敛。Manager 主动取消时丢弃本次结果和环境追加，其他结果缺失、损坏或 schema 不匹配按可恢复失败处理。脚本不接收 <code>operation_rversion</code>，退出码只用于诊断。</p>
-<p>create 脚本取得两种规范 clone URL、首选协议和锁定 commit SHA，输出最终 workspace 路径。Manager 只在该目录 HEAD 等于锁定 SHA，且实际 remote 的本地凭据配置有效时接受 prepare。resume 脚本不取得 repository payload，使用已保存 workspace、实际 remote 和共享环境恢复本地凭据与交互入口，并保留用户当前 HEAD。默认脚本的临时目录、协议回退、Git SSH 密钥和直接运行行为集中定义在<a href="builtin-scripts.html#%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC%E5%AE%9E%E7%8E%B0">内置脚本实现</a>；devcontainer 案例单独定义在<a href="builtin-scripts.html#devcontainer-%E8%87%AA%E5%AE%9A%E4%B9%89%E8%84%9A%E6%9C%AC%E6%A1%88%E4%BE%8B">自定义脚本案例</a>。</p>
+<p>create 脚本取得当前可用协议的规范 clone URL、首选协议和锁定 commit SHA，输出最终 workspace 路径。Manager 只在该目录 HEAD 等于锁定 SHA，且实际 remote 的本地凭据配置有效时接受 prepare。resume 脚本不取得 repository payload，使用已保存 workspace、实际 remote 和共享环境恢复本地凭据与交互入口，并保留用户当前 HEAD。默认脚本的临时目录、协议回退、Git SSH 密钥和直接运行行为集中定义在<a href="builtin-scripts.html#%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC%E5%AE%9E%E7%8E%B0">内置脚本实现</a>；devcontainer 案例单独定义在<a href="builtin-scripts.html#devcontainer-%E8%87%AA%E5%AE%9A%E4%B9%89%E8%84%9A%E6%9C%AC%E6%A1%88%E4%BE%8B">自定义脚本案例</a>。</p>
 <p>**设计如此：resume 的 ready 证明 workspace、本地凭据配置和交互入口已经恢复，不证明来源 repository 当前存在或可访问。**repository 删除后 <code>repo_id=0</code>，Manager 仍按已保存 remote 配置 HTTP helper 或确认 SSH 密钥与 known_hosts，Codespace 可以恢复到 running；之后的 Git HTTP(S)、LFS 和 repository API 没有绑定仓库能力，公开只读目标按 Gitea 现有公开访问规则处理，写入、管理、私有或不可见目标由 Gitea 正常拒绝。Git SSH Key 没有匿名公开读模型，<code>repo_id=0</code> 时不能用于仓库命令。</p>
 <p>Git SSH 私钥只保存在工作环境用户目录；Manager 和 Gitea 只接收公钥。公钥是 Codespace 生命周期级凭据，不携带 operation 版本，也不因 resume 轮换。相同公钥确保请求幂等，不同公钥返回硬冲突。**设计如此：**稳定 Key 使迟到请求无法覆盖当前绑定，并避免为低收益轮换增加版本协议；它只认证 Runtime 到 Gitea 的绑定仓库，不复用 Gateway 用户 SSH Key 或 Manager 连接内部 sshd 的 client key。</p>
 <p>create 实际使用 SSH remote 时必须在 ready 前登记公钥并配置严格 Host Key 校验；HTTP(S) remote 必须配置读取当前 Token 文件的限定路径 helper。SSH 尝试后改用 HTTP(S) 成功时，已经登记的公钥关系继续按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。</p>
 <h3 id="脚本输入与共享环境"><a class="header" href="#脚本输入与共享环境">脚本输入与共享环境</a></h3>
-<p>Manager 使用环境变量向三个脚本传递当前 operation 和本地快照；init 结束并给出非 root 数值身份后，Manager 才签发并写入本轮两个 Token，再把当前 Token 快照提供给 prepare 和 activate。create 取得两种 clone URL、首选协议及锁定 ref，resume 不取得 repository 字段。</p>
+<p>Manager 使用环境变量向三个脚本传递当前 operation 和本地快照；init 结束并给出非 root 数值身份后，Manager 才签发并写入本轮两个 Token，再把当前 Token 快照提供给 prepare 和 activate。create 取得当前可用协议的 clone URL、首选协议及锁定 ref，resume 不取得 repository 字段。</p>
 <p>三个脚本通过 <code>&gt;&gt; "$CODESPACE_ENV"</code> 追加共享变量，非预定义变量由最后一行覆盖前值。Manager 预定义输入的同名追加覆盖无效并在规范化时移除。只有当前调用结果为 done 时，Manager 才解析、规范化并原子提交本次追加；失败或取消恢复调用前环境。完整变量表、优先级、持久化和校验规则见<a href="builtin-scripts.html#%E8%B0%83%E7%94%A8%E4%B8%8E%E5%85%B1%E4%BA%AB%E7%8E%AF%E5%A2%83">调用与共享环境</a>。</p>
 <h3 id="脚本实现边界"><a class="header" href="#脚本实现边界">脚本实现边界</a></h3>
 <p>内置脚本固定在 Incus 实例内直接运行，并只保存 <code>GITEA_BUILTIN_*</code> 私有状态。完整自定义套件可以通过 <code>CODESPACE_ENV</code> 保存自己的实现选择、内部环境和转发状态，并最终输出同一组通用 workspace 与 internal SSH 变量。Manager 只保存规范共享环境，不解析其中的实现私有变量。</p>
@@ -399,7 +399,8 @@
 <li>global Manager 声明的全部 tag 可由站点范围内符合创建权限的仓库代码选择，owner scoped Manager 声明的全部 tag 可由该 owner 范围选择；tag 只决定开发能力和资源模板，不承担授权或信任等级判断。</li>
 <li>无匹配 Manager 的 failed 记录使用版本 0 和空 operation 字段，之后出现可用 Manager 不会自动复活该记录。</li>
 <li>PR create 只使用 base repository clone URL 和 <code>refs/pull/{index}/head</code>，token 不访问 head repository。</li>
-<li>create payload 提供 Manager 选择本地模板所需的 <code>repo_tag</code>、首选 <code>git_protocol</code>、两种规范 clone URL，以及 Runtime 初始化所需的 repository、owner、创建者和 ref 数据；Web URL 基于配置的 <code>ROOT_URL</code> 并保留 <code>AppSubURL</code>，所有 URL 都不受 Manager 控制面请求 Host 影响。<code>repo_tag</code> 只用于 Manager 选择并持久化有效模板，不传入 Runtime 环境。</li>
+<li>create payload 提供 Manager 选择本地模板所需的 <code>repo_tag</code>、首选 <code>git_protocol</code>、当前可用协议的规范 clone URL，以及 Runtime 初始化所需的 repository、owner、创建者和 ref 数据；Web URL 基于配置的 <code>ROOT_URL</code> 并保留 <code>AppSubURL</code>，所有 URL 都不受 Manager 控制面请求 Host 影响。<code>repo_tag</code> 只用于 Manager 选择并持久化有效模板，不传入 Runtime 环境。</li>
+<li><code>repo_clone_ssh_url</code> 为空时 Manager 和脚本把 SSH clone 视为关闭，不调用 <code>EnsureCodespaceGitSSHKey</code>；首选协议对应 URL 为空的 payload 属于服务端错误。</li>
 <li>resume 基于已有 workspace，不读取 repository、不 checkout 初始 commit，并在初始化阶段轮换 Gitea Token；SSH remote 校验并确认原 Git SSH Key，不生成新 Key，也不以 repository 网络可达性作为 ready 条件。</li>
 <li>使用 SSH remote 时，start/resume 脚本按固定私钥、公钥和 known_hosts 路径持久化密钥材料；Manager 与 Gitea 的持久状态只保存公钥绑定。</li>
 <li>脚本只接收当前运行环境所需输入，不接收 operation 版本；init、prepare 和 activate 每次调用都写入 <code>root:root 0600</code> 的唯一结果文件，Manager 先持久化严格 schema 的结果和本地阶段再继续。非主动取消场景的缺失或损坏结果按可恢复失败处理。</li>
@@ -414,7 +415,7 @@
 <li>更高版本 delete 会替换旧 resume worker，旧 boot 上下文不再产生 token、credential、ready 或 final 写入。</li>
 <li>recovering Manager 通过普通 Fetch 恢复 active resume；站点排空通过 abort 回到 stopped，记录缺失通过完整 inventory 确认本地处理。</li>
 <li>stopped Runtime 只能由 Gitea 下发的 resume operation 启动；inventory 发现无对应 operation 的 running Runtime 时停止 Incus 实例并保留根存储。</li>
-<li>Manager 向 create 脚本提供两种 clone URL、首选协议和锁定 SHA，并校验脚本提交的最终 workspace、HEAD 和实际 remote 本地凭据。内置脚本的临时目录、协议回退与崩溃恢复按独立脚本文档实现。</li>
+<li>Manager 向 create 脚本提供当前可用协议的 clone URL、首选协议和锁定 SHA，并校验脚本提交的最终 workspace、HEAD 和实际 remote 本地凭据。内置脚本的临时目录、协议回退与崩溃恢复按独立脚本文档实现。</li>
 <li>create/resume 均先以 root 运行幂等 <code>init.sh</code>，再分别运行 prepare 和 activate；create 校验锁定 SHA，resume 不修改用户当前 HEAD。</li>
 <li>内置脚本的 apt/dnf/pacman、固定用户、直接运行和 internal SSH 由独立文档的实现验收点覆盖；devcontainer 案例另以完整自定义套件覆盖 CLI、lifecycle commands、恢复和端口转发。Manager 核心测试通过通用自定义脚本模拟覆盖同一脚本契约和输出。</li>
 <li>lease pulse 停止或本地截止点到达时 launcher 终止进程组，Manager 停止 create/resume 实例并保留 operation 上下文；同版本续租前不继续 Runtime 修改，Manager 崩溃后脚本也不能无限运行。</li>

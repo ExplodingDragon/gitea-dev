@@ -593,7 +593,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>更新 <code>last_online_unix</code>。</li>
 <li><code>DeclareManager</code> 同时作为 heartbeat。</li>
 <li>Declare 要么完整接受，要么完整拒绝；任一字段格式或地址唯一性校验失败时，不更新任何声明字段或 <code>last_online_unix</code>。其他 RPC 认证成功也不隐式恢复 online。超过 offline timeout 的 Manager 必须先 Declare recovering，完成完整 inventory、Runtime 映射和 worker 上下文分类后再 Declare online，才能领取新的 create/resume。</li>
-<li>response 确认完整快照已经接受，并返回服务端选定的心跳周期、Runtime Metadata 刷新周期、控制面消息大小上限和规范 <code>gitea_web_url</code>。前三项控制运行周期与传输，<code>gitea_web_url</code> 来自 Gitea <code>ROOT_URL</code>，供 Gateway 把缺少本地 session 的浏览器导航带回 Gitea 登录确认页；控制面 <code>gitea_url</code> 可能是内网地址，不能承担该职责。这些响应字段不增加新的持久状态。</li>
+<li>response 确认完整快照已经接受，并返回服务端选定的心跳周期、Runtime Metadata 刷新周期、控制面消息大小上限和规范 <code>gitea_web_url</code>。前三项控制运行周期与传输，<code>gitea_web_url</code> 来自 Gitea <code>ROOT_URL</code>，供 Gateway 把缺少本地 session 的浏览器导航带回 Gitea 登录确认页；Manager 注册时保存的 Gitea URL 可能是内网控制面地址，不能承担该职责。这些响应字段不增加新的持久状态。</li>
 <li>设 <code>MANAGER_OFFLINE_TIMEOUT</code> 的毫秒值为 <code>O</code>。Gitea 返回 <code>heartbeat_interval_milliseconds=floor(O/4)</code>、<code>runtime_metadata_refresh_interval_milliseconds=floor(O/2)</code>；Runtime Metadata TTL 保持 <code>O*2</code>。Manager 启动后立即以 recovering Declare，成功取得三个正数和合法 <code>gitea_web_url</code> 后才启动周期任务和领取流程，后续成功响应原子替换当前值。</li>
 <li>Manager 使用本地单调时钟维持单个进行中的 Declare，请求完成后在返回的心跳周期内发起下一次；临时错误的退避也不超过该周期。心跳不使用正抖动，使服务端选定的周期就是最晚重试边界。</li>
 <li>Manager 重启恢复期间通过 <code>DeclareManager</code> 上报 <code>manager_runtime_state=recovering</code>，必要 listener、完整 inventory、Runtime 映射和 worker 上下文分类完成后上报 <code>manager_runtime_state=online</code>。</li>
@@ -769,9 +769,9 @@ operation_status=running
 <li>校验 <code>codespace.operation_status == running &amp;&amp; codespace.manager_id == caller</code>。</li>
 <li>只允许当前 <code>operation_rversion</code> 对应的 running operation 追加日志。</li>
 <li>active operation 清空后，日志进入封闭状态。</li>
-<li>单行最大长度由 <code>LOG_MAX_LINE_SIZE</code> 控制。</li>
-<li>日志总大小由 <code>LOG_MAX_SIZE</code> 控制。普通日志可用上限为 <code>LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE</code>，超过后返回 log size exceeded 分类并写入明确截断摘要。</li>
-<li>服务端固定预留 <code>LOG_FINAL_SUMMARY_RESERVE</code>；达到普通日志上限后拒绝原始行，但内部最终摘要仍可写入预留空间。</li>
+<li>单行最大长度由 Gitea 内部保护值控制，保证异常大行不会放大单次写入和页面读取。</li>
+<li>日志总大小由 <code>LOG_MAX_SIZE</code> 控制。普通日志可用上限为 <code>LOG_MAX_SIZE</code> 减去内部最终摘要预留空间，超过后返回 log size exceeded 分类并写入明确截断摘要。</li>
+<li>服务端固定预留最终摘要空间；达到普通日志上限后拒绝原始行，但内部最终摘要仍可写入预留空间。</li>
 <li>keyed lock 内发现普通 batch 将使当前文件首次跨过普通日志上限时，只写一条截断摘要；文件已经达到上限后的普通行直接返回 <code>log_size_exceeded</code>，不再写摘要。截断摘要和最终摘要共同受 <code>LOG_MAX_SIZE</code> 硬上限约束。</li>
 <li>Manager 在 final 前先上传 operation 最终摘要。对于仍保留 Codespace 记录的结果，Gitea 在 State Finalization 主事务提交后，通过日志专用锁使用剩余预留空间尽力追加内部状态摘要；该 DBFS 追加事务失败或预留耗尽时只记录服务端告警，不回滚生命周期状态。物理删除路径跳过摘要并删除整份日志。</li>
 <li>成功追加和内容一致的幂等重放都返回服务端当前 <code>next_offset</code>；该值是脱敏和规范化编码后的真实文件末尾。</li>
@@ -905,11 +905,11 @@ operation_status=running
 <li>排空模式下任何请求都不会读取、签发、修复或返回 Token；stop 从本地 Runtime credential 文件恢复脱敏值，无法确认安全的缓冲日志不上传。</li>
 </ul>
 <h3 id="ensurecodespacegitsshkey"><a class="header" href="#ensurecodespacegitsshkey">EnsureCodespaceGitSSHKey</a></h3>
-<p><code>EnsureCodespaceGitSSHKey</code> 在 create 首次尝试 SSH 或 SSH remote 的 resume 初始化时创建或确认生命周期级公钥。Manager 已通过 Runtime Token、来源 Incus identity 和本地 operation 上下文校验请求，Gitea 再以 Manager 身份、Codespace binding 和当前初始化状态作最终判定。Runtime 和该 RPC 都不提交 operation 版本；Manager 内部仍使用当前版本完成 metadata 和 final。create 后续回退到 HTTP(S) 时允许保留已经登记的公钥，final 仍按实际 remote 的本地配置判断 ready。</p>
+<p><code>EnsureCodespaceGitSSHKey</code> 在 create 首次尝试 SSH 或 SSH remote 的 resume 初始化时创建或确认生命周期级公钥。它只在当前站点推导出的 Codespace SSH clone 能力可用时接受请求；SSH clone 关闭时返回状态不可用。Manager 已通过 Runtime Token、来源 Incus identity 和本地 operation 上下文校验请求，Gitea 再以 Manager 身份、Codespace binding 和当前初始化状态作最终判定。Runtime 和该 RPC 都不提交 operation 版本；Manager 内部仍使用当前版本完成 metadata 和 final。create 后续回退到 HTTP(S) 时允许保留已经登记的公钥，final 仍按实际 remote 的本地配置判断 ready。</p>
 <p>handler 取得 Codespace lock，锁内重新读取 Codespace 并按固定顺序处理：</p>
 <ol>
 <li>功能启用，调用方 Manager 记录有效、heartbeat 未超时，且与 <code>codespace.manager_id</code> 匹配。</li>
-<li>主状态和 active operation 为已领取的 <code>creating/create</code> 或 <code>stopped/resume</code>，<code>operation_status=running</code> 且 <code>operation_deadline_unix &gt; now</code>。<code>git_protocol</code> 只表示 clone 首选项，<code>http</code> 和 <code>ssh</code> 两种首选项都允许登记实际 SSH 尝试所需公钥。</li>
+<li>主状态和 active operation 为已领取的 <code>creating/create</code> 或 <code>stopped/resume</code>，<code>operation_status=running</code> 且 <code>operation_deadline_unix &gt; now</code>。当前站点 SSH clone 能力可用。<code>git_protocol</code> 只表示 clone 首选项；只有实际 remote 需要 SSH 且 Gitea 下发过非空 SSH URL 时才登记公钥。</li>
 <li><code>codespace.user_id</code> 仍能解析到满足当前登录限制的创建用户。公钥登记不以当前 repository 权限作为完成条件；Git SSH 命令会在实际访问时检查当前 repository、code unit 和用户权限，因此 repository 已删除或权限暂时变化不会阻断 Codespace resume。</li>
 <li>公钥为一把规范 Ed25519 Key；Gitea 丢弃 comment，使用 SSH wire bytes 计算现有 SHA256 指纹。</li>
 <li>关系与 <code>PublicKey</code> 都不存在时准备创建；关系完整且公钥相同时幂等成功。已有不同公钥时返回 <code>key_conflict</code>，保持现有绑定。</li>
@@ -917,12 +917,12 @@ operation_status=running
 <li>事务提交并释放 PublicKey 指纹锁后调用 Gitea 现有公钥授权同步入口：内置 SSH 或 <code>SSH_CREATE_AUTHORIZED_KEYS_FILE=false</code> 时数据库已经是完整授权来源；使用外部 <code>authorized_keys</code> 文件时重写该文件。当前接入面就绪后返回规范化 <code>known_hosts_lines</code>；文件同步失败返回 <code>internal_error</code>，相同公钥重试会再次同步。</li>
 </ol>
 <p>数据库是公钥授权的事实来源。删除事务先移除关系与 <code>PublicKey</code>；外部 <code>authorized_keys</code> 即使短暂保留旧的 forced-command 行，后续 key ID 查询也会失败。配置使用授权文件时，新增公钥在文件同步成功后才向 Runtime 返回成功，因此 create/resume 会在 lease 内使用同一公钥重试；内置 SSH 和外部 <code>AuthorizedKeysCommand</code> 直接使用数据库结果。</p>
-<p><code>known_hosts_lines</code> 对应 Gitea 对外 SSH clone URL 的规范 host 和有效端口。内置 SSH 从 <code>[server] SSH_SERVER_HOST_KEYS</code> 的当前 Host Key 派生公钥；外部 SSH 使用 <code>[codespace] GIT_SSH_KNOWN_HOSTS</code> 的显式配置。响应内容是公开的服务器身份材料，不包含 Runtime 私钥、Gitea Token、内部 SSH 地址或 Manager Gateway Host Key。</p>
+<p><code>known_hosts_lines</code> 对应 Gitea 对外 SSH clone URL 的规范 host 和有效端口。内置 SSH 从 <code>[server] SSH_SERVER_HOST_KEYS</code> 的当前 Host Key 派生公钥；外部 SSH 使用 <code>[codespace] GIT_SSH_KNOWN_HOSTS</code> 的显式配置。响应内容是公开的服务器身份材料，不包含 Runtime 私钥、Gitea Token、内部 SSH 地址或 Manager Gateway Host Key。**设计如此：**外部 SSH 未配置 known_hosts 且 HTTP clone 可用时，Gitea 关闭 Codespace SSH clone，而不是自动扫描或推测 Host Key；这样默认 HTTP 部署可用，同时 SSH clone 仍保持严格 Host Key 校验。</p>
 <p>**设计理由：公钥绑定属于 Codespace，而不是某次 operation。**create 首次生成密钥，create 重试和 resume 复用；相同公钥请求幂等，不同公钥不能覆盖，因此迟到请求不需要 operation 版本也不会改变当前绑定。只有一个密钥文件、私钥无法导出匹配公钥、Gitea 已绑定不同公钥或返回 <code>key_conflict</code> 都表示原 workspace 的 Git 身份无法安全确认：create 失败直接进入 failed，resume 停止本轮实例并 final failed 后继续上报 failed，用户随后删除 Codespace。该结果复用现有状态报告和清理流程，比增加密钥替换协议更容易验证。</p>
 <p>**设计如此：三类 PublicKey 创建共享指纹锁，但保留各自现有类型语义和数据库结构。**锁在事务前取得、指纹在事务内复查，使并发创建只有一个提交顺序；当前单活动 Gitea 不需要为这一约束增加唯一索引迁移、历史重复数据合并或新的密钥服务。授权文件同步发生在数据库提交后，失败重试仍以数据库中的同一 Key ID 为准。</p>
 <p>实现验收点：</p>
 <ul>
-<li>非初始化阶段、租约过期和错误 Manager binding 均在写入前返回固定分类；HTTP 首选项不阻止为 SSH fallback 登记公钥。</li>
+<li>非初始化阶段、租约过期、错误 Manager binding 或当前 SSH clone 能力关闭，均在写入前返回固定分类；HTTP 首选项不阻止为非空 SSH URL 的实际尝试登记公钥。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 相同规范公钥幂等返回相同 Host Key 集合；不同公钥或指纹冲突不会替换当前 binding。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1146,8 +1146,8 @@ missing = expected - reported
 <tr><td><code>create.repo_id</code></td><td>create</td><td>base/route repository ID</td></tr>
 <tr><td><code>create.repo_full_name</code></td><td>create</td><td>repository 完整名称</td></tr>
 <tr><td><code>create.repo_name</code></td><td>create</td><td>repository 名称</td></tr>
-<tr><td><code>repo_clone_http_url</code></td><td>create</td><td>Gitea 生成的规范 HTTP(S) clone URL</td></tr>
-<tr><td><code>repo_clone_ssh_url</code></td><td>create</td><td>Gitea 生成的规范 SSH clone URL</td></tr>
+<tr><td><code>repo_clone_http_url</code></td><td>create</td><td>HTTP clone 启用时由 Gitea 生成的规范 HTTP(S) clone URL</td></tr>
+<tr><td><code>repo_clone_ssh_url</code></td><td>create</td><td>Codespace SSH clone 启用时由 Gitea 生成的规范 SSH clone URL</td></tr>
 <tr><td><code>repo_web_url</code></td><td>create</td><td>仓库 Web URL</td></tr>
 <tr><td><code>create.owner_id/name/type/display_name</code></td><td>create</td><td>repository owner 信息</td></tr>
 <tr><td><code>create.codespace_owner_name</code></td><td>create</td><td>codespace 创建用户名称</td></tr>
@@ -1171,7 +1171,7 @@ missing = expected - reported
 <li>PR 场景使用 base repository clone URL 和 <code>refs/pull/{index}/head</code>，不下发 head repository clone URL。</li>
 <li><code>resume|stop|delete</code> 返回数据不包含 create 专属的 repository、owner、ref 或 commit 字段。</li>
 <li><code>resume</code> 完全基于已初始化 workspace 和绑定 Manager 执行，不重新解析 repository，不依赖 repository payload。</li>
-<li>create/resume 的 <code>git_protocol</code> 来自 <code>codespace.git_protocol</code>，站点默认值变化不会改变已有 Codespace 的首选项；create 同时返回两种 clone URL，首次尝试 SSH 前创建或确认同一公钥绑定，HTTP(S) remote 使用限定路径的 Token helper。SSH 回退到 HTTP(S) 后允许保留已经登记的公钥。</li>
+<li>create/resume 的 <code>git_protocol</code> 来自 <code>codespace.git_protocol</code>，站点默认值变化不会改变已有 Codespace 的首选项；create 返回当前可用协议的 clone URL，禁用协议字段为空。首次尝试 SSH 前创建或确认同一公钥绑定，HTTP(S) remote 使用限定路径的 Token helper。SSH 回退到 HTTP(S) 后允许保留已经登记的公钥。</li>
 <li>create/resume payload 让 Manager 在 Runtime 进入 running 前保存当前设置；后续完整快照覆盖本地策略，交互版本只向前更新，RequestIdleStop 继续承担过期策略的最终复检。</li>
 <li>repository 删除后，本地上下文完整的 running create 通过 observed 续租继续；缺少上下文时等待原 deadline，并由 running create timeout 进入 failed。</li>
 <li><code>delete</code> 返回数据使用 <code>codespace_uuid</code> 生成，不依赖 repository row。repository DB 记录删除后，Manager 仍可领取并完成 cleanup。</li>
@@ -1189,7 +1189,7 @@ missing = expected - reported
 <li>Fetch、final、日志、metadata、transition、inventory 和 session revalidate 的请求响应与 RPC 文档一致。</li>
 <li>command rejection 携带统一 Connect failure detail，访问判定返回 decision response。</li>
 <li>create payload 的 <code>repo_tag</code> 等于记录创建时锁定并用于 claim 的 tag；同一 Manager 声明多个 tag 时可以据此选择唯一的本地模板。</li>
-<li>create/resume payload 的 <code>git_protocol</code> 等于记录创建时固化的首选值；create 同时取得两种规范 clone URL，内置 <code>start.sh</code> 在受控临时 workspace 中先使用首选地址并在 clone/fetch 失败后尝试另一地址。resume 不取得 repository payload，只按 workspace 实际 remote 恢复本地凭据配置。</li>
+<li>create/resume payload 的 <code>git_protocol</code> 等于记录创建时固化的首选值；create 取得当前可用协议的规范 clone URL，首选协议对应 URL 必须非空。内置 <code>start.sh</code> 在受控临时 workspace 中先使用首选地址，并在 clone/fetch 失败且另一种 URL 非空时尝试另一地址。resume 不取得 repository payload，只按 workspace 实际 remote 恢复本地凭据配置。</li>
 <li>create/resume payload 的有效设置与当前数据库结果一致，Manager 重启后可恢复当前计时策略；stop 的来源不改变运行侧执行路径。</li>
 <li>普通 operation payload 返回正数相对 lease 时长，abort 返回 0；Gitea 的绝对 deadline 不进入协议。</li>
 </ul>
@@ -1208,11 +1208,11 @@ missing = expected - reported
 </code></pre>
 <p>规则：</p>
 <ul>
-<li>默认 <code>offset=0</code>、<code>limit=LOG_READ_MAX_BYTES</code>；<code>limit</code> 的有效范围为 <code>1..LOG_READ_MAX_BYTES</code>。</li>
+<li>默认 <code>offset=0</code>、<code>limit</code> 为 Gitea 内部日志读取分页大小；<code>limit</code> 的有效范围为 <code>1..内部日志读取分页大小</code>。</li>
 <li><code>lines</code> 是来自同一份已脱敏 DBFS 日志的字符串数组，保留已存物理行的换行符；文件末尾未换行的最后一行不补换行。byte offset 因此始终对应 JSON 解码后各行重新编码为 UTF-8 的原始日志字节位置。</li>
 <li>服务端只返回完整 UTF-8 物理日志行；<code>limit</code> 是软字节上限，加入下一完整行会超过上限时在该行之前停止。</li>
-<li>负数或非法数字的 <code>offset</code>，以及不在有效范围内的 <code>limit</code>，返回 HTTP 400 和 <code>invalid_argument</code>。非负 offset 必须是 0、文件末尾或 <code>log_indexes</code> 中的物理行起点；落在字符或行中间时返回 HTTP 409、<code>offset_conflict</code> 和该物理行起点 <code>current_offset</code>，超过文件末尾时 <code>current_offset</code> 为当前 EOF。</li>
-<li>如果第一条完整物理行本身超过请求 <code>limit</code>，服务端仍单独返回该行并推进 offset，避免客户端无法分页前进；该例外一次只返回这一行，且仍受 <code>LOG_READ_MAX_BYTES</code> 约束。</li>
+<li>负数或非法数字的 <code>offset</code>，以及不在有效范围内的 <code>limit</code>，返回 HTTP 400 和 <code>invalid_argument</code>。超过文件末尾的 offset 返回 HTTP 409、<code>offset_conflict</code> 和当前 EOF。</li>
+<li>如果第一条完整物理行本身超过请求 <code>limit</code>，服务端仍单独返回该行并推进 offset，避免客户端无法分页前进；该例外一次只返回这一行，且仍受内部日志读取分页大小约束。</li>
 <li><code>next_offset</code> 是下一次轮询起点。</li>
 <li><code>eof=false</code> 表示仍可继续读取。</li>
 <li><code>truncated=true</code> 表示本次响应达到读取上限，客户端继续使用 <code>next_offset</code> 拉取。</li>
@@ -1227,7 +1227,7 @@ missing = expected - reported
 <li><input disabled="" type="checkbox" checked=""/>
 日志读取按 byte offset 稳定分页，<code>next_offset</code> 可直接用于下一次请求。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-<code>lines</code> 保留原换行符；非法参数返回 400，非行起点或超过 EOF 的 offset 返回 409 和可恢复的 <code>current_offset</code>。</li>
+<code>lines</code> 保留原换行符；非法参数返回 400，超过 EOF 的 offset 返回 409 和可恢复的 <code>current_offset</code>。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 超过请求 limit 的单行可单独返回且不会造成无限重试。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1523,10 +1523,7 @@ OPERATION_LEASE_TIMEOUT = 300s
 OPERATION_MAX_DURATION = 2h
 QUEUE_TIMEOUT = 5m
 OPEN_TOKEN_EXPIRE = 60s
-LOG_MAX_LINE_SIZE = 64KiB
-LOG_READ_MAX_BYTES = 512KiB
 LOG_MAX_SIZE = 64MiB
-LOG_FINAL_SUMMARY_RESERVE = 64KiB
 RUNTIME_METADATA_MAX_SIZE = 256KiB
 CODESPACE_REPO_CONFIG_MAX_SIZE = 64KiB
 AUTO_STOP_DEFAULT_TIMEOUT = 30m
@@ -1542,13 +1539,13 @@ OLDER_THAN = 8760h
 </code></pre>
 <p>说明：</p>
 <ul>
-<li><code>GIT_PROTOCOL=http|ssh</code> 是新建 Codespace 的首次 clone 首选协议，默认 <code>http</code>。创建记录把当时的值固化到 <code>codespace.git_protocol</code>；之后修改配置只影响新记录。create payload 始终提供 Gitea 规范 HTTP(S) 和 SSH URL，所选 <code>start.sh</code> 可以据此选择实际 remote；内置脚本先使用首选 URL，clone/fetch 非零退出时用另一 URL 重试一次，并把成功 URL 固定为 workspace remote。resume 以实际 remote 为准，不重新选择。</li>
-<li>启用功能时，全部 setting 和数据库迁移完成后、Codespace Web route、Cron 和 ManagerService 注册前执行首选 Git 协议校验。<code>GIT_PROTOCOL=http</code> 要求 <code>[repository] DISABLE_HTTP_GIT=false</code>；<code>GIT_PROTOCOL=ssh</code> 要求 <code>[server] DISABLE_SSH=false</code> 且能够取得可信 Host Key。默认安装使用 HTTP 首选协议，因此未配置外部 SSH known_hosts 不会阻止 Gitea 启动；管理员明确选择 SSH 首选协议时，错误列出不可用协议和相关配置。create payload 仍提供 Gitea 规范 HTTP(S) 和 SSH URL，脚本可以自行选择或回退，但只有首选协议在 Gitea 启动阶段作硬校验。排空模式仍可关闭任一 Git 入口并继续 stop、delete 和管理清理。</li>
+<li><code>GIT_PROTOCOL=http|ssh</code> 是新建 Codespace 的首次 clone 首选协议，默认 <code>http</code>。创建记录把当时的值固化到 <code>codespace.git_protocol</code>；之后修改配置只影响新记录。create payload 按站点当前可用 Git clone 能力提供 URL：HTTP 可用时提供 <code>repo_clone_http_url</code>，SSH 可用时提供 <code>repo_clone_ssh_url</code>；不可用的协议使用空 URL 表达。所选 <code>start.sh</code> 只在非空 URL 中选择实际 remote；内置脚本先使用首选 URL，首选协议的 clone/fetch 非零退出且另一种 URL 非空时清理受控临时 workspace 并重试一次，最终把成功 URL 固定为 workspace remote。resume 以实际 remote 为准，不重新选择。</li>
+<li>启用功能时，全部 setting 和数据库迁移完成后、Codespace Web route、Cron 和 ManagerService 注册前推导 Git clone 能力。HTTP 可用条件是 <code>[repository] DISABLE_HTTP_GIT=false</code>。SSH 可用条件是 <code>[server] DISABLE_SSH=false</code>，并且能够取得可信 Host Key：内置 SSH 可从 Gitea Host Key 派生，外部 SSH 需要显式 <code>GIT_SSH_KNOWN_HOSTS</code>。<code>GIT_PROTOCOL=http</code> 且 HTTP 可用时，外部 SSH 没有 known_hosts 只关闭 SSH clone，不阻止启动；<code>GIT_PROTOCOL=ssh</code> 时 SSH 必须可用；HTTP 被关闭且 SSH 不可用时拒绝启动，因为没有任何可交付给 Runtime 的 clone URL。排空模式仍可关闭任一 Git 入口并继续 stop、delete 和管理清理。</li>
 <li><code>[server] START_SSH_SERVER=true</code> 表示使用 Gitea 内置 SSH。<code>GIT_SSH_KNOWN_HOSTS</code> 为空时，启动顺序先调用内置 SSH 已有的 Host Key 准备逻辑：读取存在的 <code>SSH_SERVER_HOST_KEYS</code>，全部不存在时在既有目录生成默认 Key；随后从实际启用的私钥派生公开 Host Key，并按 <code>SSH_DOMAIN</code> 和有效 <code>SSH_PORT</code> 构造规范 known_hosts 行。Codespace 校验和内置 SSH 服务使用同一组准备结果，首次启动不会因 Key 尚未生成而误报配置错误。</li>
-<li><code>[server] START_SSH_SERVER=false</code> 表示 SSH 接入由外部服务提供，此时 <code>GIT_SSH_KNOWN_HOSTS</code> 必须显式配置一个或多个逗号分隔的规范行。每行的 host pattern 必须精确匹配默认端口的 host 或非默认端口的 <code>[host]:port</code>，公钥必须通过 Gitea SSH parser。内置 SSH 也可以显式配置该项，以便在 Host Key 轮换期间同时下发多把可信 Key。</li>
+<li><code>[server] START_SSH_SERVER=false</code> 表示 SSH 接入由外部服务提供。Gitea 进程不能可靠知道外部 SSH 服务的 Host Key，因此只有显式配置 <code>GIT_SSH_KNOWN_HOSTS</code> 时才启用 Codespace SSH clone。每行的 host pattern 必须精确匹配默认端口的 host 或非默认端口的 <code>[host]:port</code>，公钥必须通过 Gitea SSH parser。内置 SSH 也可以显式配置该项，以便在 Host Key 轮换期间同时下发多把可信 Key。</li>
 <li>全部 setting 和数据库迁移完成后，Gitea 在注册 Codespace Web route、ManagerService 和 session 中间件前扫描现有 <code>codespace_manager_address(kind=gateway)</code>。每个基础域名都执行与 Declare 相同的 ASCII DNS、最长派生 Host、可注册域、Gitea host/wildcard 和 <code>[session].DOMAIN</code> 检查；任一冲突以包含 Manager ID、地址和冲突配置项的 <code>gateway_cookie_scope_conflict</code> 阻止启动。这样修改 <code>ROOT_URL</code> 或 Cookie Domain 不能让已有 Gateway 用户内容重新进入 Gitea 登录站点。</li>
 <li>SSH Host Key 轮换先在配置和 SSH 服务中同时保留旧、新 Key，现有 Codespace 通过后续 stop/resume 取得完整集合；全部实例刷新后再移除旧 Key。未按该顺序更换时，现有 Runtime 的严格校验会明确失败，并通过 stop/resume 重新取得当前集合。这里使用已有恢复流程处理低频运维事件，不增加运行中的 Host Key 推送服务。</li>
-<li><code>ENABLED=false</code> 使用排空模式并跳过 Git 传输能力校验。stop、delete、inventory 收敛、failed retention 和管理清理都不依赖 Git HTTP 或 SSH；管理员可以在仓库接入不可用时启动 Gitea 完成缩减和清理，再恢复两种 Git 接入后重新启用。</li>
+<li><code>ENABLED=false</code> 使用排空模式并跳过 Git clone 能力推导。stop、delete、inventory 收敛、failed retention 和管理清理都不依赖 Git HTTP 或 SSH；管理员可以在仓库接入不可用时启动 Gitea 完成缩减和清理，再恢复至少一种符合当前首选协议的 Git 接入后重新启用。</li>
 <li>Codespace 功能只支持一个活动 Gitea 进程；cache 直接复用 <code>[cache]</code> adapter，需要 keyed serialization 的明确写路径直接调用 <code>[global_lock]</code> backend 提供的 <code>globallock.Lock</code>，Cron 沿用 Gitea 单实例调度。Redis 配置不改变 Codespace 的单进程支持边界。</li>
 <li><code>ENABLED=false</code> 使用排空模式，不删除现有 Codespace/Manager 数据。Web 禁止新 create、resume、open、继续运行和 SSH，但创建者详情、创建者日志、创建者自动暂停设置、stop、普通 delete、站点管理员 force delete 与现有管理页继续可用；<code>ValidateOpenToken</code>、<code>ValidatePublicEndpoint</code>、<code>VerifySSHPublicKey</code> 和 <code>RevalidateGatewaySession</code> 都返回 <code>state_unavailable</code>。认证和公共普通 HTTP 在下一次请求且最迟已有 allowed 的 1 秒期限结束后拒绝，WebSocket 和 SSH 最迟在一个复检周期内关闭。</li>
 <li>排空模式拒绝 <code>RegisterManager</code>、全部 <code>RequestGiteaToken</code>、<code>EnsureCodespaceGitSSHKey</code>、新的 idle stop 创建和 Runtime Metadata 写入。<code>RequestIdleStop</code> 对已经存在的 idle stop 仍返回 <code>pending</code>，对没有 active operation 的 running 对象返回包含 <code>auto_stop_enabled=false</code> 的 <code>observation_changed</code>；ReportInstances 下发相同关闭设置，使 Manager 清除普通计时。已有 Manager 仍使用注册时签发的 secret 认证，可以 Declare、ReportInstances、上报 stopped/failed transition，并通过 Fetch 领取 stop/delete 或取得已领取 create/resume 的 abort；对应 UpdateLog 和 final failed 继续可用。stop 从本地 Runtime credential 文件恢复日志脱敏值，无法确认安全的缓冲日志不上传。queued create/resume 不再领取，按现有 queue timeout 处理。</li>
@@ -1563,14 +1560,12 @@ OLDER_THAN = 8760h
 <li><code>MANAGER_OFFLINE_TIMEOUT</code>、<code>QUEUE_TIMEOUT</code> 和 <code>OPEN_TOKEN_EXPIRE</code> 以正整数秒表示，分别用于 <code>last_online_unix</code>、<code>operation_created_unix</code> 和 <code>expires_unix</code> 的秒级边界计算。自动暂停的默认值、范围和对象自定义值也以正整数秒下发为 <code>idle_timeout_seconds</code>。统一存储精度可以让配置、数据库比较和 RPC 数值之间没有隐式截断。</li>
 <li><code>AUTO_STOP_DEFAULT_TIMEOUT</code> 是 <code>auto_stop_mode=default</code> 的有效空闲时长；<code>AUTO_STOP_MIN_TIMEOUT</code> 与 <code>AUTO_STOP_MAX_TIMEOUT</code> 校验之后提交的新自定义值。范围变化不重写或截断已经保存的正数自定义值，Codespace 创建者可在自己的详情页看到原值并主动修改；这样站点配置调整不会让现有 Codespace 在未操作时突然改变超时。<code>never</code> 由模式明确表达，不使用超时 0 表达。站点默认值变化通过下一次 inventory 下发，无需批量更新对象记录。</li>
 <li><code>CODESPACE_REPO_CONFIG_MAX_SIZE</code> 限制 <code>.gitea/codespace.yaml</code> 读取大小，避免配置读取变成大 blob 解析路径。</li>
-<li><code>LOG_READ_MAX_BYTES</code> 限制单次日志读取响应大小，便于详情页日志轮询和下载稳定分页。</li>
-<li><code>LOG_MAX_LINE_SIZE</code> 必须小于或等于 <code>LOG_READ_MAX_BYTES</code>，保证任何已存物理行都能在服务端硬上限内返回。</li>
 <li><code>LOG_MAX_SIZE</code> 限制单个 codespace 日志总量，避免异常 init 或脚本持续输出导致 DBFS 无限增长。</li>
-<li><code>LOG_FINAL_SUMMARY_RESERVE</code> 从 <code>LOG_MAX_SIZE</code> 中预留给截断和最终状态摘要。</li>
+<li>Gitea 使用内部默认值限制单条日志行、单次日志读取响应和最终状态摘要预留空间。**设计如此：**管理员通常只需要决定每个 Codespace 最多保存多少日志；行大小、分页大小和摘要预留是保护 DBFS 与页面读取稳定性的实现参数，公开成配置会增加相互约束和错误组合。默认值保证普通日志分页和最终摘要可以闭环，异常输出达到上限时用明确截断摘要收敛。</li>
 <li><code>RUNTIME_METADATA_MAX_SIZE</code> 限制规范化 Runtime Metadata JSON，避免 Endpoint 声明无限放大 cache 和 RPC。
-配置在启动时完成关系校验。timeout、TTL、lease、queue timeout、大小和 retention 都必须大于 0；<code>OPERATION_LEASE_TIMEOUT</code> 必须能精确转换为大于 0 的整数毫秒，<code>OPERATION_MAX_DURATION</code>、<code>MANAGER_OFFLINE_TIMEOUT</code>、<code>QUEUE_TIMEOUT</code>、<code>OPEN_TOKEN_EXPIRE</code>、<code>AUTO_STOP_DEFAULT_TIMEOUT</code>、<code>AUTO_STOP_MIN_TIMEOUT</code> 和 <code>AUTO_STOP_MAX_TIMEOUT</code> 必须能精确转换为大于 0 的整数秒，并且 <code>OPERATION_MAX_DURATION &gt; OPERATION_LEASE_TIMEOUT</code>；<code>CONTROL_PLANE_TIMEOUT</code> 必须小于或等于 <code>floor(MANAGER_OFFLINE_TIMEOUT/4)</code>，使一次达到处理上限的 Declare 仍能在离线边界内重试；自动暂停满足 <code>AUTO_STOP_MIN_TIMEOUT &lt;= AUTO_STOP_DEFAULT_TIMEOUT &lt;= AUTO_STOP_MAX_TIMEOUT</code>；<code>LOG_MAX_LINE_SIZE &lt;= LOG_READ_MAX_BYTES &lt; LOG_MAX_SIZE</code>，<code>0 &lt; LOG_FINAL_SUMMARY_RESERVE &lt; LOG_MAX_SIZE</code>。</li>
+配置在启动时完成关系校验。timeout、TTL、lease、queue timeout、大小和 retention 都必须大于 0；<code>OPERATION_LEASE_TIMEOUT</code> 必须能精确转换为大于 0 的整数毫秒，<code>OPERATION_MAX_DURATION</code>、<code>MANAGER_OFFLINE_TIMEOUT</code>、<code>QUEUE_TIMEOUT</code>、<code>OPEN_TOKEN_EXPIRE</code>、<code>AUTO_STOP_DEFAULT_TIMEOUT</code>、<code>AUTO_STOP_MIN_TIMEOUT</code> 和 <code>AUTO_STOP_MAX_TIMEOUT</code> 必须能精确转换为大于 0 的整数秒，并且 <code>OPERATION_MAX_DURATION &gt; OPERATION_LEASE_TIMEOUT</code>；<code>CONTROL_PLANE_TIMEOUT</code> 必须小于或等于 <code>floor(MANAGER_OFFLINE_TIMEOUT/4)</code>，使一次达到处理上限的 Declare 仍能在离线边界内重试；自动暂停满足 <code>AUTO_STOP_MIN_TIMEOUT &lt;= AUTO_STOP_DEFAULT_TIMEOUT &lt;= AUTO_STOP_MAX_TIMEOUT</code>；<code>LOG_MAX_SIZE</code> 必须大于内部日志分页大小和最终摘要预留空间。</li>
 </ul>
-<p>控制面消息下限由协议允许的最大不可拆分消息计算，覆盖 10000 条完整 inventory、10000 条 observed operation、10000 条设置与差异响应、256 条 operation payload、10000 条续租响应、一份最大 Runtime Metadata 和一条最大日志物理行。实现使用生成的 protobuf 类型和 Gitea 现有字段长度上限构造各类最坏合法消息，并以 <code>proto.Size</code> 计算所需字节数；测试把该结果与数量和字段上限绑定，<code>CONTROL_PLANE_MAX_MESSAGE_SIZE</code> 必须大于或等于其中最大值。<code>RUNTIME_METADATA_MAX_SIZE</code> 和 <code>LOG_MAX_LINE_SIZE</code> 参与对应 request 计算；<code>.gitea/codespace.yaml</code> 只向 create payload 提供规范化 tag，文件正文不进入控制面消息，因此 <code>CODESPACE_REPO_CONFIG_MAX_SIZE</code> 只限制 Gitea 读取 repository 配置。<code>LOG_READ_MAX_BYTES</code> 只限制 Web 日志 response。非法配置直接阻止 Gitea 启动，错误显示配置值、最低字节数和决定下限的消息类型，使管理员能直接修正配置。</p>
+<p>控制面消息下限由协议允许的最大不可拆分消息计算，覆盖 10000 条完整 inventory、10000 条 observed operation、10000 条设置与差异响应、256 条 operation payload、10000 条续租响应、一份最大 Runtime Metadata 和一条最大日志物理行。实现使用生成的 protobuf 类型和 Gitea 现有字段长度上限构造各类最坏合法消息，并以 <code>proto.Size</code> 计算所需字节数；测试把该结果与数量和字段上限绑定，<code>CONTROL_PLANE_MAX_MESSAGE_SIZE</code> 必须大于或等于其中最大值。<code>RUNTIME_METADATA_MAX_SIZE</code> 和内部日志行大小参与对应 request 计算；<code>.gitea/codespace.yaml</code> 只向 create payload 提供规范化 tag，文件正文不进入控制面消息，因此 <code>CODESPACE_REPO_CONFIG_MAX_SIZE</code> 只限制 Gitea 读取 repository 配置。Web 日志读取响应使用内部分页大小，不参与控制面消息下限。非法配置直接阻止 Gitea 启动，错误显示配置值、最低字节数和决定下限的消息类型，使管理员能直接修正配置。</p>
 <p>日志是唯一按消息大小拆分的控制面数据，Manager 使用 <code>proto.Size</code> 形成不超过 Declare 返回上限的批次；单条最大日志物理行已由启动校验保证可独立提交。inventory、observed operation 和 Runtime Metadata 保持完整提交。超限请求在进入业务 handler 前返回 Connect <code>ResourceExhausted</code>；协议字段或本地数据违反既有限制而导致不可拆分消息超限时，Manager 保持 recovering、声明零容量并报告具体消息类型和大小，不截断清单或推测缺失实例。</p>
 <p>实现验收点：</p>
 <ul>
@@ -1579,13 +1574,13 @@ OLDER_THAN = 8760h
 <li><code>ENABLED=false</code> 下 <code>RequestGiteaToken</code> 和 <code>EnsureCodespaceGitSSHKey</code> 都返回状态不可用，不读取、签发、修复或登记开发凭据。</li>
 <li><code>ENABLED=false</code> 下 RequestIdleStop 不创建新的 operation；已有 idle stop 的幂等请求返回原版本，其余 running 请求取得关闭自动暂停的完整设置。ReportInstances 下发同一设置，Manager 取消本地普通计时并继续恢复已经接受的 stop。</li>
 <li>Gitea 是功能开关的唯一判定来源。**设计如此：**关闭后的访问收敛复用四个访问 RPC，create/resume 收敛复用 Fetch abort，Runtime Metadata 返回 <code>state_unavailable</code>；Manager 依据这些结果处理当前工作，协议保持现有字段和调用方向。</li>
-<li><code>ENABLED=true</code> 时，HTTP 与 SSH 两种 Git 接入都在组件注册前通过校验；错误指出协议和配置项。</li>
-<li>SSH 默认或存量 SSH Codespace 在 SSH 服务关闭、Host Key 缺失或 host/port 不匹配时阻止启用；返回 Runtime 的每条 known_hosts 行都能匹配规范 SSH clone URL。</li>
-<li>内置 SSH 首次启动时，Codespace 校验与 SSH 服务复用同一次 Host Key 准备结果；外部 SSH 不从本机私钥推测服务器身份，使用显式 <code>GIT_SSH_KNOWN_HOSTS</code>。</li>
+<li><code>ENABLED=true</code> 时，Gitea 在组件注册前推导 HTTP 与 SSH clone 能力；首选协议必须可用，且至少一种 clone URL 可以下发。错误指出不可用协议和相关配置项。</li>
+<li><code>GIT_PROTOCOL=http</code>、HTTP Git 可用、外部 SSH 未配置 <code>GIT_SSH_KNOWN_HOSTS</code> 时启动成功，create payload 的 <code>repo_clone_ssh_url</code> 为空；<code>GIT_PROTOCOL=ssh</code> 或 HTTP Git 被关闭时，SSH 服务关闭、Host Key 缺失或 host/port 不匹配会阻止启用。</li>
+<li>内置 SSH 首次启动时，Codespace 校验与 SSH 服务复用同一次 Host Key 准备结果；外部 SSH 不从本机私钥推测服务器身份，使用显式 <code>GIT_SSH_KNOWN_HOSTS</code>。返回 Runtime 的每条 known_hosts 行都能匹配规范 SSH clone URL。</li>
 <li><code>ENABLED=false</code> 时可以关闭 HTTP Git 或 SSH，并继续执行 stop、delete、inventory 收敛和管理清理；再次启用前恢复存量 Codespace 所需的接入面。</li>
 <li>启用 Codespace 时只有一个活动 Gitea 进程；memory、twoqueue、Redis、memcache cache adapter 和 memory、Redis global lock backend 均沿用 Gitea 现有配置，不据此提供多实例能力。</li>
 <li>重新启用不迁移或重建数据库状态，现有对象按当前持久状态继续。</li>
-<li>配置项与实际 cron、lease、queue、open code、日志限制一一对应；非法值或相互矛盾的大小关系在启动时拒绝。</li>
+<li>配置项与实际 cron、lease、queue、open code、日志总量限制一一对应；非法值或相互矛盾的大小关系在启动时拒绝。日志行大小、读取分页和最终摘要预留使用内部默认值，并通过 <code>LOG_MAX_SIZE</code> 的关系校验保证可用。</li>
 <li>消息大小配置同时覆盖 request 和 response；启动测试使用 protobuf 实际编码大小验证全部最大不可拆分消息，低于最低值时错误指出实际值、要求值和消息类型。</li>
 <li>Manager 使用 Declare 返回的消息上限分批日志；完整 inventory、完整 observed operation 和 Runtime Metadata 不分页、不截断，超限输入在业务事务前返回 <code>ResourceExhausted</code>。</li>
 <li>lease 配置可精确表示为正整数毫秒，Manager 离线、queue、Open Code 和自动暂停配置可精确表示为正整数秒；其他精度的值在启动时指出对应配置项。</li>
@@ -1600,57 +1595,73 @@ OLDER_THAN = 8760h
 <pre><code class="language-text">/etc/gitea-codespace/manager.yaml
 /etc/gitea-codespace/manager.json
 </code></pre>
+<p>Manager 本地配置只保存部署者可编辑的运行参数。注册产生的 Gitea URL、Manager ID、Manager Secret、inventory generation、Gateway SSH Host Key 私钥和 Codespace 本地快照都保存在 <code>state.dir</code> 指向的状态目录中，不写入普通配置。这样设计是为了让配置表达“这个进程如何运行”，状态目录表达“这个 Manager 身份是谁以及当前管理到哪里”，避免修改配置时无意切换注册身份。</p>
 <p>Manager 本地配置包含：</p>
-<pre><code class="language-yaml">state_dir: /var/lib/gitea-codespace
-name: manager-01
-capacity_total: 100
-startup_workers: 4
-cleanup_workers: 4
-process_shutdown_timeout: 30s
-gitea_url: http://gitea.internal:3000
-control_plane_require_https: false
-control_plane_tls_ca_file: ""
-control_plane_tls_server_name: ""
-control_plane_tls_insecure_skip_verify: false
-fetch_poll_interval: 2s
-fetch_poll_jitter: 20%
-fetch_error_backoff_max: 30s
-inventory_report_interval: 1m
-runtime_health_interval: 5m
-runtime_health_timeout: 10s
-runtime_api_listen: 0.0.0.0:8080
-runtime_api_url: http://manager.internal:8080
-runtime_api_require_https: false
-runtime_api_tls_cert_file: ""
-runtime_api_tls_key_file: ""
-gateway_listen: 0.0.0.0:8081
-gateway_url: http://codespace.example.com
-gateway_cookie_secure: auto
-gateway_tls_cert_file: ""
-gateway_tls_key_file: ""
-gateway_session_ttl: 8h
-gateway_session_idle_timeout: 30m
-gateway_session_revalidate_interval: 5m
-gateway_max_sessions_per_codespace: 32
-gateway_max_sessions_per_user: 128
-gateway_max_inflight_total: 4096
-gateway_max_inflight_per_session: 32
-gateway_public_max_connections_per_endpoint: 64
-gateway_public_max_connections_per_ip: 16
-gateway_validation_max_inflight: 128
-gateway_ssh_max_channels_per_connection: 32
-gateway_ssh_listen: 0.0.0.0:2222
-gateway_ssh_addr: ssh.codespace.example.com:22
-ssh_auth_max_attempts_per_ip_per_minute: 30
-ssh_auth_max_attempts_per_codespace_per_minute: 20
-ssh_auth_max_attempts_per_ip_codespace_per_minute: 10
-ssh_auth_max_attempts_per_public_key_per_minute: 30
-ssh_auth_backoff_base: 1s
-ssh_auth_backoff_max: 30s
-ssh_auth_failure_window: 10m
-upstream_tls_ca_file: ""
-upstream_tls_server_name: ""
-upstream_tls_insecure_skip_verify: false
+<pre><code class="language-yaml">state:
+  dir: /var/lib/gitea-codespace
+
+manager:
+  name: manager-01
+  capacity_total: 100
+  startup_workers: 4
+  cleanup_workers: 4
+  process_shutdown_timeout: 30s
+
+control_plane:
+  timeout: 15s
+  tls_ca_file: ""
+  tls_server_name: ""
+  tls_insecure_skip_verify: false
+
+fetch:
+  poll_interval: 2s
+  poll_jitter: 20%
+  error_backoff_max: 30s
+
+inventory:
+  report_interval: 1m
+
+runtime_health:
+  interval: 5m
+  timeout: 10s
+
+runtime_api:
+  listen: 0.0.0.0:8080
+  url: http://manager.internal:8080
+  tls_cert_file: ""
+  tls_key_file: ""
+
+gateway:
+  listen: 0.0.0.0:8081
+  url: http://codespace.example.com
+  cookie_secure: auto
+  tls_cert_file: ""
+  tls_key_file: ""
+  session_ttl: 8h
+  session_idle_timeout: 30m
+  session_revalidate_interval: 5m
+  max_sessions_per_codespace: 32
+  max_sessions_per_user: 128
+  max_inflight_total: 4096
+  max_inflight_per_session: 32
+  public_max_connections_per_endpoint: 64
+  public_max_connections_per_ip: 16
+  validation_max_inflight: 128
+  ssh_listen: 0.0.0.0:2222
+  ssh_addr: ssh.codespace.example.com:22
+  ssh_max_channels_per_connection: 32
+  ssh_auth_max_attempts_per_ip_per_minute: 30
+  ssh_auth_max_attempts_per_codespace_per_minute: 20
+  ssh_auth_max_attempts_per_ip_codespace_per_minute: 10
+  ssh_auth_max_attempts_per_public_key_per_minute: 30
+  ssh_auth_backoff_base: 1s
+  ssh_auth_backoff_max: 30s
+  ssh_auth_failure_window: 10m
+
+upstream_tls:
+  ca_file: ""
+  server_name: ""
+  insecure_skip_verify: false
 
 scripts:
   init: builtin
@@ -1659,6 +1670,7 @@ scripts:
 
 incus:
   endpoint: https://incus.internal:8443
+  unix_socket: ""
   project: gitea-codespaces
   ca_file: /etc/gitea-codespace/incus-ca.crt
   client_cert_file: /etc/gitea-codespace/incus-client.crt
@@ -1666,7 +1678,7 @@ incus:
   start_timeout: 2m
   shutdown_timeout: 30s
 
-tags:
+templates:
   default:
     instance_type: virtual-machine
     image: local:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -1678,37 +1690,44 @@ tags:
     address_family: ipv4
     address_subnet: 10.80.0.0/16
 </code></pre>
-<p>Manager 当前配置是 <code>name</code>、tag 模板键、<code>capacity_total</code>、<code>gateway_url</code>、<code>gateway_ssh_addr</code> 和脚本入口的唯一声明来源，修改前五项后通过完整 Declare 快照覆盖 Gitea 中的当前值；脚本入口只作用于 Manager 本地，不向 Gitea 声明。Declare 的 tags 直接从 <code>tags</code> 映射键生成；虚拟机或系统容器类型不向 Gitea 上报，因为 Gitea 只按 tag 匹配。<code>startup_workers</code> 和 <code>cleanup_workers</code> 分别限制启动与资源缩减任务，范围均为 1..256；前者省略时默认为 <code>min(capacity_total, 4)</code>，后者省略时默认为 4。Incus 可用时，<code>capacity_available</code> 取运行实例剩余名额和空闲启动槽位的较小值，<code>cleanup_capacity_available</code> 取空闲清理槽位数；Incus 不可用时两者都为 0。project 配额不足以容纳所有 tag 中最大的一个新建模板时，Manager 从 <code>accepted_operation_types</code> 移除 create，但有运行名额时仍可接受 resume。<code>capacity_total</code> 范围为 1..10000，且单个 Manager 管理的全部 Incus 实例数同样不能超过 10000。Manager ID、manager secret、inventory generation、operation worker、有效模板快照与 Gateway SSH Host Key 私钥都保存在 <code>state_dir</code>，不写入 YAML；Runtime Git SSH 私钥位于对应 Incus 实例内。两处私钥归属不同，同一状态目录由进程锁保证只能被一个 Manager 进程使用。</p>
+<p><code>state.dir</code> 是 Manager 身份、注册 Gitea URL 和运行状态的唯一目录。<code>gitea-codespace register</code> 成功后在该目录写入 <code>identity.json</code>、<code>credentials.json</code> 和 <code>root-state.json</code>；<code>gitea-codespace serve</code> 读取普通配置后必须从该目录取得 Gitea URL、Manager ID 和 Manager Secret，缺少任一文件时在发送 RPC 前失败。registration token 只用于本次注册请求，不保存到本地文件。已经注册的 <code>state.dir</code> 默认不能被再次 register 覆盖；更换 Gitea 或 Manager 身份时使用新的状态目录，或者在确认旧资源已经清理后人工清空目录。</p>
+<p>Manager 当前配置是 <code>manager.name</code>、<code>templates</code> 键、<code>manager.capacity_total</code>、<code>gateway.url</code>、<code>gateway.ssh_addr</code> 和脚本入口的唯一声明来源，修改前五项后通过完整 Declare 快照覆盖 Gitea 中的当前值；脚本入口只作用于 Manager 本地，不向 Gitea 声明。Declare 的 tags 直接从 <code>templates</code> 映射键生成；虚拟机或系统容器类型不向 Gitea 上报，因为 Gitea 只按 tag 匹配。普通配置不包含 <code>capacity_available</code>、<code>cleanup_capacity_available</code>、Gateway SSH Host Key 指纹或 Host Key 更新时间：两类可用容量由 Manager 在 Fetch 前按本地 Runtime 和 worker 状态计算，Host Key 指纹由 <code>state.dir</code> 中的 Gateway SSH Host Key 派生后 Declare。</p>
+<p><code>startup_workers</code> 和 <code>cleanup_workers</code> 分别限制启动与资源缩减任务，范围均为 1..256；前者省略时默认为 <code>min(capacity_total, 4)</code>，后者省略时默认为 4。Incus 可用时，<code>capacity_available</code> 取运行实例剩余名额和空闲启动槽位的较小值，<code>cleanup_capacity_available</code> 取空闲清理槽位数；Incus 不可用时两者都为 0。project 配额不足以容纳所有模板中最大的一个新建模板时，Manager 从 <code>accepted_operation_types</code> 移除 create，但有运行名额时仍可接受 resume。<code>capacity_total</code> 范围为 1..10000，且单个 Manager 管理的全部 Incus 实例数同样不能超过 10000。Runtime Git SSH 私钥位于对应 Incus 实例内，不写入普通配置或 Manager 状态目录。</p>
 <p><code>scripts.init</code>、<code>scripts.start</code> 和 <code>scripts.resume</code> 组成一个脚本套件：三个值必须全部为 <code>builtin</code>，或者全部为本地绝对文件路径。Manager 启动时拒绝混合配置，并读取三个自定义普通文件、校验可读性；脚本以 root 执行，因此文件来源属于部署信任边界。同一 active operation 在首次执行前保存三个脚本的内容摘要并原子发布实际内容，重试和 Manager 重启恢复继续使用该组内容，配置变化从之后开始的 create/resume 生效。脚本配置属于整个 Manager，不在 tag 中重复；调用、共享环境、结果契约和 devcontainer 案例见<a href="builtin-scripts.html">脚本契约、内置实现与 devcontainer 案例</a>。</p>
 <p><code>incus.project</code> 是 Manager 的专用 Incus project。证书应只具有管理该 project 实例所需的权限；Manager 启动时验证 project、权限和 Incus 非集群模式。每个 tag 模板完整指定实例类型、固定 image、profiles、资源和通信网卡，缺少任一配置字段时启动失败并指出 tag 与字段。workspace 默认位置、Token 和 Git SSH 文件路径是 Manager 与脚本的固定调用契约，不在 tag 中提供可变副本。<code>image</code> 使用 Incus remote 加完整 fingerprint 的固定引用；Manager 在 create 快照中保存 Incus 返回的 fingerprint。<code>instance_type</code> 只允许 <code>virtual-machine</code> 或 <code>container</code>，两者使用相同的 create/resume/stop/delete 和通用脚本流程。Manager 从展开设备中取得唯一的 <code>type=disk,path=/</code> 根盘设备，用同名实例设备覆盖 <code>size</code>，并通过 <code>limits.cpu</code> 和 <code>limits.memory</code> 写入资源限制。</p>
+<p>Incus 端到端测试复用这套 Manager 配置。本地测试可以使用默认 unix socket 或配置中的本地 socket；远程测试使用 endpoint、CA、客户端证书、客户端私钥和 project。测试环境由部署者预先准备独立 project、测试 image、版本化 profile、managed network、storage pool 和 ACL，测试只创建带运行标识的实例并在结束时清理自己创建的资源。低性能本地环境使用测试专用低资源模板，默认单实例内存不超过 <code>1GiB</code>；远程或 CI 环境可以使用更高规格，但不通过测试入口动态创建宿主设备、网络或存储。这样设计是为了让测试验证真实 Manager 部署路径，同时避免测试把宿主 Incus 管理变成另一套自动化运维系统。</p>
 <p><code>communication_nic</code> 是展开后 Incus NIC 设备的键。Manager 使用设备明确配置的 <code>hwaddr</code>，或实例的 <code>volatile.&lt;communication_nic&gt;.hwaddr</code>，与 Instance State 接口关联来宾网卡，再使用 <code>address_family + address_subnet</code> 取得唯一通信地址。该地址同时供 Runtime HTTP API 来源校验、Endpoint upstream 和内部 SSH 使用，不作为持久身份保存。<code>start_timeout</code> 限制启动后等待 Incus exec、文件 API 和唯一通信地址的时间；<code>shutdown_timeout</code> 到期后 Manager 使用 Incus 强制停止并再次确认 stopped。</p>
-<p>通信 NIC 所属 managed network 和 ACL 由版本化 profile 维护。实例入站只通过 Gateway，ACL 放行 Manager/Gateway 管理通道并限制实例间横向访问；实例访问 <code>runtime_api_url</code> 的路径保留 source IP，使 Manager 能用当前通信地址完成实例绑定。需要保证虚拟机隔离级别的容量使用独立 tag 和 Manager 配置，Gitea 不从实例类型推断安全级别。</p>
-<p><code>runtime_api_listen</code>、<code>gateway_listen</code> 和 <code>gateway_ssh_listen</code> 是本地监听地址；<code>runtime_api_url</code>、<code>gateway_url</code> 和 <code>gateway_ssh_addr</code> 是向 Runtime、Gitea 或用户声明的可达地址，两者可以因反向代理或端口映射而不同。<code>gitea_url</code>、<code>runtime_api_url</code> 和 <code>gateway_url</code> 都允许 HTTP/HTTPS；各 <code>require_https</code> 选项用于需要强制 HTTPS 的部署。CA 和 server name 只在对应 HTTPS 连接中使用，<code>insecure_skip_verify</code> 默认 false。<code>gateway_url</code> 必须使用规范的 ASCII DNS 主机名，不能带尾随点、业务 path 或 IP literal；每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符。规范化地址在 Manager 间唯一，并与 Gitea <code>ROOT_URL</code> 处于不同可注册域；部署为该基础域名和 <code>*.domain</code> 配置 DNS。Gateway URL 为 HTTPS 时，监听证书或受信反向代理证书同时覆盖基础域名与单层 wildcard；Cookie Secure 和保留名称按外部 URL 的实际 scheme 决定。Endpoint HTTPS upstream 使用 upstream TLS 配置，Endpoint 请求不能修改信任策略。</p>
-<p><code>inventory_report_interval</code> 默认 1 分钟，必须大于 0；Fetch 默认 2 秒并带 20% 正抖动，临时错误最多退避 30 秒。<code>runtime_health_interval</code> 默认 5 分钟，<code>runtime_health_timeout</code> 默认 10 秒，要求两者为正且 timeout 小于 interval；Manager 按 UUID 分散检查，检查命令、30 秒失败复检、连续 3 次确认、完整健康轮次判定和 <code>min(capacity_total,32)</code> 并发上限使用文档固定值。固定这些行为可以让不同 Manager 对同一运行状态作出一致判断，配置只保留部署需要调整的周期和单次超时。<code>gateway_max_inflight_total</code> 范围为 1..1000000，默认 4096；<code>gateway_max_inflight_per_session</code> 和 <code>gateway_ssh_max_channels_per_connection</code> 范围均为 1..1024、默认 32，前者不得大于全进程上限。公共连接的 per-Endpoint 和 per-IP 上限范围均为 1..10000，且 per-IP 不大于 per-Endpoint；默认分别为 64 和 16，并继续受全进程在途上限约束。<code>gateway_validation_max_inflight</code> 范围为 1..4096，默认 128，统一限制公共与认证 HTTP 的在途 Gitea 授权校验；相同授权键的并发 miss 只占一个名额。Gateway HTTP listener 固定使用 64 KiB header 上限和 10 秒 read-header timeout，正文保持流式转发。SSH 认证限流状态固定最多 65536 个有期限键。<code>process_shutdown_timeout</code> 默认 30 秒，限制 SIGINT/SIGTERM 后关闭准入、暂停 worker、保存本地状态和停止 listener 的总等待时间；它与 <code>incus.shutdown_timeout</code> 分别约束 Manager 进程关闭和单个实例停止。心跳周期、Runtime Metadata 刷新周期、控制面消息上限和 Gitea 浏览器根 URL 来自每次成功 Declare 响应，不在 Manager 配置中重复声明，因为这些值由 Gitea 的站点配置决定。</p>
+<p>通信 NIC 所属 managed network 和 ACL 由版本化 profile 维护。实例入站只通过 Gateway，ACL 放行 Manager/Gateway 管理通道并限制实例间横向访问；实例访问 <code>runtime_api.url</code> 的路径保留 source IP，使 Manager 能用当前通信地址完成实例绑定。需要保证虚拟机隔离级别的容量使用独立 tag 和 Manager 配置，Gitea 不从实例类型推断安全级别。</p>
+<p><code>runtime_api.listen</code>、<code>gateway.listen</code> 和 <code>gateway.ssh_listen</code> 是本地监听地址；<code>runtime_api.url</code>、<code>gateway.url</code> 和 <code>gateway.ssh_addr</code> 是向 Runtime、Gitea 或用户声明的可达地址，两者可以因反向代理或端口映射而不同。注册 Gitea URL、<code>runtime_api.url</code> 和 <code>gateway.url</code> 都允许 HTTP/HTTPS；控制面 TLS 设置只影响 Manager 连接注册时保存的 Gitea URL，Runtime API 与 Gateway 的证书配置只影响对应 listener。CA 和 server name 只在对应 HTTPS 连接中使用，<code>insecure_skip_verify</code> 默认 false。<code>gateway.url</code> 必须使用规范的 ASCII DNS 主机名，不能带尾随点、业务 path 或 IP literal；每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符。规范化地址在 Manager 间唯一，并与 Gitea <code>ROOT_URL</code> 处于不同可注册域；部署为该基础域名和 <code>*.domain</code> 配置 DNS。Gateway URL 为 HTTPS 时，监听证书或受信反向代理证书同时覆盖基础域名与单层 wildcard；Cookie Secure 和保留名称按外部 URL 的实际 scheme 决定。Endpoint HTTPS upstream 使用 upstream TLS 配置，Endpoint 请求不能修改信任策略。</p>
+<p><code>inventory.report_interval</code> 默认 1 分钟，必须大于 0；Fetch 默认 2 秒并带 20% 正抖动，临时错误最多退避 30 秒。<code>runtime_health.interval</code> 默认 5 分钟，<code>runtime_health.timeout</code> 默认 10 秒，要求两者为正且 timeout 小于 interval；Manager 按 UUID 分散检查，检查命令、30 秒失败复检、连续 3 次确认、完整健康轮次判定和 <code>min(capacity_total,32)</code> 并发上限使用文档固定值。固定这些行为可以让不同 Manager 对同一运行状态作出一致判断，配置只保留部署需要调整的周期和单次超时。<code>gateway.max_inflight_total</code> 范围为 1..1000000，默认 4096；<code>gateway.max_inflight_per_session</code> 和 <code>gateway.ssh_max_channels_per_connection</code> 范围均为 1..1024、默认 32，前者不得大于全进程上限。公共连接的 per-Endpoint 和 per-IP 上限范围均为 1..10000，且 per-IP 不大于 per-Endpoint；默认分别为 64 和 16，并继续受全进程在途上限约束。<code>gateway.validation_max_inflight</code> 范围为 1..4096，默认 128，统一限制公共与认证 HTTP 的在途 Gitea 授权校验；相同授权键的并发 miss 只占一个名额。Gateway HTTP listener 固定使用 64 KiB header 上限和 10 秒 read-header timeout，正文保持流式转发。SSH 认证限流状态固定最多 65536 个有期限键。<code>manager.process_shutdown_timeout</code> 默认 30 秒，限制 SIGINT/SIGTERM 后关闭准入、暂停 worker、保存本地状态和停止 listener 的总等待时间；它与 <code>incus.shutdown_timeout</code> 分别约束 Manager 进程关闭和单个实例停止。心跳周期、Runtime Metadata 刷新周期、控制面消息上限和 Gitea 浏览器根 URL 来自每次成功 Declare 响应，不在 Manager 配置中重复声明，因为这些值由 Gitea 的站点配置决定。</p>
 <p>Repository 配置固定为 <code>.gitea/codespace.yaml</code>，与 Manager 本地配置不是同一个文件。</p>
 <p>实现验收点：</p>
 <ul>
 <li>控制面、Runtime API 和 Gateway 在 HTTP 配置下可正常工作，启用对应 HTTPS 配置后使用证书和 CA 校验。</li>
-<li><code>gateway_cookie_secure=auto</code> 按规范外部 <code>gateway_url</code> 选择 HTTPS <code>__Host-</code> 或 HTTP 普通保留 Cookie 名称；显式值与外部 scheme 不一致时启动失败。</li>
-<li><code>gateway_url</code> 的尾随点、非法 DNS 标签、非根 path、IP literal、过长派生 Host 和与 Gitea 相同可注册域都被拒绝；基础域名与单层 wildcard DNS/TLS 可以覆盖所有派生 Endpoint host。</li>
+<li><code>gateway.cookie_secure=auto</code> 按规范外部 <code>gateway.url</code> 选择 HTTPS <code>__Host-</code> 或 HTTP 普通保留 Cookie 名称；显式值与外部 scheme 不一致时启动失败。</li>
+<li><code>gateway.url</code> 的尾随点、非法 DNS 标签、非根 path、IP literal、过长派生 Host 和与 Gitea 相同可注册域都被拒绝；基础域名与单层 wildcard DNS/TLS 可以覆盖所有派生 Endpoint host。</li>
 <li>Gitea 启动和 Declare 都拒绝与 <code>ROOT_URL</code> 可注册域、完整 host、Gateway wildcard 或 <code>[session].DOMAIN</code> 冲突的 Gateway 基础域名；已有地址冲突时启动错误指出 Manager、地址和配置项。</li>
 <li>两个 Manager 声明相同的规范化 <code>gateway_url</code> 时，数据库唯一约束使后声明者收到 <code>gateway_url_conflict</code>；已有 Manager 的未变化 heartbeat 正常提交，无需扫描其他 Manager。</li>
-<li><code>gateway_ssh_addr</code> 完全来自 Manager 配置；两个 Manager 声明相同规范化 <code>host:port</code> 时，后声明者收到 <code>gateway_ssh_addr_conflict</code>。</li>
-<li>修改 name、tags、capacity 或 Gateway/SSH 地址后，成功 Declare 整体覆盖旧快照；失败 Declare 不产生部分更新。</li>
+<li><code>gateway.ssh_addr</code> 完全来自 Manager 配置；两个 Manager 声明相同规范化 <code>host:port</code> 时，后声明者收到 <code>gateway_ssh_addr_conflict</code>。</li>
+<li>修改 <code>manager.name</code>、<code>templates</code>、<code>manager.capacity_total</code> 或 Gateway/SSH 地址后，成功 Declare 整体覆盖旧快照；失败 Declare 不产生部分更新。</li>
 <li><code>startup_workers</code> 和 <code>cleanup_workers</code> 使用文中固定默认值和范围；已有任务数量超过调小后的配置时继续执行已有任务，两类新领取容量保持 0 直到占用回落。</li>
+<li>普通配置不包含 Gitea URL、<code>manager_id</code>、<code>manager_secret</code>、registration token、inventory generation、<code>capacity_available</code>、<code>cleanup_capacity_available</code>、Gateway SSH Host Key 私钥、Host Key 指纹或 Host Key 更新时间。</li>
+<li><code>serve</code> 从 <code>state.dir</code> 读取注册 Gitea URL 与 Manager 身份；修改普通配置不能改变已注册 Manager 的 Gitea 归属。</li>
 <li>Manager 配置不包含心跳周期、Runtime Metadata 刷新周期、控制面消息上限或 Gitea 浏览器根 URL；首次 Declare 成功后采用完整服务端响应，非法响应保持 recovering 和零容量。</li>
 <li>Runtime 健康周期和单次超时使用配置中的两个正数值且 timeout 小于 interval；检查命令、连续失败阈值、完整轮次共享故障判定和检查并发使用文档固定规则。</li>
 <li>Gateway 进程总在途量、单 session 在途量和每个 SSH transport 的 channel 数使用文中默认值与范围；HTTP/WebSocket/SSH 的取得、拒绝和关闭路径都只释放一次名额，公共请求也受进程总上限约束。</li>
 <li>Gateway HTTP listener 固定拒绝超过 64 KiB 的请求头和超过 10 秒仍未读完的请求头；请求与响应正文按背压流式转发。SSH 认证限流的有期限键最多保留 65536 个；到期键正常清除，容量已满时已有键继续计数，新的未知键在调用 Gitea 前按认证失败处理。</li>
-<li><code>process_shutdown_timeout</code> 与 <code>incus.shutdown_timeout</code> 分别限制进程级收尾和实例停止，任一值都不会延长 Gitea operation deadline。</li>
+<li><code>manager.process_shutdown_timeout</code> 与 <code>incus.shutdown_timeout</code> 分别限制进程级收尾和实例停止，任一值都不会延长 Gitea operation deadline。</li>
 <li>listener 与对外地址可以不同；Manager 声明值、容量和 SSH 限流均能由上述配置或本地运行状态唯一确定。</li>
 <li>公共连接的 per-Endpoint 与 per-IP 上限使用文中默认值和范围，任何匿名请求必须同时取得两个本地名额；公共计数不进入认证 session 上限。</li>
-<li><code>gateway_validation_max_inflight</code> 使用文中默认值和范围；公共与认证 HTTP 的相同授权键并发 miss 合并后共同受该上限约束，满载返回 503。</li>
-<li>一个 Manager 身份与其 <code>state_dir</code> 共同组成单一部署；同一状态目录的第二个进程在发送 RPC 前因独占锁失败。并行 Manager 使用各自注册身份和状态目录。</li>
+<li><code>gateway.validation_max_inflight</code> 使用文中默认值和范围；公共与认证 HTTP 的相同授权键并发 miss 合并后共同受该上限约束，满载返回 503。</li>
+<li>一个 Manager 身份与其 <code>state.dir</code> 共同组成单一部署；同一状态目录的第二个进程在发送 RPC 前因独占锁失败。并行 Manager 使用各自注册身份和状态目录。</li>
 <li>Endpoint 请求只能选择 <code>http|https</code> scheme，不能关闭 HTTPS 证书校验或指定任意 host。</li>
-<li>Declare tags 与配置模板键完全一致；虚拟机与系统容器模板都不会把实例类型写入 Gitea。</li>
+<li>Declare tags 与 <code>templates</code> 配置键完全一致；虚拟机与系统容器模板都不会把实例类型写入 Gitea。</li>
 <li>三个脚本入口在 Manager 启动时按“完整内置套件或完整自定义套件”完成静态校验，混合配置失败；同一 active operation 固定脚本内容与摘要，配置变化只影响之后开始的 create/resume。</li>
-<li>Incus project、证书权限、非集群模式以及 tag 模板字段在领取 create/resume 前完成静态校验；image、展开 profile、根盘、所选脚本发布和通信网卡的运行条件在实例创建或启动后、提交 final 前验证，错误指明对应 tag 与字段。</li>
+<li>Incus project、证书权限、非集群模式以及模板字段在领取 create/resume 前完成静态校验；image、展开 profile、根盘、所选脚本发布和通信网卡的运行条件在实例创建或启动后、提交 final 前验证，错误指明对应模板与字段。</li>
+<li>Incus 端到端测试使用同一套 Manager 配置连接本地或远程 Incus；测试环境预先提供独立 project、image、profile、network、storage 和 ACL，测试入口只创建和清理带本次运行标识的实例。</li>
+<li>Incus 端到端测试的默认测试模板为低资源规格，单实例内存不超过 <code>1GiB</code>；需要更高规格时由部署配置显式调整，不由测试动态修改宿主设备。</li>
 <li>Git SSH 私钥、公钥和 known_hosts 使用 Manager 固定路径；私钥只在 Runtime 工作环境内生成，Manager 状态目录不保存该私钥。</li>
 <li>已有 Codespace 使用 create 时保存的有效模板快照；修改或删除 tag 模板只影响之后的 create，不改变已有实例的 resume、stop 和 delete。共享 profile 通过新版本名称演进。</li>
 <li><code>capacity_available</code> 同时受运行名额和启动 worker 限制，<code>cleanup_capacity_available</code> 受清理 worker、Fetch 预留和持久 pending 限制；project 配额只能容纳已有 stopped 实例时，Fetch 接受 resume 而不接受 create，stop/delete 仅在有清理槽位时领取。</li>
