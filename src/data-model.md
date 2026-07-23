@@ -36,9 +36,8 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、Man
 | `log_filename` | `VARCHAR(255) NOT NULL DEFAULT ''` | 日志文件名 |
 | `log_line_count` | `BIGINT NOT NULL DEFAULT 0` | 日志物理行数 |
 | `log_size` | `BIGINT NOT NULL DEFAULT 0` | 日志规范化字节数 |
-| `log_indexes` | `LONGBLOB NOT NULL` | 迁移默认写入空 blob；varint 编码的 `[]int64`，用于按行 seek |
 
-日志元数据字段参考 Actions `ActionTask`（`models/actions/task.go`）。
+日志文件名、行数和字节数提供页面展示、分页和清理所需的最小元数据。Codespace 不保存行号索引，因为页面轮询和下载使用服务端返回的 `next_offset` 连续读取即可闭环。
 
 repository owner 通过 `repository.owner_id` 表示，不在 codespace 表中重复存 `owner_id`。repository 删除后 `repo_id` 写为 0，这是 Gitea ID 字段常用的未绑定表达，也避免依赖各数据库实现不同的 nullable/partial-index 行为。create operation 完成、workspace 已初始化后，codespace 按 `codespace.uuid`、`user_id` 和 `manager_id` 管理生命周期与交互入口，不依赖 repository row；保留悬空 repository ID 不能恢复来源仓库。Codespace Gitea Token 在 `repo_id=0` 时没有绑定仓库能力，但公开只读目标仍按 Gitea 现有公开访问规则处理；Git SSH Key 不能匹配任何仓库。用户或组织删除在任何 owner repository 删除前，通过现有 `user_id`、`repo_id -> repository.owner_id` 和 `manager_id -> codespace_manager.owner_id` 收集关联 Codespace，并按 keyset 分批、逐项短事务删除 Gitea 资源，因此不需要增加冗余 owner 字段。repository 此前已单独删除时，`repo_id=0` 表示与原 repository owner 的关系已经有意丢弃，后续只按创建者和 Manager owner 关系处理。
 
@@ -48,7 +47,7 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 **设计如此：数据库版本与 Manager 观察值是两个独立字段。**数据库 `codespace.operation_rversion=0` 只表示 Gitea 从未为该 Codespace 创建 operation；无匹配 Manager 而直接创建的 failed 记录只是这一初始值的一个实例。inventory 中的 `RuntimeInstance.observed_operation_rversion=0` 表示 Manager 当前没有可继续的完整 active operation 上下文，即使数据库已经保留正数版本也可以上报 0；该观察值只参与本次对账，数据库版本继续由 Gitea 生命周期事务维护。Manager 持有完整上下文时上报对应的正数版本，operation-bound RPC 和状态报告始终使用正数版本。
 
-`git_protocol` 保存 Codespace 创建时选定的首次 clone 首选方式，而不是每次启动读取站点当前默认值。Gitea 同时下发 HTTP(S) 和 SSH URL，所选 create 脚本决定实际 remote；内置脚本在带当前 UUID 标记的临时 workspace 中使用首选 URL，`clone/fetch` 非零退出时清理该受控临时目录并用另一 URL 重试一次。Manager 只在 HEAD 等于锁定 SHA、最终 workspace 与实际 remote 的本地凭据配置有效时接受结果。resume 读取实际 remote，站点默认值变化只影响之后创建的 Codespace。已经初始化的绝对 workspace 路径和实际 remote 都属于 Manager 本地运行快照，不在 Gitea 数据库重复保存；repository 删除后，resume 仍使用该快照恢复原 workspace。
+`git_protocol` 保存 Codespace 创建时选定的首次 clone 首选方式，而不是每次启动读取站点当前默认值。Gitea 按 payload 下发时推导出的 clone 能力提供 HTTP(S) 和 SSH URL；禁用协议字段为空，所选 create 脚本只在非空 URL 中决定实际 remote。内置脚本在带当前 UUID 标记的临时 workspace 中使用首选 URL，`clone/fetch` 非零退出且另一种 URL 非空时清理该受控临时目录并重试一次。Manager 只在 HEAD 等于锁定 SHA、最终 workspace 与实际 remote 的本地凭据配置有效时接受结果。resume 读取实际 remote，站点默认值变化只影响之后创建的 Codespace。已经初始化的绝对 workspace 路径和实际 remote 都属于 Manager 本地运行快照，不在 Gitea 数据库重复保存；repository 删除后，resume 仍使用该快照恢复原 workspace。
 
 `auto_stop_mode` 保存用户选择而不是保存解析后的布尔结果。`default` 在每次下发和空闲停止授权时读取站点当前默认值，`custom` 使用对象保存的秒数，`never` 明确表示该对象不因空闲而自动暂停。Gitea 解析 `auto_stop_enabled + idle_timeout_seconds` 后直接下发实际运行值；default 与 custom 当前得到相同有效超时时使用相同运行侧基线，模式仍保留在数据库中决定未来站点默认值变化是否影响该对象。Manager 收到延迟快照最多暂时提前或延后本地计时，`RequestIdleStop` 会直接比较当前有效值和交互版本，过期快照不能创建 stop。`last_active_unix` 只用于页面展示，自动暂停使用 Manager/Gateway 的实时连接索引和本地单调计时，不从数据库时间戳推导空闲时长。
 
@@ -169,6 +168,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] 数据迁移创建文中列出的真实字段和非空默认值；模型校验只允许文中列出的状态、operation 类型和运行态值。
 - [x] active operation 完成后 operation 字段清空，`operation_rversion` 和最新状态报告 generation 保留当前值。
 - [x] 每个 active operation 都保存 `user` 或 `idle` 来源，完成、超时、取消或物理删除时与其他 active operation 字段一同清空。
+- `git_protocol` 只保存创建时首选协议；实际 remote 和可用 clone URL 不进入 Gitea 数据库。SSH clone 关闭时不创建 `codespace_ssh_key`，已登记关系按生命周期保留和删除。
 - [x] 数据库 operation 与 generation 的 0 值只用于尚未产生版本，有效版本从 1 开始，递增不会溢出回绕；inventory 的 observed operation 为 0 时只表达 Manager 缺少完整 active operation 上下文，数据库版本继续采用当前持久值。
 - [x] running operation 的总执行期限固定为 `operation_started_unix + OPERATION_MAX_DURATION`。`operation_deadline_unix` 保存本次 lease 截止时间与总执行期限中的较早值；未接近总期限时相对有效时长等于配置的精确 lease 毫秒数，最后一次授权返回到总期限为止、向下取整的正整数毫秒数。
 - [x] `auto_stop_mode` 明确区分站点默认、自定义和永不自动暂停；自定义值通过站点范围校验，`never` 不通过超时 0 隐式表达。
@@ -178,7 +178,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] 任一版本耗尽时返回 `version_exhausted` 且不产生部分写入；不依赖新 operation 版本的 force delete 仍可清理 Codespace。
 - [x] Codespace 主表不包含 Token ID 或 Token 明文；普通 `access_token` 表不创建 Codespace Token。
 - [x] `codespace_gitea_token` 的主键为 `codespace_uuid`，且模型中只有表格列出的字段。
-- [x] 正式迁移只接受本文定义的 Codespace 表和字段。发现同名但结构不匹配的既有表时返回包含表名、缺失字段和处理方式的迁移硬错误，由管理员备份并清理后重试。这样迁移结果始终对应当前目标 schema，避免用猜测规则生成生命周期状态。
+- [x] 正式迁移按本文定义创建 Codespace 表、字段和索引。迁移使用 Gitea 现有 Xorm 建表路径；如果环境中存在结构不匹配的同名残表，数据库建表或建索引错误会直接使迁移失败，由管理员按数据库实际状态处理。这样主路径保持简单，迁移结果仍对应当前目标 schema。
 - [x] 新记录在 create 时固化站点当前首选 `git_protocol`，后续配置变化不改写已有记录。
 - [x] 每个 Codespace 最多存在一行 `codespace_gitea_token`；数据库只保存 Gitea Secret 密文，认证只读取 salt/hash，不读取或解密密文。
 - [x] 每个 Codespace 最多存在一行 `codespace_ssh_key`，其 `key_id` 唯一关联一个 `KeyTypeCodespace` 公钥；create 实际尝试 SSH remote 时可以创建该关系，HTTP(S) remote 且未尝试 SSH 时可以没有该关系。关系表不重复保存用户、仓库、状态或权限。
@@ -421,10 +421,12 @@ CreateCodespace、Manager 注册/删除和 registration token 变更在 Codespac
 
 实现验收点：
 
+- [x] Manager 本地 Codespace 快照保存 ready boot 与 internal SSH 基准；Endpoint 实际变化时使用同一快照生成包含 `runtime`、`endpoints`、`boot` 的完整 Runtime Metadata JSON，并推进本地 metadata generation。没有 Endpoint 时 `endpoints` 仍编码为空数组。
 - metadata generation 相同的重试幂等，更低 generation 不覆盖 cache。
 - 相同 generation、不同规范化内容被拒绝；相同内容的周期刷新可以延长 TTL。
 - metadata generation stale 以服务端当前值为基线升代；同代冲突和 checked increment 耗尽分别返回 `generation_conflict` 和 `version_exhausted` 硬错误。
-- endpoint ID 在单个 codespace 内唯一；每项具有必填布尔 `public`，`workspace` 只能为 false；internal SSH 不进入 Gitea 页面数据或任何面向用户的响应。
+- [x] codespace 本地 Endpoint 快照读写和 Runtime API 对单个 Codespace 最多 64 个 Endpoint 执行同一上限；超过上限的新建请求返回 `429 endpoint_limit_exceeded`，已有 Endpoint 更新不受该上限阻止，启动时拒绝超限状态文件。
+- [x] endpoint ID 在单个 codespace 内唯一；每项具有必填布尔 `public`，`workspace` 只能为 false；internal SSH 不进入 Runtime API 的 Endpoint 响应。
 - Endpoint label 在 Manager 和 Gitea 使用相同 UTF-8、去除首尾 Unicode 空白、1 到 64 字符及禁止字符规则；非法 label 不写入本地路由或 Gitea cache，合法中文和其他普通展示文本保持原值。
 - metadata ready 且没有 `workspace` 记录时，默认 workspace open 仍有效，UI 使用稳定 workspace 描述，Manager 将其解析为内置 Web SSH。
 - resume 在 final 前完成同一 operation 版本的系统初始化、Token 写入、环境恢复和 ready 上报；Manager 重启后从 active operation 和本地 boot 上下文继续，final 成功后无需恢复独立凭据任务。
@@ -432,7 +434,8 @@ CreateCodespace、Manager 注册/删除和 registration token 变更在 Codespac
 - active create、active resume 和 running 使用固定 boot 版本与阶段矩阵；无 active operation 的 stopped 拒绝 metadata，同版本 ready 不回退，已结束 resume 的迟到快照不能重建当前启动上下文。
 - 每个 Codespace 只有一个任务修改 metadata generation 并发布当前完整快照；Endpoint、boot、SSH、恢复和周期刷新不各自维护待发布版本。
 - create/resume final 等待任一包含当前 operation ready 的成功上报，不等待随后产生的 Endpoint generation；发布任务仍会继续到本地最新快照被接受。
-- metadata generation 耗尽时内容变化没有本地部分提交，并返回 `version_exhausted`；Manager 持久化最小 pending 后清理该 UUID，已有 operation 由完整 inventory 或 running deadline timeout 收敛到既定结果。
+- [x] codespace 本地状态在 metadata generation 耗尽时不提交内容变化的 Endpoint 快照或内存路由；Runtime API 返回 `503 runtime_unavailable` 并保留最大 generation。
+- metadata generation 耗尽后的 Gitea `version_exhausted` 硬错误、Manager 最小 pending 清理和 operation 收敛由完整 metadata 发布任务与生命周期清理流程实现。
 - cache TTL 刷新不改写 `last_active_unix` 或主状态。
 
 ## 日志存储
@@ -456,16 +459,16 @@ codespace_log/{codespace_uuid}.log
 - Manager 上报结构化 `timestamp_unix_nano + message`；Gitea 统一编码为 UTF-8 `[RFC3339Nano] message\n`。
 - `UpdateLog` 成功响应返回规范化、脱敏并写入后的 `next_offset`；Manager 以该服务端值推进下一次追加。
 - message 包含换行时，Manager 在提交前按换行拆成多条物理日志行；Gitea 存储层每个 `lines[]` 元素只接受一行并拒绝仍包含换行的元素，渲染器按物理行顺序展示。这样每个元素都能稳定映射到一个 byte offset，分页时不需要重新解释 Manager 的原始文本。
-- 按 `log_indexes` 提供的行号到 byte offset 映射进行 seek 读取。
 - `GET /-/codespaces/{uuid}/logs` 使用 byte offset 分页读取，返回 `offset / next_offset / eof / lines / truncated`。
-- 读取 offset 必须为 0、文件末尾或 `log_indexes` 中的物理行起点；落在 UTF-8 字符或物理行中间时返回 offset conflict 和该物理行起点。
-- 第一条完整物理行超过请求 `limit` 时仍单独返回该行并推进 `next_offset`，避免客户端因过小 limit 永远无法前进；单次响应始终不超过 `LOG_READ_MAX_BYTES`，配置要求 `LOG_MAX_LINE_SIZE <= LOG_READ_MAX_BYTES`。
+- 读取 offset 由客户端从上一次响应的 `next_offset` 取得；超过文件末尾时返回 offset conflict 和当前 EOF。
+- 第一条完整物理行超过请求 `limit` 时仍单独返回该行并推进 `next_offset`，避免客户端因过小 limit 永远无法前进；单次响应始终受内部读取分页大小保护。
+- **设计如此：日志读取不维护单独行索引。**页面轮询和下载天然沿用服务端返回的 `next_offset`，不需要用户提交任意历史行号或让服务端回推最近行起点。删除索引字段后，日志元数据只保存当前文件名、大小和行数，减少迁移字段、写入路径和测试维护成本。
 - delete 成功后删除 codespace 日志。
 - `failed` 日志保留到用户 delete，或 `reconcile_codespaces` 按 `OLDER_THAN` 到期清理。
 - 日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。
-- Gitea 单实例内使用按 `codespace_uuid` 分片的日志追加 keyed lock 串行化日志追加，key 为 `codespace_log_{codespace_uuid}`；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 `log_size/log_line_count/log_indexes` 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。
+- Gitea 单实例内使用按 `codespace_uuid` 分片的日志追加 keyed lock 串行化日志追加，key 为 `codespace_log_{codespace_uuid}`；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 `log_size/log_line_count` 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。
 - **设计如此：日志追加使用专用锁，而不是复用交互和生命周期的 Codespace lock。**日志写入只修改 DBFS 文件和 `codespace` 行里的日志元数据，专用锁可以保证日志连续 offset 与元数据一致，同时避免高频日志上报阻塞 open、SSH、Token 和空闲停止等交互路径。生命周期结果仍通过 operation 版本、状态复读和物理删除事务与日志路径闭合。
-- 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE-LOG_FINAL_SUMMARY_RESERVE` 时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 `LOG_MAX_SIZE`，最终摘要优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。
+- 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE` 减内部最终摘要预留空间时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 `LOG_MAX_SIZE`，最终摘要优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。
 - Manager 在 final 前写 operation 最终摘要。对于仍保留 Codespace 记录的 final、timeout、missing 和 Runtime 状态报告，Gitea 在状态主事务提交后，使用日志专用锁和独立 DBFS 事务尽力追加内部状态摘要；该摘要失败或空间耗尽时只记录服务端告警，不回滚已经提交的生命周期结果。delete done、Gitea 直接删除和 retention 清理跳过摘要，避免删除后重新创建日志。
 
 日志存储在 DBFS 单文件中，`codespace` 行保存当前日志元数据。只有当前 `operation_status=running` 且 `operation_rversion` 匹配时允许追加日志。DBFS 写入与生命周期事务边界明确，日志归档状态不会进入 Codespace 状态机。
@@ -473,10 +476,10 @@ codespace_log/{codespace_uuid}.log
 实现验收点：
 
 - [x] 同一 codespace 的日志追加通过 `codespace_log_{codespace_uuid}` 串行化，两个相同 offset、不同内容的请求只有一个可以写入。
-- [x] DBFS 内容与 `log_size/log_line_count/log_indexes` 在同一数据库事务中提交或回滚。
-- [x] Manager 把含换行 message 拆成多个 `lines[]` 元素后提交；Gitea 对每个元素生成一条物理日志行，并拒绝仍包含换行的元素，行数、索引和分页结果一致。
-- [x] offset 按服务端规范化编码后的完整字节计算，读取不拆分 UTF-8 字符或物理日志行。
-- [x] 超过请求 limit 的物理行可以单独分页返回，非法行中 offset 返回该物理行的服务端起点，响应仍遵守服务端读取硬上限。
+- [x] DBFS 内容与 `log_size/log_line_count` 在同一数据库事务中提交或回滚。
+- [x] Manager 把含换行 message 拆成多个 `lines[]` 元素后提交；Gitea 对每个元素生成一条物理日志行，并拒绝仍包含换行的元素，行数和分页结果一致。
+- [x] offset 按服务端规范化编码后的完整字节计算，客户端使用 `next_offset` 连续读取。
+- [x] 超过请求 limit 的物理行可以单独分页返回，超过 EOF 的 offset 返回服务端当前 EOF，响应仍遵守服务端读取硬上限。
 - [x] 达到普通日志上限后只出现一条截断摘要，普通 batch 被拒绝，最终文件大小不超过 `LOG_MAX_SIZE`。
 - [x] 内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。
 - [x] codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。
