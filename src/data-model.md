@@ -432,8 +432,10 @@ CreateCodespace、Manager 注册/删除和 registration token 变更在 Codespac
 - [x] resume 在 final 前完成同一 operation 版本的系统初始化、Token 写入、环境恢复和 ready 上报；Manager 重启后从 active operation 和本地 boot 上下文继续，final 成功后无需恢复独立凭据任务。
 - 未知字段、缺失固定字段、非法 boot stage、错误 boot operation 版本和不完整 internal SSH 被拒绝；create 在当前 operation 的 ready 快照前不能 final done。
 - active create、active resume 和 running 使用固定 boot 版本与阶段矩阵；无 active operation 的 stopped 拒绝 metadata，同版本 ready 不回退，已结束 resume 的迟到快照不能重建当前启动上下文。
+- [x] active create/resume 的 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime` 和 `ready` boot 快照保存到同一 Codespace metadata 快照，并通过同一串行发布任务上报。中间阶段只唤醒发布任务，允许被后续阶段合并；`ready` 阶段同步等待 Gitea 接受后才允许 final done。设计如此是为了让页面进度可收敛，同时不让短暂控制面错误阻塞早期本地启动步骤。
 - [x] ready、Endpoint 变化和周期刷新使用同一 Codespace 的串行 metadata 发布任务，该任务重新读取当前完整快照并发送最新 generation；create/resume final 等待包含当前 operation ready 的快照被接受，不等待随后产生的 Endpoint generation，发布任务仍会继续到本地最新快照被接受。
-- boot、SSH 和恢复过程中的中间阶段快照统一到同一 metadata 发布任务仍需继续实现。
+- [ ] Gateway SSH 建立后，SSH 相关 metadata 与会话复检接入同一 metadata 发布和 Gateway session 生命周期；该项随 Gateway SSH 完整连接实现验收。
+- [ ] Manager 恢复 active create/resume 时，从本地阶段重新保存当前 boot 快照并唤醒同一发布任务；该项随完整启动恢复状态机实现验收。
 - [x] codespace 本地状态在 metadata generation 耗尽时不提交内容变化的 Endpoint 快照或内存路由；Runtime API 返回 `503 runtime_unavailable` 并保留最大 generation。
 - metadata generation 耗尽后的 Gitea `version_exhausted` 硬错误、Manager 最小 pending 清理和 operation 收敛由完整 metadata 发布任务与生命周期清理流程实现。
 - cache TTL 刷新不改写 `last_active_unix` 或主状态。
