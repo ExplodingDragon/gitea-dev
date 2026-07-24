@@ -182,16 +182,24 @@
 <p>这些脚本由 Manager 以 root 执行，因此自定义来源属于 Manager 部署信任边界。repository 中的 devcontainer 配置只有在管理员显式配置 devcontainer 自定义案例时才由该案例读取；repository 不能提供或替换 <code>init.sh</code>、<code>start.sh</code>、<code>resume.sh</code>。这样 create 在 clone 前就有确定的初始化入口，也不需要增加脚本下载和签名协议。</p>
 <p>实现验收点：</p>
 <ul>
-<li>Manager 核心数据、RPC、配置、结果结构和 Endpoint API 只包含通用脚本契约字段；devcontainer、Docker、Node.js、CLI、容器标识和容器用户作为案例私有状态由自定义脚本保存。</li>
-<li>内置脚本和本地自定义脚本使用同一调用、共享环境、结果和 ready 契约。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager 核心数据、RPC、配置和 Endpoint API 只包含通用脚本契约字段；devcontainer、Docker、Node.js、CLI、容器标识和容器用户不进入 Manager RPC 或 Endpoint API。</li>
+<li><input disabled="" type="checkbox"/>
+Manager 结果结构只包含通用脚本契约字段；该项随脚本结果文件和阶段解析实现验收。</li>
+<li><input disabled="" type="checkbox"/>
+内置脚本和本地自定义脚本使用同一调用、共享环境、结果和 ready 契约；当前代码只完成脚本来源配置校验，尚未执行自定义脚本套件。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 配置层要求三个入口全部为 <code>builtin</code> 或全部为本地绝对普通文件；混合配置、相对路径和不可访问文件会在 Manager 启动配置校验时报错。</li>
-<li>同一 active operation 在响应丢失、lease 续租和 Manager 重启后继续使用相同脚本内容；配置更新只影响之后开始的 create/resume。</li>
+<li><input disabled="" type="checkbox"/>
+同一 active operation 在响应丢失、lease 续租和 Manager 重启后继续使用相同脚本内容；配置更新只影响之后开始的 create/resume。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 自定义脚本入口只从 Manager 本地配置读取；配置校验不接受 repository 路径、下载 URL 或相对路径。</li>
-<li>脚本发布、内容摘要、同一 active operation 复用相同脚本内容，以及脚本写入 Runtime 固定目录仍由后续脚本执行状态机实现。</li>
-<li>运行健康检查只使用 activate 的通用 internal SSH 输出；脚本套件仍由 init、start、resume 三个入口组成，健康检查不会调用项目命令或读取脚本私有实现状态。</li>
-<li>默认内置套件只实现实例内直接运行；devcontainer 案例只有作为完整自定义套件被显式配置时才执行。</li>
+<li><input disabled="" type="checkbox"/>
+脚本发布、内容摘要、同一 active operation 复用相同脚本内容，以及脚本写入 Runtime 固定目录由脚本执行状态机实现。该项不能用配置校验代替，原因是配置只证明入口来源合法，不能证明一次 operation 内使用的脚本内容已经固定并可恢复。</li>
+<li><input disabled="" type="checkbox"/>
+运行健康检查只使用 activate 的通用 internal SSH 输出；脚本套件仍由 init、start、resume 三个入口组成，健康检查不会调用项目命令或读取脚本私有实现状态。</li>
+<li><input disabled="" type="checkbox"/>
+默认内置套件只实现实例内直接运行；devcontainer 案例只有作为完整自定义套件被显式配置时才执行。</li>
 </ul>
 <h2 id="调用与共享环境"><a class="header" href="#调用与共享环境">调用与共享环境</a></h2>
 <p>Manager 创建或启动 Incus 实例并确认 file/exec API 可用后，把脚本、exec launcher 和通用 helper 原子写入 <code>/usr/local/libexec/gitea-codespace/</code>。每轮 create/resume 依次执行：</p>
@@ -266,17 +274,26 @@ start.sh activate | resume.sh activate
 <p>**设计如此：共享变量可以覆盖，预定义变量覆盖无效。**覆盖能力用于 init、prepare、activate 和后续 resume 之间传递 workspace、通用输出与实现状态；Manager 预定义变量始终以当前 operation 为准。同名追加被直接忽略，使自定义脚本可以组合，同时保持生命周期和凭据归属可验证。</p>
 <p>实现验收点：</p>
 <ul>
-<li>三个脚本只通过 <code>CODESPACE_ENV</code> 共享和覆盖非预定义变量，Manager 在成功阶段后保存规范结果。</li>
+<li><input disabled="" type="checkbox"/>
+三个脚本只通过 <code>CODESPACE_ENV</code> 共享和覆盖非预定义变量，Manager 在成功阶段后保存规范结果。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Gitea Token 与 Runtime Token 使用文档定义的固定路径，并由 create/resume 写入实例文件系统；prepare/activate 仍保留环境变量作为本次进程快照。</li>
-<li>动态文件路径只使用 <code>CODESPACE_ENV</code> 和 <code>CODESPACE_RESULT</code>；Git SSH 材料使用文档定义的固定路径。完整脚本契约落地后，Token 文件 owner、共享环境和结果文件也由同一阶段机制校验。</li>
-<li>init 时固定 Token 路径已经确定但凭据尚未写入；prepare 和 activate 取得当前 Token 环境快照与 Gitea 对外地址。</li>
-<li>create 取得当前可用协议的 clone URL、首选协议和锁定 ref；禁用协议字段为空。resume 不取得 repository 输入，只使用持久 workspace 与共享环境。</li>
-<li>同一变量被多次追加时最后值进入下一阶段；失败或取消调用的追加不生效，成功调用后的规范环境跨 stop/resume 保存。</li>
-<li>脚本追加预定义变量时当前调用不受影响，Manager 规范化时移除该行，后续调用仍使用 Manager 当前注入值。</li>
-<li>Manager 使用解析器读取环境文件，不执行其中的 shell 内容；只读输入在每次调用时覆盖共享同名值。</li>
-<li>init、prepare、activate 的通用输出缺失、类型错误或校验失败时不能进入下一阶段。</li>
-<li>自定义脚本可以保存任意合法私有变量，Manager 本地快照只把它们作为当前环境映射保存。</li>
+<li><input disabled="" type="checkbox"/>
+动态文件路径只使用 <code>CODESPACE_ENV</code> 和 <code>CODESPACE_RESULT</code>；Git SSH 材料使用文档定义的固定路径。完整脚本契约落地后，Token 文件 owner、共享环境和结果文件也由同一阶段机制校验。</li>
+<li><input disabled="" type="checkbox"/>
+init 时固定 Token 路径已经确定但凭据尚未写入；prepare 和 activate 取得当前 Token 环境快照与 Gitea 对外地址。</li>
+<li><input disabled="" type="checkbox"/>
+create 取得当前可用协议的 clone URL、首选协议和锁定 ref；禁用协议字段为空。resume 不取得 repository 输入，只使用持久 workspace 与共享环境。</li>
+<li><input disabled="" type="checkbox"/>
+同一变量被多次追加时最后值进入下一阶段；失败或取消调用的追加不生效，成功调用后的规范环境跨 stop/resume 保存。</li>
+<li><input disabled="" type="checkbox"/>
+脚本追加预定义变量时当前调用不受影响，Manager 规范化时移除该行，后续调用仍使用 Manager 当前注入值。</li>
+<li><input disabled="" type="checkbox"/>
+Manager 使用解析器读取环境文件，不执行其中的 shell 内容；只读输入在每次调用时覆盖共享同名值。</li>
+<li><input disabled="" type="checkbox"/>
+init、prepare、activate 的通用输出缺失、类型错误或校验失败时不能进入下一阶段。</li>
+<li><input disabled="" type="checkbox"/>
+自定义脚本可以保存任意合法私有变量，Manager 本地快照只把它们作为当前环境映射保存。</li>
 </ul>
 <h2 id="结果与恢复"><a class="header" href="#结果与恢复">结果与恢复</a></h2>
 <p>每次 init、prepare 和 activate 调用都取得唯一的 <code>CODESPACE_RESULT</code>。脚本在同目录写临时文件、<code>fsync</code> 并 rename，最终文件固定为 <code>root:root 0600</code>。成功结果只包含：</p>
@@ -303,10 +320,14 @@ Gitea Token 与 Runtime Token 使用文档定义的固定路径，并由 create/
 <p>脚本成功结果、规范共享环境和下一本地阶段在一个本地提交边界内保存。进入 <code>lease_paused</code> 会终止 launcher 并停止 create/resume 实例；同版本续租后复检持久 workspace 和凭据，再重新执行通用 prepare、activate 与连通校验。脚本自行根据共享环境和 Runtime 文件恢复自己的实现；Manager 按通用脚本阶段恢复内置直接运行、devcontainer 案例或其他自定义环境。旧 ready 快照保持 boot stage 单调，但不能跳过本次实例启动后的校验。</p>
 <p>实现验收点：</p>
 <ul>
-<li>结果结构只包含 <code>outcome</code> 和固定 boot stage；运行方式、容器标识、容器用户、UID/GID 与内部转发信息通过共享环境或脚本私有文件表达。</li>
-<li>每次调用只有结果为 done 且共享环境通过校验时才原子推进本地阶段。</li>
-<li>非主动取消场景的缺失或损坏结果按可恢复失败处理；不可恢复结果按 create/resume 已定义状态闭环处理。</li>
-<li><code>lease_paused</code> 恢复调用通用 prepare、activate 与连通校验，devcontainer 案例和其他自定义环境通过同一恢复路径闭环。</li>
+<li><input disabled="" type="checkbox"/>
+结果结构只包含 <code>outcome</code> 和固定 boot stage；运行方式、容器标识、容器用户、UID/GID 与内部转发信息通过共享环境或脚本私有文件表达。</li>
+<li><input disabled="" type="checkbox"/>
+每次调用只有结果为 done 且共享环境通过校验时才原子推进本地阶段。</li>
+<li><input disabled="" type="checkbox"/>
+非主动取消场景的缺失或损坏结果按可恢复失败处理；不可恢复结果按 create/resume 已定义状态闭环处理。</li>
+<li><input disabled="" type="checkbox"/>
+<code>lease_paused</code> 恢复调用通用 prepare、activate 与连通校验，devcontainer 案例和其他自定义环境通过同一恢复路径闭环。</li>
 </ul>
 <h2 id="endpoint-与内部-ssh-契约"><a class="header" href="#endpoint-与内部-ssh-契约">Endpoint 与内部 SSH 契约</a></h2>
 <p>Endpoint helper 的 <code>upstream_port</code> 始终表示 Incus 通信地址上已经可以访问的实际端口。Manager 根据 Runtime Token 和请求来源确定 Codespace，再把该通信地址与端口保存为本地路由。内部容器端口、容器标识或转发描述由脚本保存在自己的实现状态中。</p>
@@ -317,12 +338,16 @@ Gitea Token 与 Runtime Token 使用文档定义的固定路径，并由 create/
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 Endpoint API 对所有脚本实现都只接收 Incus 通信地址上的实际端口；devcontainer 案例先在脚本内完成转发，再提交同一实际端口字段。当前 Runtime API 会从请求 source IP 解析 Incus 通信网卡地址，Endpoint 请求体不能指定 host。</li>
-<li>内部环境的端口转发由脚本建立；Manager 只保存并连接实际地址和端口。</li>
-<li>internal SSH 的用户、端口和 Host Key 来自通用共享输出，并在 ready 前由 Manager 实际连接校验。</li>
-<li>Manager 不依赖固定授权文件路径；内置直接运行和自定义环境的 activate 都用同一公钥输入替换各自实际入口的授权内容。</li>
+<li><input disabled="" type="checkbox"/>
+内部环境的端口转发由脚本建立；Manager 只保存并连接实际地址和端口。</li>
+<li><input disabled="" type="checkbox"/>
+internal SSH 的用户、端口和 Host Key 来自通用共享输出，并在 ready 前由 Manager 实际连接校验。</li>
+<li><input disabled="" type="checkbox"/>
+Manager 不依赖固定授权文件路径；内置直接运行和自定义环境的 activate 都用同一公钥输入替换各自实际入口的授权内容。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 自定义脚本无法通过 Endpoint 请求指定其他 host，Runtime API 继续按 Runtime Token 和实时来源地址限制到当前 Codespace。设计如此是为了让脚本只声明“本实例通信地址上的端口”，避免脚本把 Gateway 路由指向其他主机。</li>
-<li>内置与自定义脚本使用相同的 <code>public</code> 字段；省略命令行选项得到需要认证的入口，显式 <code>--public</code> 得到公共普通 Endpoint，workspace 的公共请求被拒绝。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+内置与自定义脚本使用相同的 <code>public</code> 字段；省略命令行选项得到需要认证的入口，显式 <code>--public</code> 得到公共普通 Endpoint，workspace 的公共请求被拒绝。</li>
 </ul>
 <h2 id="内置脚本实现"><a class="header" href="#内置脚本实现">内置脚本实现</a></h2>
 <p>内置 <code>init.sh</code> 读取 <code>/etc/os-release</code>，只选择能够明确归入的 <code>apt-get</code>、<code>dnf</code> 或 <code>pacman</code>。它按缺失命令安装 CA 证书、<code>curl</code>、Git、OpenSSH、<code>sudo</code>、<code>util-linux</code>、账户工具和脚本实际使用的基础工具，安装后逐项确认命令存在。无法识别系统或系统字段与实际包管理器矛盾时返回 <code>unrecoverable_failed</code>；下载、软件源或包管理器暂时失败时返回 <code>recoverable_failed</code>。</p>
@@ -338,11 +363,16 @@ CODESPACE_CREDENTIAL_GID=1000
 <p>**设计如此：默认内置实现只有一种直接运行行为。**内置脚本的输入完全来自 Manager 下发的 operation payload 和共享环境，因此 create 与 resume 使用同一套可验证的依赖和恢复结果。需要 devcontainer 时，由管理员显式选择下一节的完整自定义套件，由该套件解释 repository 中的 devcontainer 配置。</p>
 <p>实现验收点：</p>
 <ul>
-<li>apt/dnf/pacman 探测、固定 <code>codespace</code> 用户、sudo、基于非空 clone URL 的回退、实例内 sshd 和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。</li>
-<li>SSH URL 为空时内置脚本只配置 HTTP(S) remote 和 credential helper，不创建 Git SSH Key、不写 Git known_hosts、不调用 Git SSH Key helper。</li>
-<li>内置脚本测试确认 repository 中的 devcontainer 文件按普通 workspace 内容保留，直接运行路径只准备固定用户、workspace、Git 凭据、internal SSH 和实际 Endpoint 端口。</li>
-<li>resume 保留 workspace HEAD，只恢复当前 remote 的凭据和实例内 sshd，不依赖 repository payload 或网络可达性。</li>
-<li>完整自定义套件可以替换内置直接运行行为，只要通过通用结果、共享环境和 ready 校验。</li>
+<li><input disabled="" type="checkbox"/>
+apt/dnf/pacman 探测、固定 <code>codespace</code> 用户、sudo、基于非空 clone URL 的回退、实例内 sshd 和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。</li>
+<li><input disabled="" type="checkbox"/>
+SSH URL 为空时内置脚本只配置 HTTP(S) remote 和 credential helper，不创建 Git SSH Key、不写 Git known_hosts、不调用 Git SSH Key helper。</li>
+<li><input disabled="" type="checkbox"/>
+内置脚本测试确认 repository 中的 devcontainer 文件按普通 workspace 内容保留，直接运行路径只准备固定用户、workspace、Git 凭据、internal SSH 和实际 Endpoint 端口。</li>
+<li><input disabled="" type="checkbox"/>
+resume 保留 workspace HEAD，只恢复当前 remote 的凭据和实例内 sshd，不依赖 repository payload 或网络可达性。</li>
+<li><input disabled="" type="checkbox"/>
+完整自定义套件可以替换内置直接运行行为，只要通过通用结果、共享环境和 ready 校验。</li>
 </ul>
 <h2 id="devcontainer-自定义脚本案例"><a class="header" href="#devcontainer-自定义脚本案例">devcontainer 自定义脚本案例</a></h2>
 <p>项目随文档提供一套完整、可运行的 devcontainer 自定义脚本案例：</p>
@@ -363,11 +393,16 @@ examples/devcontainer/README.md
 <p>**设计如此：devcontainer 支持由脚本契约提供，Manager Go 代码保持通用资源编排。**案例证明自定义套件可以创建嵌套开发环境、执行 lifecycle commands、转发 internal SSH 和 Endpoint；相同契约也能承载其他容器工具或企业开发环境。Manager 只保存通用输出和不透明共享变量，因此 devcontainer CLI 版本、容器状态和恢复细节都归属于案例自身。</p>
 <p>实现验收点：</p>
 <ul>
-<li>devcontainer 案例作为三个完整自定义脚本路径被显式配置后执行；内置配置把 repository 中的 devcontainer 文件作为普通 workspace 内容处理。</li>
-<li>Manager 的配置、Go 类型、RPC、本地结构化快照和状态机只表达 Incus 实例、通用脚本输入、通用结果、共享环境、internal SSH 和实际 Endpoint 端口。</li>
-<li>案例通过通用结果提交凭据 UID/GID、workspace、internal SSH 和实际 Endpoint 端口；Manager 使用与内置脚本相同的 ready 校验。</li>
-<li>案例的 CLI、lifecycle commands、容器恢复和端口转发由案例端到端测试覆盖；Manager 核心测试使用通用模拟自定义脚本覆盖同一契约。</li>
-<li>stop 只停止 Incus 实例，resume 由案例恢复既有容器，delete 删除实例根存储及其中的案例状态；inventory 仍只枚举 Incus 实例。</li>
+<li><input disabled="" type="checkbox"/>
+devcontainer 案例作为三个完整自定义脚本路径被显式配置后执行；内置配置把 repository 中的 devcontainer 文件作为普通 workspace 内容处理。</li>
+<li><input disabled="" type="checkbox"/>
+Manager 的配置、Go 类型、RPC、本地结构化快照和状态机只表达 Incus 实例、通用脚本输入、通用结果、共享环境、internal SSH 和实际 Endpoint 端口。</li>
+<li><input disabled="" type="checkbox"/>
+案例通过通用结果提交凭据 UID/GID、workspace、internal SSH 和实际 Endpoint 端口；Manager 使用与内置脚本相同的 ready 校验。</li>
+<li><input disabled="" type="checkbox"/>
+案例的 CLI、lifecycle commands、容器恢复和端口转发由案例端到端测试覆盖；Manager 核心测试使用通用模拟自定义脚本覆盖同一契约。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+stop 只停止 Incus 实例，resume 由案例恢复既有容器，delete 删除实例根存储及其中的案例状态；inventory 仍只枚举 Incus 实例。</li>
 </ul>
 
                     </main>
