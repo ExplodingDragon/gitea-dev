@@ -929,11 +929,15 @@ Runtime Endpoint API 在 Manager 侧对 label 执行合法 UTF-8、去除首尾 
 <li>init 通过共享环境提供非 root 凭据 UID/GID；prepare 提供 workspace 路径；activate 提供可从 Incus 通信地址连接的非 root internal SSH 用户、端口和 Host Key 指纹。</li>
 <li>结果结构、Manager 配置、当前结构化快照和 Endpoint API 只表达通用脚本输出、internal SSH 和 Incus 通信地址上的实际 Endpoint 端口；内置和自定义脚本使用同一通用输出。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-Runtime Metadata 上报失败时，Endpoint GET 和 Gateway 继续使用已提交的当前本地声明与路由；更高 generation 的变更可以继续提交并取代较旧待上报快照。</li>
-<li>PUT 修改目标、访问方式或 DELETE 在本地路由变化前关闭受影响的认证 session 和公共连接，仅修改 label 不关闭；成功响应后新连接不会进入旧目标或沿用旧访问方式。</li>
-<li>Endpoint 声明作为字段随既有 Codespace 当前快照按“临时文件与文件 fsync、rename、父目录 fsync、内存路由替换、唤醒发布任务”的顺序提交。父目录同步成功后业务结果成立；此前失败不发布内存路由或成功响应，重启读取提交前或提交后的任一完整快照时由幂等请求收敛。</li>
-<li>POST/PUT/DELETE 的相同请求重放分别得到当前对象或 204，不递增 generation；POST 同 ID 不同内容返回 conflict。</li>
-<li>Gitea metadata 尚未同步时，新增入口暂不展示，已删除入口在 Gateway 当前路由复检时被拒绝；同步恢复后 Gitea 收敛到最新 generation。</li>
+Runtime Metadata 上报失败时，Endpoint GET 和 Gateway 继续使用已提交的当前本地声明与路由；Endpoint 变化唤醒同一 Codespace 的串行发布任务，发布失败后重试并重新读取最新本地快照，更高 generation 的变更可以继续提交并取代较旧待上报快照。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+PUT 修改目标、访问方式或 DELETE 在本地路由变化前关闭受影响的认证 session 和公共连接，仅修改 label 不关闭；成功响应后新连接不会进入旧目标或沿用旧访问方式。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Endpoint 声明作为字段随既有 Codespace 当前快照按“临时文件与文件 fsync、rename、父目录 fsync、内存路由替换、唤醒发布任务”的顺序提交。父目录同步成功后业务结果成立；此前失败不发布内存路由或成功响应，重启读取提交前或提交后的任一完整快照时由幂等请求收敛。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+POST/PUT/DELETE 的相同请求重放分别得到当前对象或 204，不递增 generation；POST 同 ID 不同内容返回 conflict。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Gitea metadata 尚未同步时，新增入口暂不展示，已删除入口在 Gateway 当前路由复检时被拒绝；同步恢复后，Endpoint 发布任务重试并发送当前最新 generation。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 单个 Codespace 最多声明 64 个 Endpoint；达到上限后新增 Endpoint 返回 <code>429 endpoint_limit_exceeded</code>，更新已有 Endpoint 和 delete 不受该上限阻止。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -952,9 +956,13 @@ Runtime API 对带 JSON body 的 Endpoint POST/PUT 和 <code>PUT /api/runtime/v1
 Endpoint 请求重放语义已覆盖：POST 同 ID 相同内容返回当前对象，不同内容返回 <code>409 endpoint_conflict</code>；PUT 目标不存在返回 <code>404 endpoint_not_found</code>；DELETE 目标不存在也返回 <code>204</code> 且无 body。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Endpoint POST/PUT 只接受固定 JSON 请求对象；<code>upstream_host</code> 等未知字段、非 <code>http|https</code> 的 <code>upstream_scheme</code>、小于 1 或大于 65535 的 <code>upstream_port</code> 都返回 <code>400 invalid_request</code>，不会提交本地快照或路由。</li>
-<li>Git SSH Key 与 Endpoint API 按 Manager 本地生命周期矩阵开放；认证与 binding 错误优先于阶段错误。当前 <code>codespace</code> 已完成 Runtime Token 认证后的 Git SSH Key RPC 转发、Incus source IP 到当前 Codespace 的绑定、active create/resume 门禁和 Endpoint CRUD，active stop/delete 拒绝已覆盖；stopped/running 完整阶段矩阵和 metadata 发布任务仍需继续实现。Gitea 功能关闭期间已经在本地允许阶段提交的 Endpoint 变更保留并等待 metadata 重试，后续 Fetch abort 仍能结束 active create/resume。</li>
-<li>同一 Codespace 只有一个发送当前完整快照的 metadata 上报任务；并发 Endpoint 变更由本地锁串行，较新 generation 取代较旧待上报内容，周期刷新也读取当前快照。</li>
-<li>metadata 成功响应只有在对应请求的 generation 仍为本地当前值时结束上报任务；旧请求的响应到达后任务继续发送最新完整快照。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Git SSH Key 与 Endpoint API 已按当前已实现的 Manager 本地阶段判定开放；认证与 binding 错误优先于阶段错误。当前 <code>codespace</code> 已完成 Runtime Token 认证后的 Git SSH Key RPC 转发、Incus source IP 到当前 Codespace 的绑定、active create/resume 门禁、active stop/delete 拒绝和 Endpoint CRUD。Gitea 功能关闭期间已经在本地允许阶段提交的 Endpoint 变更保留并等待 metadata 重试，后续 Fetch abort 仍能结束 active create/resume。</li>
+<li>stopped/running 完整阶段矩阵，以及 boot/SSH/恢复过程中的中间阶段快照统一到 Endpoint 发布任务仍需继续实现。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Endpoint 变化由同一 Codespace 的串行 metadata 发布任务发送当前完整快照；并发 Endpoint 变更由本地状态文件写入串行化，较新 generation 取代较旧待上报内容。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Endpoint 发布任务收到旧 generation 成功响应后，会消费等待中的变更通知并继续发送最新完整快照；create/resume ready 上报和 Declare 返回的周期刷新都唤醒同一发布任务。ready 上报会同步等待包含当前 operation ready 的快照被接受，周期刷新复用当前 generation 刷新 Gitea cache TTL。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 metadata generation 无法递增时，Runtime API 内容变化不会提交新的磁盘快照或内存路由；Runtime HTTP 调用方收到 <code>503 runtime_unavailable</code>，本地 generation 保持最大值。</li>
 <li>metadata generation 耗尽后的内部 <code>version_exhausted</code> 分类、关闭 Codespace 准入、持久化最小 pending 和按 Incus 归属字段清理该 UUID 仍由 Manager 生命周期清理流程实现。</li>
@@ -1097,14 +1105,24 @@ Gateway 在全部 Endpoint host 上先检查 Service Worker 标记；存在 <cod
 <li><input disabled="" type="checkbox" checked=""/>
 <code>public=true</code> 的普通 Endpoint 在没有 session cookie 时可以访问；本地公共路由和 Gitea RPC 任一不允许时都不连接 upstream。当前单元测试覆盖 allowed 后代理到 upstream，以及未通过本地路由时不代理。</li>
 <li>本地交互准入未开放时，保留的公共路由不能建立连接；当前 ready 重报和对象恢复完成后才允许新请求。</li>
-<li>普通 HTTP 每次请求检查本地状态和最多 1 秒的新鲜公共 allowed，缺失时调用 Gitea；WebSocket 和长时间 HTTP 在一个复检周期内收敛。stop、delete、failed、删除路由或改为需要认证会立即使 allowed 失效并关闭连接。当前已完成 WebSocket upgrade 代理，周期复检和连接关闭仍需要后续连接生命周期实现。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+公共 WebSocket 和长时间 HTTP 响应在连接建立后按固定周期重新调用 <code>ValidatePublicEndpoint</code>，拒绝、通信失败或响应损坏会取消代理上下文并关闭外部与 upstream 连接；周期复检不使用普通 HTTP 的 1 秒 allowed cache。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+普通 HTTP 每次请求检查本地状态和最多 1 秒的新鲜公共 allowed，缺失时调用 Gitea；删除路由或改为需要认证时，本地事件会取消已有公共 HTTP/WebSocket 代理连接并释放名额。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+stop、delete 和 failed 生命周期事件会通过 Manager 本地事件主动关闭该 Codespace 的公共 HTTP/WebSocket 代理连接并释放名额。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 公共请求不建立 session、不注入用户 ID、不更新用户交互和活跃时间，也不阻止自动暂停；请求只获得 <code>Access: public</code>、UUID、Endpoint 和转发信息。</li>
 <li>workspace 的公共访问始终失败；repository 可见性、删除和用户权限变化不改变普通 Endpoint 明确声明的 <code>public</code> 值。</li>
 <li>每 Endpoint 64、每来源 IP 16 的默认并发限制包含 HTTP、流式响应和 WebSocket，超限稳定返回 429，连接结束后名额只释放一次。</li>
 <li>公共请求还受全进程在途上限约束；全局容量不足时返回 503，不调用 Gitea 或连接 upstream。</li>
 <li>公共请求在检查授权前取得 <code>validating</code> 名额；需要调用 Gitea 时再取得全局校验 RPC 名额。拒绝、RPC 失败、最终路由复检失败和并发取消均只释放一次，校验阶段也不能越过两类并发上限。</li>
-<li>已建立的 WebSocket 和流式 HTTP 周期复检沿用原连接名额；本地状态或路由变化同时取消待校验名额和已有连接。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+已建立的公共 WebSocket 和流式 HTTP 周期复检沿用原连接名额，复检失败时只释放一次。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+路由变化会取消待校验名额和已有 HTTP/WebSocket 连接；label-only 更新保持既有连接。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+本地生命周期状态变化会取消待校验名额和已有 HTTP/WebSocket 连接。</li>
 <li>per-IP 计数使用 listener 的 TCP peer IP，客户端自报转发头不能拆分名额；前置代理部署可调整该配置并由代理补充客户端级限制。</li>
 <li>公共访问清除旧 Gateway session 和恢复 cookie；upstream 返回的 401 原样传给客户端，不触发 Gitea 登录恢复。</li>
 </ul>
@@ -1257,8 +1275,12 @@ gateway_cookie_secure: auto
 <li>Open Code 交换创建的 Endpoint session 先进入最长 30 秒的 <code>connecting</code>；第一个无 code 请求原地激活，响应丢失或未跟随 303 时会自动移除。</li>
 <li>同一浏览器携带同 Host、同 binding 的旧 cookie 重复 Open 时原子替换旧 session，配额按一换一计算且旧连接在锁外关闭；其他浏览器 session 保持不变。</li>
 <li>未知、过期和 binding 不同的旧 cookie 不参与替换；多个当前 Host 有效候选拒绝请求，恰好一个匹配才允许一换一，两者都不能绕过用户或 Codespace session 上限。</li>
-<li>普通 HTTP 在每次请求转发前检查本地状态和最多 1 秒的 allowed，缺失时同步复检；相同键的并发 miss 只调用一次 Gitea。WebSocket 和 SSH 按固定定时器复检。</li>
-<li>stop、delete 和本地路由变化通过 Manager 本地事件立即关闭 session；只发生在 Gitea 的功能、账户、Manager 或 Codespace 变化由普通 HTTP 在最多 1 秒后发现，WebSocket/SSH 在下一次定时复检发现。revalidate 返回拒绝或发生通信失败时也关闭 session，当前 HTTP 请求返回错误且不转发到 Runtime。</li>
+<li>普通 HTTP 在每次请求转发前检查本地状态和最多 1 秒的 allowed，缺失时同步复检；相同键的并发 miss 只调用一次 Gitea。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+认证 WebSocket 和长时间 HTTP 响应按固定定时器调用 Endpoint 分支的 <code>RevalidateGatewaySession</code>，拒绝、通信失败或响应损坏会取消代理上下文并关闭外部与 upstream 连接；周期复检不使用普通 HTTP 的 1 秒 allowed cache。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+HTTP/WebSocket 路由变化会删除受影响 Endpoint session、取消已有代理连接，label-only 更新保持既有连接。stop、delete 和 failed 生命周期事件会删除该 Codespace 的 Endpoint session 并取消已有代理连接。只发生在 Gitea 的功能、账户、Manager 或 Codespace 变化由普通 HTTP 在最多 1 秒后发现，认证 WebSocket 和长时间 HTTP 响应在下一次定时复检发现。revalidate 返回拒绝或发生通信失败时也关闭 session，当前 HTTP 请求返回错误且不转发到 Runtime。</li>
+<li>SSH 按固定定时器调用 SSH 分支的 <code>RevalidateGatewaySession</code>，以及 stop/delete 生命周期事件通过 Manager 本地事件立即关闭 SSH session，仍需要后续 Gateway SSH 与连接生命周期实现。</li>
 <li>全进程校验 RPC 并发达到 <code>gateway_validation_max_inflight</code> 时不启动更多校验并返回 503；allowed 过期后不会在 Gitea 错误期间继续使用。</li>
 <li>全进程在途名额覆盖 Open、认证/公共 HTTP、流式请求、WebSocket 和 SSH；认证请求还受单 session 名额限制，达到上限时不排队且结束后只释放一次。</li>
 <li>HTTP header 超限或读取超时在调用 Gitea 和 upstream 前结束；正文保持流式和背压，不因统一体积限制破坏开发服务。</li>
