@@ -872,7 +872,7 @@ User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一�
 <li>RequestGiteaToken 成功响应的 <code>token/server_url</code> 均非空；Manager 不从 clone URL 或内部控制面地址推导 Runtime 使用的 Gitea 根地址。</li>
 <li>active create、active resume 和无 active operation 的 running 可以请求 Token；active stop 返回 <code>state_unavailable</code>，但创建 stop 前已有的 Token 继续按 running 阶段授权到 stop final。</li>
 <li>create/resume 初始化阶段可以取得并使用 Token；本次 operation 的 ready metadata 和 Token 行缺一时，final done 被拒绝。</li>
-<li>create payload 携带本次计算出的 <code>git_protocol</code> 作为首次 clone 首选项，并携带当前可用协议的 HTTP(S)/SSH URL，禁用协议字段为空。resume payload 不携带 <code>git_protocol</code>；脚本按 workspace 实际 remote 处理凭据。脚本实际尝试 SSH 前通过 <code>EnsureCodespaceGitSSHKey</code> 创建或确认公钥；之后改用 HTTP(S) 成功时，已经登记的公钥按 Codespace 生命周期保留。</li>
+<li>create payload 携带本次计算出的 <code>git_protocol</code> 作为首次 clone 首选项，并携带当前可用协议的 HTTP(S)/SSH URL，禁用协议字段为空。resume payload 不携带 <code>git_protocol</code>；脚本按 workspace 实际 remote 处理凭据。init 实际尝试 SSH 前通过 <code>EnsureCodespaceGitSSHKey</code> 创建或确认公钥；之后改用 HTTP(S) 成功时，已经登记的公钥按 Codespace 生命周期保留。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>EnsureCodespaceGitSSHKey</code> 请求只携带 UUID 和公钥字节；用户、仓库、初始化阶段和生命周期状态由服务端当前关系取得，响应只返回 Runtime 建立严格 SSH Host Key 校验所需的规范化行。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -889,7 +889,7 @@ User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一�
 <ul>
 <li>每个 operation envelope 的 <code>command</code> 必须设置一个分支；普通 create 携带完整 payload，resume/stop/delete 使用各自分支；站点排空后 deadline 未到期的 create 使用 <code>abort_create</code>，对应 resume 使用 <code>abort_resume</code>。</li>
 <li><code>CreateOperationPayload.environment_tag</code> 携带创建时锁定并用于 claim 的 tag，使声明多个 tag 的 Manager 可以选择同名 Incus 模板；Manager 把该值保存到本地 state、Incus 实例元数据和脚本环境，形成本次运行环境选择的唯一来源。</li>
-<li><code>CreateOperationPayload.repo_clone_http_url</code> 和 <code>repo_clone_ssh_url</code> 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 与 SSH 地址；只有对应 clone 能力可用时返回非空。<code>git_protocol</code> 表示本次 create 的首次首选项，并且必须指向一个非空 URL。内置 <code>start.sh</code> 在受控临时 workspace 中先使用首选地址，clone/fetch 非零退出且另一种 URL 非空时清理该目录并重试一次；本地前置错误和 HEAD 校验失败不切换协议。自定义脚本可以选择任一非空地址，Manager 仍以锁定 SHA 和实际 remote 的本地凭据配置作为结果校验。<code>repo_web_url</code> 使用包含 <code>AppSubURL</code> 的 <code>ROOT_URL</code>。</li>
+<li><code>CreateOperationPayload.repo_clone_http_url</code> 和 <code>repo_clone_ssh_url</code> 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 与 SSH 地址；只有对应 clone 能力可用时返回非空。<code>git_protocol</code> 表示本次 create 的首次首选项，并且必须指向一个非空 URL。内置 <code>init.sh</code> 在受控临时 workspace 中先使用首选地址，clone/fetch 非零退出且另一种 URL 非空时清理该目录并在同一次 init 调用中重试一次；最终失败写入不可恢复结果。本地前置错误和 HEAD 校验失败不切换协议。自定义脚本可以选择任一非空地址，Manager 仍以锁定 SHA 和实际 remote 的本地凭据配置作为结果校验。<code>repo_web_url</code> 使用包含 <code>AppSubURL</code> 的 <code>ROOT_URL</code>。</li>
 <li><code>CreateOperationPayload</code> 携带 <code>GitProtocol</code>；<code>ResumeOperationPayload</code> 不携带协议。实际 remote 为 SSH 时通过 <code>EnsureCodespaceGitSSHKey</code> 创建或确认 Codespace 公钥。</li>
 <li><code>CreateOperationPayload.user_identity</code> 必须携带创建用户的 Gitea 用户名、展示名、Git <code>user.name</code> 和隐私保护后的 Git email。Manager 用用户名派生 Runtime Linux 用户名，并只在 create 初始化时写入 Git identity；resume 不覆盖 workspace 中用户后续修改过的 Git identity。</li>
 <li><code>CreateOperationPayload.repository_config</code> 必须携带 repository 配置读取结果。文件存在时包含路径、来源 ref、正文和正文 SHA256；文件缺失时 <code>present=false</code>。用于调度的 tag 已经提升为 <code>CreateOperationPayload.environment_tag</code>，repository config 不再重复携带。Manager 领取 create 后把该结构保存到本地 state，并把正文写到 Runtime 固定文件；resume 不从 Gitea 重新读取 repository 配置。</li>
