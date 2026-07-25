@@ -79,9 +79,9 @@ flowchart LR
 - Runtime Instance 按 Codespace 固化的首选顺序访问 Gitea 标准 Git HTTP(S) 或 SSH，并把成功地址固定为 workspace remote；Codespace 专用动态声明写入实例内固定 manifest，由 Manager 主动读取。
 
 **Runtime 边界**
-- Manager 通过 Incus file/exec API 写入 root seed、执行 init/prepare/activate，并读取 Runtime 本地 Endpoint manifest。Runtime helper 只修改本地 manifest，不连接 Manager。
+- Manager 通过 Incus file/exec API 写入 root seed、执行脚本并读取 Runtime 本地 Endpoint manifest。create 执行 `init.sh -> start.sh`，resume 执行同一个 `start.sh`，stop 执行 `stop.sh` 后停止实例；Runtime helper 只修改本地 manifest，不连接 Manager。
 - Endpoint 的目标端口只由 Manager 解析并转换为本地 Incus proxy 路由。
-- Manager 核心只执行 init、prepare、activate 的通用脚本契约；完整内置套件和完整本地自定义套件使用相同输入、共享环境、结果与 ready 校验。具体契约、默认实现和 devcontainer 自定义脚本案例见[脚本契约、内置实现与 devcontainer 案例](builtin-scripts.md)。
+- Manager 核心只执行 init、start、stop 的通用脚本契约；完整内置套件和完整本地自定义套件使用相同输入、共享环境、结果与 ready 校验。具体契约、默认实现和 devcontainer 自定义脚本案例见[脚本契约、内置实现与 devcontainer 案例](builtin-scripts.md)。
 
 用户 Endpoint HTTP、WebSocket 和 SSH 流量统一进入 Manager/Gateway；Gitea 只处理鉴权和状态写入。Gateway 完成外部认证后，HTTP/WebSocket 通过 Manager 本地 Incus proxy listener 到达 Runtime Endpoint，SSH shell/exec/SFTP 通过 Incus exec/file/SFTP 后端进入 Runtime。WebSocket 与 SSH 是持续连接，普通 HTTP 按请求转发。
 
@@ -105,10 +105,9 @@ sequenceDiagram
     Manager->>Manager: 生成 Git SSH key
     Manager->>Gitea: EnsureCodespaceGitSSHKey
     Manager->>Runtime: 写入 root seed
-    Manager->>Runtime: 创建 Runtime + root exec init.sh
-    Manager->>Runtime: root exec start.sh prepare
-    Manager->>Runtime: 持久化 prepare 结果 + exec start.sh activate
-    Manager->>Runtime: 读取 activate 结果并校验 SSH / workspace 路由
+    Manager->>Runtime: 创建 Runtime + root exec init.sh 初始化 workspace
+    Manager->>Runtime: 持久化 init workspace 结果 + exec start.sh
+    Manager->>Runtime: 读取 start 结果并校验 SSH / workspace 路由
     Manager->>Gitea: UpdateLog / ReportRuntimeMetadata ready
     Manager->>Gitea: FinalizeOperation final done
     Gitea-->>User: 302 Location: /-/codespaces/{uuid}
@@ -149,7 +148,7 @@ sequenceDiagram
 - Codespace Token 代表创建用户访问 repository，Codespace 是用户私有对象而非 repository 共享资源。
 - Manager 使用 codespace 身份访问 repository，不直接使用自己身份。
 - Runtime 始终使用代表创建用户的 Codespace Gitea Token 调用开发协作 API；HTTP(S) remote 同时用它完成 Git smart HTTP，SSH remote 使用工作环境生成、只绑定当前 Codespace 仓库的专用 Key。两种 Git 入口都继续执行 Gitea 当前用户、repository、unit、分支保护和权限检查。
-- Git 首选协议在 Codespace 创建时按站点默认值固化。create 脚本同时得到 HTTP(S) 和 SSH clone URL，并选择实际 remote；内置脚本在带当前 UUID 标记的临时 workspace 中先尝试首选入口，clone/fetch 非零退出时清理该目录并用另一入口重试一次。Manager 校验 HEAD、最终 workspace 和实际 remote 的本地凭据配置。已有 Codespace 的 resume 只配置实际 remote 的本地凭据，站点默认值变化只影响新建对象。
+- Git 首选协议在 Codespace 创建时按站点默认值固化。create 的 `init.sh` 同时得到 HTTP(S) 和 SSH clone URL，并选择实际 remote；内置脚本在带当前 UUID 标记的临时 workspace 中先尝试首选入口，clone/fetch 非零退出时清理该目录并用另一入口重试一次。同一 operation 恢复时，如果目标 workspace 已经存在且 HEAD 等于锁定 SHA，init 只恢复本地凭据并继续。Manager 校验 HEAD、最终 workspace 和实际 remote 的本地凭据配置。已有 Codespace 的 resume 只配置实际 remote 的本地凭据，站点默认值变化只影响新建对象。
 - Git SSH Key 使用 `KeyTypeCodespace` 和一对一关系表；鉴权成功后以创建者为真实用户且 `DeployKeyID=0`。User、Deploy 和 Codespace 三类公钥创建按同一规范指纹锁串行并在事务内复查，保留各自类型语义；普通用户 Key、Deploy Key 和 Gateway 用户 SSH Key 保持各自范围和生命周期。
 - Git、LFS 和 owner/name 形式的 repository API 在副作用前由 resolver 通过一次查询读取独立 Token 行、Codespace 工作状态、唯一 `repo_id` binding 和创建用户当前登录限制；按数字 ID、全局搜索、用户、组织、包、管理和 Token 管理 API 不属于 repository group，除当前用户与公共服务信息入口外保持拒绝。
 - **设计选择：Token 行的持久生命周期与单次请求授权分别判定。** Token 行随有效 create/resume 初始化期或 `running` 保留，并在这三个阶段直接用于绑定仓库的 Git/LFS/API；稳定 `stopped` 没有 Token。resume final failed/timeout、stop final、`failed`、`deleting` 或物理删除会物理删除 Token 行。active stop 创建前已有的 Token 可以继续使用，但 Manager 不能重新请求明文。站点排空或用户登录限制成立时，新请求分别返回状态不可用或登录受限；条件恢复且 Codespace 仍处于允许阶段时，同一 Token 可继续使用。repository 删除后 `repo_id` 写为 0，Token 仍可签发和保存；它不能授权任何绑定仓库能力，但公开只读请求仍按 Gitea 现有公开访问规则处理。
@@ -157,7 +156,7 @@ sequenceDiagram
 - 同一 codespace 同一时刻只能有一个 active operation。
 - active operation 完成后清空 operation 字段，不保留 operation 历史；失败诊断通过 codespace 日志读取。
 - Manager 可通过 `ReportRuntimeTransition` 上报本地主动 stopped/failed 状态；failed 用于单 Codespace 已确认不可恢复且当前没有 active operation 的情况，不增加新的持久主状态。
-- stopped Runtime 只通过 Gitea 下发的 resume operation 恢复；Manager 在该 operation 内先取得 Gitea Token、生成 Git SSH key、确认公钥并写入 root seed，再运行 init 安装最终凭据文件并上报实际 UID/GID，随后运行 resume prepare/activate。Manager 按 workspace 实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 ready 后才能 final done 进入 running。ready 不探测 repository 可达性；repository 删除后已有 workspace 仍可恢复，后续 Git/API 请求按当前 binding 和权限返回结果。面向用户的 open 和 Gateway SSH 等待 running。
+- stopped Runtime 只通过 Gitea 下发的 resume operation 恢复；Manager 在该 operation 内先取得 Gitea Token、生成 Git SSH key、确认公钥并写入 root seed，再运行同一个 `start.sh` 恢复已有 workspace 的凭据、helper 和脚本私有入口。Manager 按 workspace 实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 ready 后才能 final done 进入 running。ready 不探测 repository 可达性；repository 删除后已有 workspace 仍可恢复，后续 Git/API 请求按当前 binding 和权限返回结果。面向用户的 open 和 Gateway SSH 等待 running。
 - Runtime inventory 差异只在 `ReportInstances` 请求内计算；Manager offline 由请求实时派生。单个 `reconcile_codespaces` Cron 不保存或重放 inventory，只处理数据库可判断的 operation 超时和 failed 到期清理。Token 创建与删除由签发和生命周期事务完成，不增加周期修复路径。
 - failed 保留期到期后由 Gitea 直接物理删除记录、Codespace Token、Git SSH Key 和日志，提交并释放 Codespace lock 后尽力清理 cache；Cron 不创建 Manager operation 或等待远端确认，原 Manager 身份仍有效时由后续成功的完整 inventory 对无记录 UUID 返回 `cleanup_local_runtime`。
 - Codespace Token 使用 `gcs_` 专用前缀和独立表；Web/API 认证入口先识别该前缀并进入 Codespace 专用认证分支。该分支验证失败时直接返回认证失败，普通密码、PAT、Session 或 Reverse Proxy 认证不再处理该凭据。resolver 通过一次候选查询验证 Token，并生成包含 Codespace、创建用户、仓库绑定和登录限制的请求内认证数据；后续权限检查复用这份数据。API 只显式标记当前用户、公共服务信息、owner/name repository group 和 signed artifact 四类入口；repository group 下的具体 API 继续由 Gitea 现有 scope、unit、reader/writer/admin、分支保护和 handler 业务检查决定。`signed_artifact` raw route 从开始就使用 HMAC 与 expires 独立认证，不解析普通身份凭据。**设计理由：Codespace Token 是绑定仓库的用户开发凭据。**它不复制 Gitea API 路由表；直接写入、管理和非公开读取的 API 路由目标必须是绑定 repository，公开只读目标按 Gitea 现有公开访问规则处理。进入绑定 Issue/PR 后，由 Gitea 已有的 fork、commit、dependency、project 关系触发的关联写入继续按创建用户当前权限处理。新增到 owner/name repository group 下的 API 自动复用这套准入和绑定检查；其他 API 仍需要显式入口策略才接受 Codespace Token。通知使用 Gitea 现有机制；SSH 认证限流由 Gateway 执行，Manager RPC 通过认证、双向消息大小和控制面超时限制资源使用。

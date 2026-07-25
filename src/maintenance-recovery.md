@@ -355,7 +355,7 @@ Manager 在发送 Fetch 前记录本地单调时钟，成功收到 payload 或�
 
 ## Operation 恢复
 
-Manager 重启后从本地完整快照恢复 Gitea 下发的 operation，先终止遗留 launcher、停止 active create/resume 实例，并把全部 worker 置为 `lease_paused`。上下文完整的 operation 通过普通 Fetch 请求同版本续租，只有取得新的相对有效时长后才重新启动并继续；上下文缺失或 Gitea 已按原 deadline 超时的 operation 不重新执行。resume 的 Gitea Token、Git SSH 材料、实际 remote 本地 Git 凭据配置和 ready 都在 final done 前完成，因此成功续租的 active resume 可复用已持久化的系统、workspace、凭据和规范共享环境。Manager 在重新启动实例后先核对固定 Gitea Token 文件、本地 Git 凭据和 Git SSH 材料；Gitea Token 缺失或 Git 本地凭据不完整时，把 worker 持久化到 `write_credentials`，重新申请 Token、生成 Git SSH key、确认公钥和 known_hosts、写入 root seed，再运行 init 安装最终 Runtime credential，然后重做 prepare、activate 和连通校验。boot 阶段只向前推进，不因凭据补写而回退；SSH 公钥确认响应丢失时，Manager 使用本轮 Go 生成的公钥幂等重试。已经 final done 的 resume 没有后置任务。最新 boot 终态保存 operation 类型、版本和 `done|recoverable_failed|unrecoverable_failed`；前两种可由下一次合法初始化替换，`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成并继续驱动相应收敛。
+Manager 重启后从本地完整快照恢复 Gitea 下发的 operation，先终止遗留 launcher、停止 active create/resume 实例，并把全部 worker 置为 `lease_paused`。上下文完整的 operation 通过普通 Fetch 请求同版本续租，只有取得新的相对有效时长后才重新启动并继续；上下文缺失或 Gitea 已按原 deadline 超时的 operation 不重新执行。resume 的 Gitea Token、Git SSH 材料、实际 remote 本地 Git 凭据配置和 ready 都在 final done 前完成，因此成功续租的 active resume 可复用已持久化的系统、workspace、凭据和规范共享环境。Manager 在重新启动实例后先核对固定 Gitea Token 文件、本地 Git 凭据和 Git SSH 材料；Gitea Token 缺失或 Git 本地凭据不完整时，把 worker 持久化到 `write_credentials`，重新申请 Token、生成 Git SSH key、确认公钥和 known_hosts、写入 root seed，再运行 `start.sh` 安装当前 seed，并重做连通校验。boot 阶段只向前推进，不因凭据补写而回退；SSH 公钥确认响应丢失时，Manager 使用本轮 Go 生成的公钥幂等重试。已经 final done 的 resume 没有后置任务。最新 boot 终态保存 operation 类型、版本和 `done|recoverable_failed|unrecoverable_failed`；前两种可由下一次合法初始化替换，`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成并继续驱动相应收敛。
 
 | operation | Runtime 状态 | Manager 行为 |
 | --- | --- | --- |
@@ -366,7 +366,7 @@ Manager 重启后从本地完整快照恢复 Gitea 下发的 operation，先终�
 | stop | Runtime 仍运行 | 继续 stop，完成后上报 done。 |
 | stop | Runtime 已停止 | 上报 done。 |
 | stop | Runtime 不存在 | 上报 failed；Gitea 根据 missing runtime 进入 failed。 |
-| resume | Runtime 已运行且基础 metadata 完整 | 在当前 operation 内按需重做 `write_credentials`，写入 root seed 后运行 init 安装最终 Runtime credential，再运行 resume prepare/activate；按实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 `ready` metadata，再提交 final done。 |
+| resume | Runtime 已运行且基础 metadata 完整 | 在当前 operation 内按需重做 `write_credentials`，写入 root seed 后运行 `start.sh` 安装当前 seed、恢复本地 helper 和脚本私有入口；按实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 `ready` metadata，再提交 final done。 |
 | resume | Runtime 正在恢复 | 在固定总执行期限内继续 resume，通过 renew lease 保持当前授权，并用 Runtime Metadata 和日志上报阶段。 |
 | resume | Runtime 仍停止 | 继续执行 resume。 |
 | resume | Runtime 不存在或恢复失败 | 停止本轮启动进程；确认 workspace 可恢复时保存 `recoverable_failed`、final failed 并回到 stopped；密钥材料矛盾或根存储损坏时保存 `unrecoverable_failed`，final failed 后继续上报 failed 状态报告。 |
