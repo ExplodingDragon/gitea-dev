@@ -12,7 +12,7 @@ Codespace 是 Gitea 内置的远程开发环境入口。
 
 本文承担整体边界和阅读导航。生命周期转换以[状态机](state-machine.md)为完整定义，持久字段以[数据模型](data-model.md)为完整定义，通信字段与校验以[RPC 协议](rpc-spec.md)为完整定义，Codespace Token 的 API 入口策略以 [`codespace-token-routes.yaml`](codespace-token-routes.yaml) 为完整定义，运行编排与恢复分别以[生命周期流程](lifecycle-flows.md)和[维护与恢复](maintenance-recovery.md)为完整定义，脚本输入、输出、默认行为和 devcontainer 案例以[脚本契约、内置实现与 devcontainer 案例](builtin-scripts.md)为完整定义；Gitea 与 Manager/Gateway 文档负责把这些规则落实到各自组件。总览和术语表保留跨组件规则的简要说明，组件章节会保留实现该组件所需的输入、结果和验收点。维护同一规则时先修改承担完整定义的专题文档，再同步相关摘要和组件行为，使每条规则有唯一的完整定义，同时让读者在当前章节取得足够的实现条件。
 
-Gitea 管理生命周期、权限判断、Codespace Token 和 Git SSH 公钥绑定。Manager 只使用 Incus 管理运行环境，并在本地决定 tag 对应的是虚拟机还是系统容器；运行时专有配置、Gitea Token 交付和 Git SSH known_hosts 由 Manager 维护，Git SSH 私钥由 Runtime 保存。这样 Gitea 的状态机和协议不随实例类型变化，同时运行侧只有一套可实现、可测试的资源生命周期。
+Gitea 管理生命周期、权限判断、Codespace Token 和 Git SSH 公钥绑定。Manager 只使用 Incus 管理运行环境，并在本地决定 tag 对应的是虚拟机还是系统容器；Gitea Token、Git SSH 私钥、公钥和 known_hosts 由 Manager 在 Go 侧生成或取得后写入 Runtime root seed，init 再安装为运行用户可用的最终文件。这样 Gitea 的状态机和协议不随实例类型变化，同时运行侧只有一套可实现、可测试的资源生命周期。
 
 实现验收点：
 
@@ -69,7 +69,7 @@ flowchart LR
 - Gateway 是同一 `serve` 进程中的用户接入组件，通过进程内调用读取 Manager 的路由和准入状态，并通过 Manager 身份调用 Gitea；Manager 与 Gateway 之间不需要独立通信协议。
 
 **数据边界**
-- Gitea 保存生命周期状态、固化 Git 首选协议、独立 Codespace Token、Git SSH 公钥绑定、Manager 最新状态报告版本和 Codespace 日志；Git SSH 私钥只保存在 Runtime。Manager 保存已经初始化的绝对 workspace 路径、实际 remote、规范共享环境、当前 operation 使用的脚本摘要、Incus 实例、模板快照、镜像、资源规格和网络选择。
+- Gitea 保存生命周期状态、固化 Git 首选协议、独立 Codespace Token、Git SSH 公钥绑定、Manager 最新状态报告版本和 Codespace 日志；Git SSH 私钥只作为 Manager 内存中的 seed 输入和 Runtime 内最终文件存在，不进入 Gitea、配置、日志或 Manager 本地状态。Manager 保存已经初始化的绝对 workspace 路径、实际 remote、规范共享环境、当前 operation 使用的脚本摘要、Incus 实例、模板快照、镜像、资源规格和网络选择。
 - 一个 Codespace 对应一个 Incus 实例；workspace 与用户修改保存在该实例的根存储中，实例停止后继续保留，删除实例时一并删除。
 - Runtime 不访问 Manager 端口；启动输入、凭据、Git SSH 材料和 Endpoint 声明都通过 Incus file/exec/API 与实例内固定文件完成。
 
@@ -79,7 +79,7 @@ flowchart LR
 - Runtime Instance 按 Codespace 固化的首选顺序访问 Gitea 标准 Git HTTP(S) 或 SSH，并把成功地址固定为 workspace remote；Codespace 专用动态声明写入实例内固定 manifest，由 Manager 主动读取。
 
 **Runtime 边界**
-- Manager 通过 Incus file/exec API 初始化 Runtime、生成或读取 Git SSH 公钥、写入 known_hosts，并读取 Runtime 本地 Endpoint manifest。Runtime helper 只修改本地 manifest，不连接 Manager。
+- Manager 通过 Incus file/exec API 写入 root seed、执行 init/prepare/activate，并读取 Runtime 本地 Endpoint manifest。Runtime helper 只修改本地 manifest，不连接 Manager。
 - Endpoint 的目标端口只由 Manager 解析并转换为本地 Incus proxy 路由。
 - Manager 核心只执行 init、prepare、activate 的通用脚本契约；完整内置套件和完整本地自定义套件使用相同输入、共享环境、结果与 ready 校验。具体契约、默认实现和 devcontainer 自定义脚本案例见[脚本契约、内置实现与 devcontainer 案例](builtin-scripts.md)。
 
@@ -101,14 +101,12 @@ sequenceDiagram
     Gitea->>Gitea: 创建 codespace + 创建 operation
     Manager->>Gitea: FetchOperations
     Gitea-->>Manager: 返回 create operation 数据
-    Manager->>Runtime: 创建 Runtime + root exec init.sh
     Manager->>Gitea: RequestGiteaToken
-    Manager->>Runtime: 写 Gitea Token + 准备 Git SSH 材料 + root exec start.sh prepare
-    opt Git SSH
-        Manager->>Runtime: 读取或创建 Git SSH 公钥
-        Manager->>Gitea: EnsureCodespaceGitSSHKey
-        Manager->>Runtime: 写入可信 known_hosts
-    end
+    Manager->>Manager: 生成 Git SSH key
+    Manager->>Gitea: EnsureCodespaceGitSSHKey
+    Manager->>Runtime: 写入 root seed
+    Manager->>Runtime: 创建 Runtime + root exec init.sh
+    Manager->>Runtime: root exec start.sh prepare
     Manager->>Runtime: 持久化 prepare 结果 + exec start.sh activate
     Manager->>Runtime: 读取 activate 结果并校验 SSH / workspace 路由
     Manager->>Gitea: UpdateLog / ReportRuntimeMetadata ready
@@ -159,7 +157,7 @@ sequenceDiagram
 - 同一 codespace 同一时刻只能有一个 active operation。
 - active operation 完成后清空 operation 字段，不保留 operation 历史；失败诊断通过 codespace 日志读取。
 - Manager 可通过 `ReportRuntimeTransition` 上报本地主动 stopped/failed 状态；failed 用于单 Codespace 已确认不可恢复且当前没有 active operation 的情况，不增加新的持久主状态。
-- stopped Runtime 只通过 Gitea 下发的 resume operation 恢复；Manager 在该 operation 内先运行 init 取得凭据身份，再申请并写入新 Gitea Token、确认 Git SSH 公钥并写入 known_hosts，随后运行 resume prepare/activate。Manager 按 workspace 实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 ready 后才能 final done 进入 running。ready 不探测 repository 可达性；repository 删除后已有 workspace 仍可恢复，后续 Git/API 请求按当前 binding 和权限返回结果。面向用户的 open 和 Gateway SSH 等待 running。
+- stopped Runtime 只通过 Gitea 下发的 resume operation 恢复；Manager 在该 operation 内先取得 Gitea Token、生成 Git SSH key、确认公钥并写入 root seed，再运行 init 安装最终凭据文件并上报实际 UID/GID，随后运行 resume prepare/activate。Manager 按 workspace 实际 remote 配置 HTTP helper 或确认已有 Git SSH Key，上报当前版本 ready 后才能 final done 进入 running。ready 不探测 repository 可达性；repository 删除后已有 workspace 仍可恢复，后续 Git/API 请求按当前 binding 和权限返回结果。面向用户的 open 和 Gateway SSH 等待 running。
 - Runtime inventory 差异只在 `ReportInstances` 请求内计算；Manager offline 由请求实时派生。单个 `reconcile_codespaces` Cron 不保存或重放 inventory，只处理数据库可判断的 operation 超时和 failed 到期清理。Token 创建与删除由签发和生命周期事务完成，不增加周期修复路径。
 - failed 保留期到期后由 Gitea 直接物理删除记录、Codespace Token、Git SSH Key 和日志，提交并释放 Codespace lock 后尽力清理 cache；Cron 不创建 Manager operation 或等待远端确认，原 Manager 身份仍有效时由后续成功的完整 inventory 对无记录 UUID 返回 `cleanup_local_runtime`。
 - Codespace Token 使用 `gcs_` 专用前缀和独立表；Web/API 认证入口先识别该前缀并进入 Codespace 专用认证分支。该分支验证失败时直接返回认证失败，普通密码、PAT、Session 或 Reverse Proxy 认证不再处理该凭据。resolver 通过一次候选查询验证 Token，并生成包含 Codespace、创建用户、仓库绑定和登录限制的请求内认证数据；后续权限检查复用这份数据。API 只显式标记当前用户、公共服务信息、owner/name repository group 和 signed artifact 四类入口；repository group 下的具体 API 继续由 Gitea 现有 scope、unit、reader/writer/admin、分支保护和 handler 业务检查决定。`signed_artifact` raw route 从开始就使用 HMAC 与 expires 独立认证，不解析普通身份凭据。**设计理由：Codespace Token 是绑定仓库的用户开发凭据。**它不复制 Gitea API 路由表；直接写入、管理和非公开读取的 API 路由目标必须是绑定 repository，公开只读目标按 Gitea 现有公开访问规则处理。进入绑定 Issue/PR 后，由 Gitea 已有的 fork、commit、dependency、project 关系触发的关联写入继续按创建用户当前权限处理。新增到 owner/name repository group 下的 API 自动复用这套准入和绑定检查；其他 API 仍需要显式入口策略才接受 Codespace Token。通知使用 Gitea 现有机制；SSH 认证限流由 Gateway 执行，Manager RPC 通过认证、双向消息大小和控制面超时限制资源使用。
@@ -167,7 +165,7 @@ sequenceDiagram
 - repository Codespace 配置只接受单个 YAML mapping 和字段 `tag`，未知、重复或错误类型字段直接返回配置错误。tag 只选择 owner scope 已声明的开发能力和资源模板，不承担用户授权或信任等级；每个已声明模板都适用于该 scope 内符合创建权限的仓库代码。
 - 失败为终态，通过 delete 退出。
 - delete 成功后物理删除 Codespace、Codespace Token、Git SSH Key 和日志。
-- Manager 的并发容量由 Manager 自行控制；Fetch 分别以 `capacity_available` 和 `cleanup_capacity_available` 表达可立即承接的启动与清理任务数量，Gitea 不维护本地 worker 占用计数。
+- Manager 的并发容量由 Manager 自行控制；Fetch 分别以 `startup_capacity_available` 和 `cleanup_capacity_available` 表达可立即承接的启动与清理任务数量，Gitea 不维护本地 worker 占用计数。
 - Manager 可修改名称、版本、tags、容量、Gateway/SSH 地址和 host key，并通过完整 Declare 快照覆盖 Gitea 当前展示与匹配数据；Declare 响应同时下发服务端选定的心跳周期、Runtime Metadata 刷新周期、双向消息上限和 Gitea 浏览器根 URL。Gitea 不保存声明历史，已有 Codespace binding 不随声明变化迁移。
 - Manager 使用独立的启动和清理 worker pool；create/resume 使用启动槽位，stop/delete 和持久化本地缩减动作使用清理槽位。Fetch 发出前预留声明的槽位，两个池满载时仍为已有 operation 续租。
 - Runtime Instance name 由 `codespace_uuid` 确定性派生，确保 create、resume、delete 和本地清理都能定位同一个实例。

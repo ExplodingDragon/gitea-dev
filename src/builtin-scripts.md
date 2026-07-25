@@ -14,7 +14,7 @@ Manager 只理解这三个调用入口、共享环境、阶段结果和最终通
 
 稳定 running 后的周期健康检查由 Manager 使用 Incus file/exec API 执行固定命令并检查 workspace。它直接验证 Gateway 后续要使用的通用后端，因此三个脚本入口和 `prepare|activate` 阶段保持不变；内置直接运行和任意自定义实现只负责让 workspace、Git 本地配置和 Endpoint 所需服务持续满足同一契约。
 
-内置脚本随 Manager 发布。三个入口组成一个协作套件，Manager 启动时只接受完整内置套件或三个本地自定义文件：
+内置脚本随 Manager 发布，实现上以独立 `.sh` 文件维护，并通过 Go `embed` 打包进 Manager 二进制。这样设计是为了让脚本可以按普通 shell 文件阅读、做语法检查和审阅变更，同时保持部署时只需要发布一个 Manager 程序。三个入口组成一个协作套件，Manager 启动时只接受完整内置套件或三个本地自定义文件：
 
 ```yaml
 scripts:
@@ -41,6 +41,7 @@ scripts:
 - [x] Manager 核心数据、RPC、配置和 Endpoint API 只包含通用脚本契约字段；devcontainer、Docker、Node.js、CLI、容器标识和容器用户不进入 Manager RPC 或 Endpoint API。
 - [x] Manager 结果结构只包含通用脚本契约字段；脚本结果文件只接受 `outcome` 和固定 `stage`，运行方式、容器标识、用户和端口转发信息只能通过共享环境或脚本私有状态表达。
 - [x] 内置脚本和本地自定义脚本使用同一 init、prepare、activate 调用、共享环境和结果解析；脚本文本和 SHA256 摘要已保存到 active operation 本地快照，恢复时沿用该快照。
+- [x] 内置脚本源码以独立 `.sh` 文件维护，并通过 Go `embed` 打包；测试能直接对脚本文件做 shell 语法检查，同时运行时仍从 Manager 二进制取得内置脚本文本。
 - [x] 配置层要求三个入口全部为 `builtin` 或全部为本地绝对普通文件；混合配置、相对路径和不可访问文件会在 Manager 启动配置校验时报错。
 - [x] 同一 active operation 在响应丢失、lease 续租和 Manager 重启后继续使用相同脚本内容；配置更新只影响之后开始的 create/resume。设计如此是为了让一次 operation 的执行入口可审计、可恢复，不受管理员之后调整脚本配置影响。
 - [x] 自定义脚本入口只从 Manager 本地配置读取；配置校验不接受 repository 路径、下载 URL 或相对路径。
@@ -100,7 +101,7 @@ create 的三个调用还取得创建时锁定的 repository 输入；resume 不
 | `GITEA_COMMIT_SHA` | create 必须得到的锁定 commit SHA |
 | `CODESPACE_REPO_NAME` | create 时的 repository 名称 |
 
-Manager 在首次 create 前把默认 `CODESPACE_WORKSPACE_DIR` 写入共享环境；resume 使用当前快照中已经提交的值。它属于可覆盖的共享变量，不属于上表的预定义输入。`init.sh` 先完成系统与数值身份准备，Manager 随后申请并写入固定 Gitea Token 文件、确认 Git SSH 公钥和 known_hosts，再执行 prepare 和 activate。这个顺序使凭据文件 owner 可以使用 init 的通用输出，同时保证准备 workspace 和启动用户服务时已经取得本轮凭据。
+Manager 在首次 create 前把默认 `CODESPACE_WORKSPACE_DIR` 写入共享环境；resume 使用当前快照中已经提交的值。它属于可覆盖的共享变量，不属于上表的预定义输入。Manager 在 `init.sh` 前写入 root seed：Gitea Token、Git SSH 私钥、公钥和 known_hosts。`init.sh` 创建或确认运行用户后把 seed 安装为最终文件并上报实际 UID/GID；prepare 和 activate 只消费最终固定文件。这个顺序让 Go 侧统一生成控制面凭据，同时让 Runtime 内用户和权限由 init 根据真实系统状态决定。
 
 `CODESPACE_ENV` 指向当前 Codespace 的共享环境文件。脚本使用追加方式发布后续调用需要的变量：
 
@@ -123,10 +124,10 @@ Manager 每次调用都在共享环境之后注入表中适用于本轮调用的
 
 | 阶段 | 输出变量 | 说明 |
 | --- | --- | --- |
-| init | `CODESPACE_CREDENTIAL_UID`、`CODESPACE_CREDENTIAL_GID` | 后续 Gitea Token 文件和 Git SSH 材料使用的非 root 数值身份 |
+| init | `CODESPACE_CREDENTIAL_UID`、`CODESPACE_CREDENTIAL_GID`、`CODESPACE_USER` | 已安装最终凭据文件的非 root 运行身份 |
 | prepare | `CODESPACE_WORKSPACE_DIR` | 已准备好的绝对 workspace 路径；create 可以覆盖 Manager 提供的默认值 |
 
-Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，再以该身份和 `0600` mode 原子写入 Gitea Token 文件，并确保 Git SSH 公钥和 known_hosts。prepare 成功后校验 workspace 是绝对路径；create 还校验 Git HEAD 等于 payload 锁定 SHA，resume 保留当前 HEAD。activate 成功后，Manager 通过 Incus file/exec API 以保存的 UID/GID 和 workspace 做 ready 校验，并重建当前 Endpoint 的 proxy route。脚本私有变量不能替代这些通用校验。
+Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，并校验最终 Gitea Token、Git SSH key、known_hosts 和 runtime 目录已经可由该身份使用。prepare 成功后校验 workspace 是绝对路径；create 还校验 Git HEAD 等于 payload 锁定 SHA，resume 保留当前 HEAD。activate 成功后，Manager 通过 Incus file/exec API 以保存的 UID/GID 和 workspace 做 ready 校验，并重建当前 Endpoint 的 proxy route。脚本私有变量不能替代这些通用校验。
 
 **设计如此：共享变量可以覆盖，预定义变量覆盖无效。**覆盖能力用于 init、prepare、activate 和后续 resume 之间传递 workspace、通用输出与实现状态；Manager 预定义变量始终以当前 operation 为准。同名追加被直接忽略，使自定义脚本可以组合，同时保持生命周期和凭据归属可验证。
 
@@ -134,7 +135,7 @@ Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，再以
 
 - [x] 三个脚本只通过 `CODESPACE_ENV` 共享和覆盖非预定义变量；Manager 在结果为 `done` 且共享环境通过校验后保存规范环境，失败时恢复调用前内容。
 - [x] 规范共享环境由 Runtime 内 shell 写入临时文件后 rename 到 `CODESPACE_ENV`，而不是依赖 Incus file API 覆盖同一路径。设计如此是因为真实 VM agent 在短内容覆盖长内容时可能保留旧文件长度，Runtime 内 rename 能让下一阶段读取到真实截断后的文件；当前真实 Incus VM Manager E2E 已覆盖 create、stop、resume 连续阶段不会读到 NUL 残留。
-- [x] Gitea Token、Git SSH 私钥、公钥和 known_hosts 使用文档定义的固定路径，并由 create/resume 写入或确认；prepare/activate 保留 `GITEA_TOKEN` 作为本次进程快照。
+- [x] Gitea Token、Git SSH 私钥、公钥和 known_hosts 先由 Manager 写入 root seed，再由 init 安装到文档定义的固定路径；Git SSH 目录归属 init 输出的非 root UID/GID 且权限为 `0700`，prepare/activate 保留 `GITEA_TOKEN` 作为本次进程快照。
 - [x] 动态文件路径只使用 `CODESPACE_ENV` 和 `CODESPACE_RESULT`；Git SSH 材料使用文档定义的固定路径，凭据文件 owner、共享环境和结果文件也由同一阶段机制校验。
 - [x] init 时固定 Token 路径已经确定但凭据尚未写入；prepare 和 activate 取得当前 Token 环境快照与 Gitea 对外地址。
 - [x] create 取得当前可用协议的 clone URL、首选协议和锁定 ref；禁用协议字段为空。resume 不取得 repository 输入，只使用持久 workspace 与共享环境。
@@ -204,18 +205,25 @@ shell、exec 和 SFTP 使用同一实例边界。activate 不发布 SSH 地址�
 
 ## 内置脚本实现
 
-内置 `init.sh` 读取 `/etc/os-release`，只选择能够明确归入的 `apt-get`、`dnf` 或 `pacman`。它按缺失命令安装 CA 证书、`curl`、Git、`sudo`、`util-linux`、账户工具和脚本实际使用的基础工具，安装后逐项确认命令存在。无法识别系统或系统字段与实际包管理器矛盾时返回 `unrecoverable_failed`；下载、软件源或包管理器暂时失败时返回 `recoverable_failed`。
+内置 `init.sh` 读取 `/etc/os-release`，只选择能够明确归入的 `apt-get`、`dnf` 或 `pacman`。安装包前，内置脚本会把常见 Debian/Ubuntu apt 源、Fedora dnf 源和 Arch pacman 源切到清华 TUNA 国内镜像，并为被修改的源文件保留 `.gitea-codespace.bak` 备份；无法明确识别的 dnf 系发行版保持原有源。这样设计是为了让默认 Debian/Ubuntu/Fedora/Arch 镜像在国内网络下能稳定安装基础工具，同时避免为每个发行版维护一套复杂源模板。生产环境需要企业内网源或离线源时，部署者应使用自定义脚本套件明确管理包源。
 
-内置 init 幂等创建 `codespace` 用户和组，UID/GID 为 `1000:1000`，home 为 `/home/codespace`，shell 为 `/bin/bash`，workspace 根为 `/workspaces`。同名身份字段冲突或数值身份已被占用时失败。它锁定密码，写入经过 `visudo -cf` 校验的 `NOPASSWD` sudoers，准备 helper、Token、Git SSH、共享环境和结果目录，并把以下内容追加到 `CODESPACE_ENV`：
+内置脚本按缺失命令安装 CA 证书、`curl`、Git、`sudo`、`util-linux`、账户工具和脚本实际使用的基础工具，安装后逐项确认命令存在。无法识别系统或系统字段与实际包管理器矛盾时返回 `unrecoverable_failed`；下载、软件源或包管理器暂时失败时返回 `recoverable_failed`。
+
+内置 init 按 `CODESPACE_USER` 创建或确认运行用户，默认用户名为 `codespace`，不强制 UID/GID 为 `1000:1000`。用户已存在时必须不是 root；用户不存在时由系统分配 UID/GID。它锁定密码，写入经过 `visudo -cf` 校验的 `NOPASSWD` sudoers，准备 Git credential helper 和 Endpoint helper，并把 root seed 安装到最终固定路径。这样设计是因为镜像中 `1000` 可能已经被占用，Manager 在 init 前只指定用户名，最终数值身份由 Runtime 内真实系统状态决定。随后脚本把类似以下内容追加到 `CODESPACE_ENV`：
 
 ```text
-CODESPACE_CREDENTIAL_UID=1000
-CODESPACE_CREDENTIAL_GID=1000
+CODESPACE_CREDENTIAL_UID=<actual uid>
+CODESPACE_CREDENTIAL_GID=<actual gid>
+CODESPACE_USER=codespace
 ```
 
-内置 `start.sh prepare` 以 `codespace` 用户使用 `/workspaces/.gitea-create-{codespace_uuid}`。初始化标记记录 UUID、repo ID、锁定 SHA 和本次 payload 中非空的 clone URL。首选协议的 clone/fetch 非零退出且另一种 URL 非空时，只清理带当前标记的临时目录并重试一次；本地前置错误、没有备用 URL 和 HEAD 校验失败不切换协议。HEAD 等于锁定 SHA 后，脚本原子 rename 到默认 `/workspaces/{repo_name}`，并把最终绝对路径追加到 `CODESPACE_ENV`。已有无匹配标记的目标目录返回 workspace 冲突。
+内置 `start.sh prepare` 以 `CODESPACE_USER` 用户使用 `/workspaces/.gitea-create-{codespace_uuid}`。初始化标记记录 UUID、repo ID、锁定 SHA 和本次 payload 中非空的 clone URL。首选协议的 clone/fetch 非零退出且另一种 URL 非空时，只清理带当前标记的临时目录并重试一次；本地前置错误、没有备用 URL 和 HEAD 校验失败不切换协议。HEAD 等于锁定 SHA 后，脚本原子 rename 到默认 `/workspaces/{repo_name}`，并把最终绝对路径追加到 `CODESPACE_ENV`。已有无匹配标记的目标目录返回 workspace 冲突。
 
-HTTP(S) remote 使用读取当前 Gitea Token 文件的 credential helper。Manager 在 prepare 前创建或复用 Ed25519 密钥对，登记公钥并写入可信 known_hosts；payload 提供非空 SSH URL 且脚本实际尝试 SSH 时，内置脚本直接使用这些固定材料。SSH 失败后回退到 HTTP(S) 成功时允许保留已经登记的公钥。SSH URL 为空表示 Gitea 当前没有启用 Codespace SSH clone，脚本不切换到 SSH remote；Manager 仍按 create/resume 通用流程确认 Git SSH 公钥。`resume.sh prepare` 读取共享 workspace 路径，保留用户当前 HEAD，并只恢复实际 remote 的本地凭据配置，不 clone、fetch、checkout 或探测 repository 可达性。
+HTTP(S) remote 使用读取当前 Gitea Token 文件的 credential helper。Manager 在 init 前按本地配置生成 Git SSH 密钥对，登记公钥并把私钥、公钥和可信 known_hosts 作为 seed 写入；payload 提供非空 SSH URL 且脚本实际尝试 SSH 时，内置脚本直接使用 init 安装后的固定材料。SSH 失败后回退到 HTTP(S) 成功时允许保留已经登记的公钥。SSH URL 为空表示 Gitea 当前没有启用 Codespace SSH clone，脚本不切换到 SSH remote。Manager 在每次 create/resume 都会确认 Git SSH 公钥关系，保证 SSH remote 恢复时 Runtime 固定路径和 Gitea 公钥绑定一致。
+
+Manager 在运行脚本前把 create payload 中的 `.gitea/codespace.yaml` 正文写到 `/var/lib/gitea-codespace/runtime/repository-codespace.yaml`，并通过 `GITEA_CODESPACE_CONFIG_*` 环境变量提供来源 ref、SHA256 和是否存在；本次已选择的运行环境通过 `GITEA_CODESPACE_ENVIRONMENT_TAG` 单独提供。内置脚本不解析该文件，只保证它在固定路径可读；后续自定义脚本可以用同一路径读取运行环境配置。这样设计是因为 Gitea 只解析调度所需的 `tag`，完整运行配置应由 Manager/Runtime 侧消费，而调度结果已经提升为单独的 `environment_tag`。
+
+内置 `start.sh prepare` 只在 create 初始化时使用 create payload 的 `GITEA_GIT_USER_NAME` 和 `GITEA_GIT_USER_EMAIL` 写入 Git 全局和 workspace 本地配置。`resume.sh prepare` 读取共享 workspace 路径，保留用户当前 HEAD 和用户后续可能改过的 Git identity，并只恢复实际 remote 的本地凭据配置，不 clone、fetch、checkout 或探测 repository 可达性。**设计如此：用户改名、修改邮箱或在 workspace 内调整 Git identity 后不触发 Gitea 同步；create 的一次性初始化已经足够，resume 不覆盖用户工作区选择。**
 
 内置 `start.sh activate` 不启动额外守护进程，只确认固定用户、workspace、helper 和 Git 本地配置对 Manager 后续 Incus exec/file 可用。内置 `resume.sh` 读取已经提交的 `CODESPACE_WORKSPACE_DIR`，恢复当前实际 Git remote 的本地凭据，不重新探测 repository 配置，也不引入第二层容器环境。
 
@@ -227,8 +235,10 @@ HTTP(S) remote 使用读取当前 Gitea Token 文件的 credential helper。Mana
 
 实现验收点：
 
-- [x] apt/dnf/pacman 探测、固定 `codespace` 用户、sudo、基于非空 clone URL 的回退、helper 准备和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。设计如此是因为 init 与 activate 会写系统绝对路径，测试对这类分支采用脚本结构断言，prepare/resume 的安全分支使用 fake 命令实际执行。
-- [x] SSH URL 为空时内置脚本只配置 HTTP(S) remote 和 credential helper，不创建 Git SSH Key、不写 Git known_hosts、不调用 Git SSH Key helper。
+- [x] apt/dnf/pacman 探测、国内镜像源配置、固定 `codespace` 用户、sudo、基于非空 clone URL 的回退、helper 准备和直接运行恢复全部在内置脚本测试中覆盖，不进入 Manager 核心测试。设计如此是因为 init 与 activate 会写系统绝对路径，测试对这类分支采用脚本结构断言，prepare/resume 的安全分支使用 fake 命令实际执行。
+- [x] SSH URL 为空时内置脚本只配置 HTTP(S) remote 和 credential helper，不切换到 SSH remote；Git SSH key 仍由 Manager Go 侧统一生成、登记并作为 seed 安装。
+- [x] create 前 Manager 将 repository Codespace 配置正文写入 Runtime 固定文件，并设置 `GITEA_CODESPACE_CONFIG_*` 环境变量；本次环境选择通过 `GITEA_CODESPACE_ENVIRONMENT_TAG` 提供。内置脚本不解析该配置，custom script 可以读取同一路径。
+- [x] create 写入 Git `user.name` 和 `user.email`；resume 只恢复凭据，不覆盖 workspace 现有 Git identity。
 - [x] 内置脚本测试确认 repository 中的 devcontainer 文件按普通 workspace 内容保留，直接运行路径只准备固定用户、workspace、Git 凭据、helper 和 Endpoint 所需服务。
 - [x] resume 保留 workspace HEAD，只恢复当前 remote 的凭据和 helper，不依赖 repository payload 或网络可达性。
 - [x] 完整自定义套件可以替换内置直接运行行为，只要通过通用结果、共享环境和 ready 校验。当前测试覆盖本地三脚本读取、SHA256 快照、active operation 复用原快照，以及 Manager/Provisioner 使用同一脚本快照执行 init、prepare、activate。

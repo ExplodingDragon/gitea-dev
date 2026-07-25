@@ -42,7 +42,7 @@ Gitea 按 owner scope 和 repository tag 匹配可以领取 create operation 的
 
 <span id="manager-capacity"></span>
 ### Manager Capacity
-Manager 通过 Declare 上报 Runtime 总容量，Gitea 规范化写入 `meta_json`，用于管理页面展示、诊断和校验后续启动可用容量。`FetchOperations` 分别提交本次 `capacity_available` 和 `cleanup_capacity_available`，真实 Runtime、启动 worker 和清理 worker 占用仍由 Manager 计算。
+Manager 通过 Declare 的 `startup_capacity_total` 上报 Runtime 总容量，Gitea 规范化写入 `meta_json`，用于管理页面展示、诊断和校验后续启动可用容量。`FetchOperations` 分别提交本次 `startup_capacity_available` 和 `cleanup_capacity_available`，真实 Runtime、启动 worker 和清理 worker 占用仍由 Manager 计算。Manager 普通配置中的 `capacity_total` 是部署者可编辑的本地实例上限，协议字段使用 `startup_` 前缀是为了说明它只约束 create/resume，不约束 stop/delete 清理池。
 
 <span id="endpoint"></span>
 ### Endpoint
@@ -58,7 +58,7 @@ Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs
 
 <span id="codespace-git-ssh-key"></span>
 ### Codespace Git SSH Key
-Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。`start.sh` 在首次 SSH clone 前生成 Ed25519 密钥对，create 重试和 SSH remote 的 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 `EnsureCodespaceGitSSHKey` 确认到 Gitea 的 `codespace_ssh_key`。`GIT_SSH_KNOWN_HOSTS` 提供 Runtime 严格校验 Gitea SSH clone 入口所需的服务器 Host Key 信任材料；它不是用户 SSH Key，也不是 Gateway SSH 配置。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key 彼此独立；Gateway 进入 Runtime 通过 Incus API，不使用这把 Git SSH key。
+Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。Manager 在 create/resume 的 active operation 内优先复用 Runtime 已有密钥对，缺失时用 Go 生成密钥对，把私钥、公钥和 known_hosts 作为 root seed 写入 Runtime，并通过 `EnsureCodespaceGitSSHKey` 把公钥确认到 Gitea 的 `codespace_ssh_key`；init 再把 seed 安装到最终用户凭据路径。密钥类型是 Manager 本地配置项，默认 `ed25519`，可选 `rsa-4096`，不进入 RPC、Gitea 数据库或 Codespace 记录。私钥只短暂存在于 Manager 内存和 Runtime 凭据文件中，不进入 Manager 持久状态、Gitea 数据库或日志。`GIT_SSH_KNOWN_HOSTS` 提供 Runtime 严格校验 Gitea SSH clone 入口所需的服务器 Host Key 信任材料；它不是用户 SSH Key，也不是 Gateway SSH 配置。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key 彼此独立；Gateway 进入 Runtime 通过 Incus API，不使用这把 Git SSH key。
 
 <span id="registration-token"></span>
 ### Registration Token

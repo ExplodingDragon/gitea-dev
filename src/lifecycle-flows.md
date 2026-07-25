@@ -62,7 +62,8 @@ tag: default
 - 空仓库在读取配置前返回 empty repository 分类。
 - default branch 不存在、目标 branch tree 不可读、配置 blob 不是普通文件时，create 请求返回配置读取错误，不创建 codespace。
 - 配置文件超过 `CODESPACE_REPO_CONFIG_MAX_SIZE` 时，create 请求返回配置过大错误，默认上限 64 KiB。
-- 配置必须是单个 YAML document，顶层为 mapping；YAML 非法、出现第二个 document、未知字段、重复字段或字段类型错误时，create 请求返回配置解析错误。
+- 配置必须是单个 YAML document，顶层为 mapping；YAML 非法、出现第二个 document、重复字段或 `tag` 字段类型错误时，create 请求返回配置解析错误。
+- Gitea 只解析 `tag` 字段用于 Manager 匹配；其他字段由 create payload 原样交给 Manager 保存到本地 state，并写入 Runtime 的固定配置文件供 init/start 后续使用。
 - `tag` 缺失或空字符串等价于 `default`。
 - `tag` 解析后 lower-case。
 - `tag` 使用 `[a-z0-9_-]+`，与 Manager tag 匹配保持大小写无关且便于配置。
@@ -72,7 +73,7 @@ tag: default
 - tag/commit 场景读取 default branch，避免任意历史 commit 改变 Manager 选择。
 - PR 场景使用 base branch，让目标仓库维护者控制运行侧选择；实际代码仍按用户选择的 ref 锁定到具体 commit SHA。
 
-配置缺失是正常路径，非法配置是仓库维护者需要修复的问题。Gitea 使用严格 YAML 解码读取当前唯一字段 `tag`，并在首次解码后确认输入已经结束。**设计如此：配置字段拼写错误不能静默回退到 `default`。**tag 决定运行模板，静默回退可能启动与仓库维护者意图不同的环境；单一严格结构能在创建 Runtime 前给出明确结果。Gitea 先完成 repository 权限与状态、ref/commit 锁定和配置解析；这些步骤失败时直接返回 create 页面错误，不插入缺少 `commit_sha` 或 `repo_tag` 的 Codespace。只有取得完整 `repo_id/ref_type/ref_name/commit_sha/repo_tag`，并读取当前站点默认 `git_protocol` 后才创建记录。协议不是仓库配置项，因为它取决于站点开放的 Git 接入和 Host Key 信任；记录提交后固化该值。
+配置缺失是正常路径，非法 YAML 或非法 `tag` 是仓库维护者需要修复的问题。Gitea 对 repository 配置只承担调度所需的 `tag` 解析，不把未知字段视为 Gitea 服务端错误。**设计如此：repository 配置文件同时是运行环境配置入口，Gitea 只理解自己需要的字段。**这样仓库可以把后续运行环境字段放在同一个文件里，由 Manager 在本地 state 和 Runtime 固定文件中保存；Gitea 不需要为每个后端环境扩展数据库字段或服务端解析逻辑。Gitea 先完成 repository 权限与状态、ref/commit 锁定、配置解析和站点 Git 传输配置校验；这些步骤失败时直接返回 create 页面错误，不插入缺少 `commit_sha` 或 `environment_tag` 的 Codespace。只有取得完整 `repo_id/ref_type/ref_name/commit_sha/environment_tag` 才创建记录。Git 协议不是仓库配置项，也不保存到 Codespace 表；Manager 领取 create 时由 Gitea 按当前站点 Git 接入能力构造 payload。
 
 完整来源数据已经确定但没有已注册 Manager 匹配时，Gitea 先生成规范 Codespace UUID，再创建 `status=failed, manager_id=0` 的完整记录。该记录从未下发 operation，因此 `operation_rversion=0`，operation type/status/trigger 为空，operation created/started/deadline、`runtime_generation`、`interaction_generation`、`last_active_unix` 和 `stopped_unix` 都保持初始 0，也不创建 `codespace_gitea_token` 行；`created_unix=updated_unix=now`，`log_filename` 使用 `codespace_log/{codespace_uuid}.log`，日志计数和 index 从空值开始。事务提交后，Gitea 取得 Codespace lock 并重新确认 failed 记录仍存在，再通过内部日志入口尽力写入固定的无匹配 Manager 摘要；记录已经被并发删除时跳过，摘要失败时只记录服务端日志，两者都不回滚 failed 创建事务。进入队列后的 Manager、Runtime、clone 和 boot 失败则在原对象上按 State Finalization 进入 failed。
 
@@ -80,12 +81,12 @@ Manager 匹配查询在创建记录事务中的结果就是本次 create 的判�
 
 ### Manager 匹配
 
-- create 记录固定 `repo_tag`。
-- create 记录同时固化站点当前 `git_protocol`；Manager 匹配不按协议分组，领取后按 payload 协议执行初始化。
+- create 记录固定 `environment_tag`。
+- create 记录不保存 `git_protocol`；Manager 匹配不按协议分组，领取后按 payload 中本次计算出的协议和 clone URL 执行初始化。
 - 已注册 Manager 按 owner scope 和 tag 参与匹配。
 - global Manager 参与所有 owner scope 的匹配。
 - owner scoped Manager 参与相同 repository owner 的匹配；owner 可以是个人用户或组织，组织 ID 使用 Gitea `user.id`。
-- 没有已注册 Manager 同时满足 owner scope 和 `repo_tag` 时，create 进入 `failed` 并写入无匹配 Manager 日志。
+- 没有已注册 Manager 同时满足 owner scope 和 `environment_tag` 时，create 进入 `failed` 并写入无匹配 Manager 日志。
 - 无匹配 Manager 的 failed 记录使用 `operation_rversion=0` 且没有 active operation；之后 Manager 可用性变化不自动复活该记录。
 - create 创建时不绑定具体 Manager。
 - 具体 `manager_id` 只在某个 Manager 通过 `FetchOperations` 成功领取 create [Operation](glossary.md#operation) 时写入。
@@ -100,14 +101,14 @@ Create operation 领取：
 - 领取前：`codespace.status=creating`，`codespace.manager_id=0`，`codespace.operation_type=create`，`codespace.operation_status=queued`，`codespace.operation_trigger=user`。
 - `FetchOperations` 通过数据库条件更新完成领取。
 - 领取同时写入 `codespace.manager_id`、`codespace.operation_status=running`、`codespace.operation_started_unix`、`codespace.operation_deadline_unix`。
-- 领取条件包含 caller Manager online、caller Manager owner scope 匹配、caller Manager 支持 `repo_tag`、本次 `FetchOperations` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=creating`、`codespace.operation_type=create`、`codespace.operation_status=queued`。
+- 领取条件包含 caller Manager online、caller Manager owner scope 匹配、caller Manager 支持 `environment_tag`、本次 `FetchOperations` 声明可接收 create、`codespace.manager_id=0`、`codespace.status=creating`、`codespace.operation_type=create`、`codespace.operation_status=queued`。
 - Fetch request 不提交 tags；Gitea 使用认证 Manager 最近一次成功 Declare 保存的 `tags_json`，客户端修改 tags 后只影响之后尚未领取的 create。
-- 本次 `FetchOperations` 的 `capacity_available` 大于 0 时才领取 create/resume。
-- Fetch 使用本次 `capacity_available` 限制 create/resume，并另行提交 `cleanup_capacity_available` 限制 stop/delete；Gitea 使用最近成功 Declare 的 `capacity_total` 校验启动容量范围。Declare 容量同时用于管理页面展示和诊断，清理容量只属于单次 Fetch。
+- 本次 `FetchOperations` 的 `startup_capacity_available` 大于 0 时才领取 create/resume。
+- Fetch 使用本次 `startup_capacity_available` 限制 create/resume，并另行提交 `cleanup_capacity_available` 限制 stop/delete；Gitea 使用最近成功 Declare 的 `startup_capacity_total` 校验启动容量范围。Declare 容量同时用于管理页面展示和诊断，清理容量只属于单次 Fetch。
 - 领取提交后，operation 保持归属于领取它的 Manager；同一 Fetch 在 payload 构造失败时按 UUID、版本、Manager 和 running 状态做条件回退。系统错误或响应丢失保留 binding 和原 deadline，Manager 未持久化上下文时由普通 timeout 收敛。
-- create payload 中的 `repo_web_url` 和其他 Web URL 以配置的 `ROOT_URL`（`setting.AppURL`，包含 `AppSubURL`）构造；`repo_clone_http_url` 与 `repo_clone_ssh_url` 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 和 SSH clone URL，只有对应 clone 能力可用时才非空。三类 URL 都使用 payload 构造时重新读取的当前 owner/repository 名称。Fetch 是 Manager 发起的控制面请求，不能用该请求的 Host 或浏览器转发头推导对外地址；Manager 按 payload 原值注入，`git_protocol` 表示首次首选项，并且必须对应一个非空 clone URL。内置脚本在首选地址的 clone/fetch 非零退出且另一种 URL 非空时清理当前受控临时 workspace 并重试，本地前置错误和 HEAD 校验失败不切换协议；自定义脚本可以选择任一非空地址。部署方负责让 Runtime 可访问已启用的 Git 接入面和 Web URL。
+- create payload 中的 `repo_web_url` 和其他 Web URL 以配置的 `ROOT_URL`（`setting.AppURL`，包含 `AppSubURL`）构造；`repo_clone_http_url` 与 `repo_clone_ssh_url` 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 和 SSH clone URL，只有对应 clone 能力可用时才非空。三类 URL 都使用 payload 构造时重新读取的当前 owner/repository 名称。Fetch 是 Manager 发起的控制面请求，不能用该请求的 Host 或浏览器转发头推导对外地址；Manager 按 payload 原值注入，`git_protocol` 表示本次 create 的首次首选项，并且必须对应一个非空 clone URL。内置脚本在首选地址的 clone/fetch 非零退出且另一种 URL 非空时清理当前受控临时 workspace 并重试，本地前置错误和 HEAD 校验失败不切换协议；自定义脚本可以选择任一非空地址。部署方负责让 Runtime 可访问已启用的 Git 接入面和 Web URL。
 - 并发领取失败不是系统错误。
-- queued create 在最终条件 UPDATE 中重新确认 repository 仍存在，并使用该语句看到的当前 owner 做 scope 匹配；`repo_tag` 仍使用创建时已经固定的值。repository transfer 与 claim 并发时，claim 先成立则 binding 固定，transfer 先成立则旧 owner Manager 领取失败；领取后 transfer 不再影响 binding。
+- queued create 在最终条件 UPDATE 中重新确认 repository 仍存在，并使用该语句看到的当前 owner 做 scope 匹配；`environment_tag` 仍使用创建时已经固定的值。repository transfer 与 claim 并发时，claim 先成立则 binding 固定，transfer 先成立则旧 owner Manager 领取失败；领取后 transfer 不再影响 binding。
 
 Create 初始化流程：
 
@@ -131,10 +132,12 @@ sequenceDiagram
         M->>G: FetchOperations
         G-->>M: 下发 create 数据
         M->>R: 创建 Runtime，写入本轮选定脚本
-        M->>R: root exec init.sh
         M->>G: RequestGiteaToken
         G-->>M: 返回 token
-        M->>R: 原子写入Gitea Token 文件
+        M->>M: 生成 Git SSH key 并确认 known_hosts
+        M->>G: EnsureCodespaceGitSSHKey
+        M->>R: 写入 root seed
+        M->>R: root exec init.sh 安装最终凭据
         M->>R: root exec start.sh prepare
         opt 本轮尝试 SSH clone
             R->>M: PUT Git SSH public key
@@ -176,7 +179,7 @@ create 实际使用 SSH remote 时必须在 ready 前登记公钥并配置严格
 
 ### 脚本输入与共享环境
 
-Manager 使用环境变量向三个脚本传递当前 operation 和本地快照；init 结束并给出非 root 数值身份后，Manager 才申请并写入本轮 Gitea Token、确认 Git SSH 公钥和 known_hosts，再把当前 Gitea Token 快照提供给 prepare 和 activate。create 取得当前可用协议的 clone URL、首选协议及锁定 ref，resume 不取得 repository 字段。
+Manager 使用环境变量向三个脚本传递当前 operation 和本地快照；init 前，Manager 先申请本轮 Gitea Token、生成 Git SSH key、确认公钥和 known_hosts，并把这些材料写入 root seed。init 结束并给出非 root 数值身份后，Manager 把当前 Gitea Token 快照提供给 prepare 和 activate。create 取得当前可用协议的 clone URL、首选协议及锁定 ref，resume 不取得 repository 字段。
 
 三个脚本通过 `>> "$CODESPACE_ENV"` 追加共享变量，非预定义变量由最后一行覆盖前值。Manager 预定义输入的同名追加覆盖无效并在规范化时移除。只有当前调用结果为 done 时，Manager 才解析、规范化并原子提交本次追加；失败或取消恢复调用前环境。完整变量表、优先级、持久化和校验规则见[调用与共享环境](builtin-scripts.md#调用与共享环境)。
 
@@ -195,7 +198,7 @@ flowchart TB
     begin([领取 create 或 resume])
     prepare[prepare-runtime<br/>启动 Incus 并发布脚本]
     init[以 root 执行 init.sh<br/>初始化系统与 codespace 用户]
-    credentials[申请并原子写入<br/>Gitea Token]
+    credentials[准备凭据目录<br/>申请并写入 Gitea Token]
     operation{operation 类型}
     create[start.sh prepare<br/>准备并提交 workspace]
     resume[resume.sh prepare<br/>恢复 workspace 与共享环境]
@@ -267,7 +270,7 @@ Create 启动完成条件：
 - Incus exec/file API 可用，Manager 可以用 init 输出的非 root UID/GID 在 workspace 中执行固定命令。
 - 已声明 Endpoint 的 Incus proxy route 与当前本地快照一致。
 - 至少一版 Runtime Metadata 被 Gitea 接受。
-- 实际 workspace remote 为 SSH 时，Codespace Git SSH 公钥绑定完整且与 Runtime 公钥相同；HTTP(S) remote 的 helper 已配置为读取当前 Gitea Token 文件。该检查确认本地凭据配置，不要求 repository 可达。
+- 实际 workspace remote 为 SSH 时，Codespace Git SSH 公钥绑定完整且与 init 安装到 Runtime 的最终公钥相同；HTTP(S) remote 的 helper 已配置为读取当前 Gitea Token 文件。该检查确认本地凭据配置，不要求 repository 可达。
 - Manager 已建立有效 `workspace` 路由；Runtime 声明同名 Endpoint 时连接 Endpoint proxy，未声明时使用内置 Web 终端，两者不改变 Gitea 侧的 `endpoint_id=workspace`。
 
 boot stage 是 Manager 对自身编排的展示，不是 Runtime 脚本协议。固定顺序见[运行快照阶段](state-machine.md#runtime-metadata)。
@@ -276,25 +279,27 @@ boot stage 是 Manager 对自身编排的展示，不是 Runtime 脚本协议。
 
 `ready` 是 create/resume 的终态阶段；只有Gitea Token 文件、本地实际 remote 凭据配置、Incus exec/file、`workspace` 路由和已声明 Endpoint proxy 可用后才写入 Manager 当前完整 metadata 快照。普通 Endpoint 服务内容和用户进程不参与 ready 判定；它们可以在 running 后继续声明或启动。Manager 的单一发布任务确认 Gitea 已接受任一包含当前 operation 版本 ready 的快照后，才允许 final done；之后产生的 Endpoint generation 继续异步同步，不延迟 final。同一 operation 版本的阶段只按上表前进，`ready` 成立后保持 `ready`。
 
-Resume 使用已有 workspace：Manager 持久化并领取 resume payload 后关闭本地准入、启动 Runtime，并等待 Incus exec/file API 和唯一通信地址；随后以 root 执行幂等 `init.sh`，持久化 `write_credentials` 并调用 `RequestGiteaToken` 取得新 Token 和 `server_url`、原子替换 Gitea Token 文件、确认 Git SSH 公钥和 known_hosts，再把 `run_prepare` 原子提交到 Manager 快照，依次执行 `resume.sh prepare` 和 `resume.sh activate`。prepare 从 `CODESPACE_ENV` 恢复脚本私有状态，验证 workspace 和实际 remote 的本地凭据配置；activate 恢复脚本私有入口、helper 和 Endpoint 所需服务，不读取 repository payload，也不修改当前 HEAD。Manager 校验结果文件、规范共享环境、Incus exec/file、workspace 路由和 Endpoint proxy 后推进到 `ready`。唯一 metadata 发布任务确认 Gitea 已接受包含本次 resume ready 的快照后，Manager 调用 `FinalizeOperation(final done)`。Gitea 只在 ready metadata 和 Gitea Token 行完整时写入 `running` 并清空 operation；实际 remote 协议和对应凭据由 Manager 在 ready 前验证。旧 operation 版本的 ready 不能完成本次 resume。final accepted 或幂等完成后，Manager 在本地协调锁内复检当前 operation 和 cleanup，再开放 session 准入。
+Resume 使用已有 workspace：Manager 持久化并领取 resume payload 后关闭本地准入、启动 Runtime，并等待 Incus file API 和唯一通信地址；随后持久化 `write_credentials`，调用 `RequestGiteaToken` 取得新 Token 和 `server_url`、生成 Git SSH key、确认公钥和 known_hosts、写入 root seed，再以 root 执行幂等 `init.sh` 安装最终凭据文件并上报实际 UID/GID，然后把 `run_prepare` 原子提交到 Manager 快照，依次执行 `resume.sh prepare` 和 `resume.sh activate`。prepare 从 `CODESPACE_ENV` 恢复脚本私有状态，验证 workspace 和实际 remote 的本地凭据配置；activate 恢复脚本私有入口、helper 和 Endpoint 所需服务，不读取 repository payload，也不修改当前 HEAD。Manager 校验结果文件、规范共享环境、Incus exec/file、workspace 路由和 Endpoint proxy 后推进到 `ready`。唯一 metadata 发布任务确认 Gitea 已接受包含本次 resume ready 的快照后，Manager 调用 `FinalizeOperation(final done)`。Gitea 只在 ready metadata 和 Gitea Token 行完整时写入 `running` 并清空 operation；实际 remote 协议和对应凭据由 Manager 在 ready 前验证。旧 operation 版本的 ready 不能完成本次 resume。final accepted 或幂等完成后，Manager 在本地协调锁内复检当前 operation 和 cleanup，再开放 session 准入。
 
 临时错误在 operation 当前 lease 内退避重试，续租总量受固定总执行期限限制。Manager 重启时，本地 resume payload、boot 结果和 worker 阶段完整的 worker 先保持暂停；普通 Fetch 成功续租并返回新的相对有效时长后，才继续 token、credential、ready 和 final 的未完成步骤。上下文缺失或服务端已超时时不重新执行，等待普通 timeout 回到 stopped。站点排空时由 `abort_resume` 停止本轮启动的 Incus 实例、保留实例根存储并提交 final failed；确认无法写入 credential 或恢复服务时也先停止本轮实例，再提交 final failed。Manager 把 boot 终态保存为 `operation_type + operation_rversion + outcome`，其中 `outcome` 为 `done|recoverable_failed|unrecoverable_failed`。普通失败、timeout 或 abort 清除本轮 boot 发布上下文并保持 stopped；`unrecoverable_failed` 在 final failed 后继续驱动 failed 状态报告，报告接受后清理实例。repository 初始化只在 create 中执行；resume 不读取 repository payload，也不要求 workspace HEAD 等于创建时的 `commit_sha`。
 
 每个 init/prepare/activate exec 都由 Manager 内置 launcher 建立独立进程组。Manager 每次取得当前 operation 的 payload 或续租回执后，用自己的剩余本地 lease 原子更新实例内 pulse 文件；launcher 按 Runtime 单调时钟等待下一次 `pulse_sequence`，在 `remaining_lease_milliseconds` 到期前没有更新时终止整个进程组。Manager 自己到达 `local_worker_deadline` 时也取消 Incus exec、终止 launcher，并停止 create/resume 实例；停止和终止属于收缩本地执行，不授权继续初始化。Manager 崩溃时，pulse 停止更新，launcher 会自行结束；Manager 重启先清理遗留 launcher，再把完整 worker 恢复为 `lease_paused`。只有同版本 Fetch 成功返回新的正相对时长后，Manager 才重新启动实例，复用仍然有效的持久结果，并重做本次启动所需的环境准备、activate 和校验。
 
-resume final 前若 delete 以更高 `operation_rversion` 接管，Manager 先原子替换本地 operation 上下文，再执行 delete；旧 resume worker 不再申请 Token、写 credential、上报 ready 或提交 final。delete 已在 Gitea 事务中删除可能提前签发的 Token 行。该优先级复用 active operation 的版本和 lease，无需保存 final 后任务。
+active create、resume 或 stop 期间若 delete 以更高 `operation_rversion` 接管，Manager 先持久化新的 delete operation 上下文，再取消旧 worker lease、替换内存 active operation、关闭本地访问入口和旧 Runtime Metadata 发布任务，最后执行 delete。旧 create/resume/stop worker 退出后不能再保存旧上下文、申请 Token、写 credential、上报 metadata 或提交 final。delete 已在 Gitea 事务中删除可能提前签发的 Token 和 Git SSH Key 行。**设计如此：**Gitea 当前更高版本 operation 是唯一权威目标；先持久化 delete 再取消旧 worker，可以保证 Manager 在替换过程中崩溃后仍从 delete 继续，而不是恢复旧 boot。
 
 实现验收点：
 
 - repository/ref/commit/config 前置失败不创建对象；来源数据完整但无 Manager 匹配时形成可查看日志的 failed 对象，且不创建 active operation。
-- repository 配置只接受单个 YAML mapping 和字段 `tag`；未知字段、重复字段、错误类型、第二个 document 与非法 YAML 都返回配置错误，文件缺失或合法空 tag 使用 `default`。
+- repository 配置必须是单个 YAML mapping；Gitea 只解析 `tag`，重复字段、`tag` 错误类型、第二个 document 与非法 YAML 返回配置错误，未知字段随正文下发给 Manager/Runtime，文件缺失或合法空 tag 使用 `default`。
 - global Manager 声明的全部 tag 可由站点范围内符合创建权限的仓库代码选择，owner scoped Manager 声明的全部 tag 可由该 owner 范围选择；tag 只决定开发能力和资源模板，不承担授权或信任等级判断。
 - 无匹配 Manager 的 failed 记录使用版本 0 和空 operation 字段，之后出现可用 Manager 不会自动复活该记录。
 - PR create 只使用 base repository clone URL 和 `refs/pull/{index}/head`，token 不访问 head repository。
-- create payload 提供 Manager 选择本地模板所需的 `repo_tag`、首选 `git_protocol`、当前可用协议的规范 clone URL，以及 Runtime 初始化所需的 repository、owner、创建者和 ref 数据；Web URL 基于配置的 `ROOT_URL` 并保留 `AppSubURL`，所有 URL 都不受 Manager 控制面请求 Host 影响。`repo_tag` 只用于 Manager 选择并持久化有效模板，不传入 Runtime 环境。
-- `repo_clone_ssh_url` 为空时 Manager 和脚本把 SSH clone 视为关闭，不调用 `EnsureCodespaceGitSSHKey`；首选协议对应 URL 为空的 payload 属于服务端错误。
-- resume 基于已有 workspace，不读取 repository、不 checkout 初始 commit，并在初始化阶段轮换 Gitea Token；SSH remote 校验并确认原 Git SSH Key，不生成新 Key，也不以 repository 网络可达性作为 ready 条件。
-- 使用 SSH remote 时，start/resume 脚本按固定私钥、公钥和 known_hosts 路径持久化密钥材料；Manager 与 Gitea 的持久状态只保存公钥绑定。
+- repository 配置只要求 `tag` 可被 Gitea 解析；未知字段随 create payload 下发并由 Manager 写入本地 state 和 Runtime 固定文件，Gitea 数据库不保存配置正文。
+- create payload 提供 Manager 选择本地模板所需的 `environment_tag`、本次首选 `git_protocol`、当前可用协议的规范 clone URL、创建者身份、repository 配置文件正文，以及 Runtime 初始化所需的 repository、owner、创建者和 ref 数据；Web URL 基于配置的 `ROOT_URL` 并保留 `AppSubURL`，所有 URL 都不受 Manager 控制面请求 Host 影响。`environment_tag` 由 Manager 保存到本地 state 和 Incus 实例元数据，并作为 `GITEA_CODESPACE_ENVIRONMENT_TAG` 传入脚本环境，便于 init/start 了解本次运行环境选择。
+- Manager 领取 create 后先把创建者身份、派生后的运行用户名和 repository 配置正文保存到本地 state；resume 只从本地 state 恢复这些初始化输入，不要求 Gitea 再次下发 repository 或用户资料。
+- `repo_clone_ssh_url` 为空时 Manager 和脚本把 SSH clone 视为关闭；首选协议对应 URL 为空的 payload 属于服务端错误。
+- resume 基于已有 workspace，不读取 repository、不 checkout 初始 commit，并在初始化阶段轮换 Gitea Token；SSH remote 使用本轮 Manager 生成并登记的 Git SSH Key，不以 repository 网络可达性作为 ready 条件。
+- 使用 SSH remote 时，start/resume 脚本按固定私钥、公钥和 known_hosts 路径使用密钥材料；Manager 与 Gitea 的持久状态只保存公钥绑定，私钥不进入 Gitea 数据库或 Manager state。
 - 脚本只接收当前运行环境所需输入，不接收 operation 版本；init、prepare 和 activate 每次调用都写入 `root:root 0600` 的唯一结果文件，Manager 先持久化严格 schema 的结果和本地阶段再继续。非主动取消场景的缺失或损坏结果按可恢复失败处理。
 - create/resume 都仅在当前 operation 版本的 `ready` 快照、Token 行、本地实际 remote 凭据配置、Incus exec/file、workspace 路由和 Endpoint proxy 完整后 final done；普通 Endpoint 服务内容和用户进程不阻塞 ready。resume 顺序为 `系统初始化 -> Token -> prepare -> activate -> ready -> running`。
 - ready 接受记录来自任一成功 metadata 请求实际携带的当前 operation ready；空响应不重复返回 boot 或 generation，并发 Endpoint 变更继续同步最新 generation，不阻塞 final。
@@ -304,16 +309,16 @@ resume final 前若 delete 以更高 `operation_rversion` 接管，Manager 先�
 - Git SSH 密钥材料矛盾和 Gitea 返回 `key_conflict` 时保存 `unrecoverable_failed`；resume final failed 后继续上报 failed，进程重启和并发新 resume 都不能丢失该收敛目标。
 - resume 在本地上下文完整且重启后成功取得新相对 lease 时长时继续，final done 后没有独立凭据刷新任务。
 - 最新 boot 终态结果固定包含 operation 类型、版本和三值 outcome，保留到下一次合法 create/resume session 或 Runtime 删除。
-- 更高版本 delete 会替换旧 resume worker，旧 boot 上下文不再产生 token、credential、ready 或 final 写入。
+- 更高版本 delete 会替换旧 create、resume 或 stop worker；Manager 先持久化 delete 上下文，再取消旧 worker。旧 boot 上下文不再产生 token、credential、ready metadata、日志推进或 final 写入。
 - recovering Manager 通过普通 Fetch 恢复 active resume；站点排空通过 abort 回到 stopped，记录缺失通过完整 inventory 确认本地处理。
 - stopped Runtime 只能由 Gitea 下发的 resume operation 启动；inventory 发现无对应 operation 的 running Runtime 时停止 Incus 实例并保留根存储。
 - Manager 向 create 脚本提供当前可用协议的 clone URL、首选协议和锁定 SHA，并校验脚本提交的最终 workspace、HEAD 和实际 remote 本地凭据。内置脚本的临时目录、协议回退与崩溃恢复按独立脚本文档实现。
-- create/resume 均先以 root 运行幂等 `init.sh`，再分别运行 prepare 和 activate；create 校验锁定 SHA，resume 不修改用户当前 HEAD。
+- create/resume 均先写 root seed，再以 root 运行幂等 `init.sh`，之后分别运行 prepare 和 activate；create 校验锁定 SHA，resume 不修改用户当前 HEAD。
 - 内置脚本的 apt/dnf/pacman、固定用户、直接运行和 helper 准备由独立文档的实现验收点覆盖；devcontainer 案例另以完整自定义套件覆盖 CLI、lifecycle commands、恢复和端口转发。Manager 核心测试通过通用自定义脚本模拟覆盖同一脚本契约和输出。
 - lease pulse 停止或本地截止点到达时 launcher 终止进程组，Manager 停止 create/resume 实例并保留 operation 上下文；同版本续租前不继续 Runtime 修改，Manager 崩溃后脚本也不能无限运行。
 - `lease_paused` 后重新启动实例时复检持久 workspace、凭据和共享环境，并重新执行 prepare、activate 与连通校验；旧 ready 快照不能直接触发 final，boot stage 也不向 Gitea 回退。
-- Gitea Token、Git SSH 公钥和 known_hosts 通过固定文件交付或确认。active create/resume 在凭据提交中断时回到 `write_credentials` 重做本轮后续步骤；稳定 running 的 Gitea Token 缺失可重取写回，Git 本地凭据损坏时关闭入口、停止实例并由下一次 resume 重新确认。
-- Git SSH 私钥只存在于 Runtime；create 重试和 resume 复用已落盘密钥。stopped 且无 active resume 时公钥不能使用；active create/resume 初始化和 running 可以使用；failed、deleting 和物理删除会清理 Gitea 公钥绑定。
+- Gitea Token、Git SSH 私钥、公钥和 known_hosts 通过 root seed 交付给 init，再安装到固定文件。active create/resume 在凭据提交中断时回到 `write_credentials` 重做本轮后续步骤；稳定 running 的 Gitea Token 缺失表示最终凭据损坏，Manager 关闭入口、停止实例并由下一次 resume 重新 seed 和 init。
+- Git SSH 私钥只作为 Manager 内存 seed 和 Runtime 文件存在；每次 create/resume 生成并确认本轮公钥。stopped 且无 active resume 时公钥不能使用；active create/resume 初始化和 running 可以使用；failed、deleting 和物理删除会清理 Gitea 公钥绑定。
 
 ## 自动暂停与恢复流程
 
@@ -342,14 +347,12 @@ sequenceDiagram
     U->>G: Resume
     G-->>M: resume payload + 当前设置
     M->>R: 启动 Runtime
-    M->>R: root exec init.sh
     M->>G: RequestGiteaToken
+    M->>R: 读取已有 Git SSH key；不存在则生成
+    M->>G: EnsureCodespaceGitSSHKey
+    M->>R: 写入 root seed，root exec init.sh
     M->>R: 原子刷新Gitea Token 文件
     M->>R: root exec resume.sh prepare
-    opt workspace remote 为 SSH
-        R->>M: PUT Git SSH public key
-        M->>G: EnsureCodespaceGitSSHKey
-    end
     M->>R: 持久化 prepare 结果，root exec resume.sh activate
     M->>R: 读取结果并验证本地凭据 / SSH / workspace 路由
     M->>G: ready metadata
