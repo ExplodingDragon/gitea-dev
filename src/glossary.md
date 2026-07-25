@@ -8,7 +8,7 @@ Gitea 中的一条远程开发环境记录。
 
 <span id="runtime-instance"></span>
 ### Runtime Instance
-Manager 为一个 Codespace 创建并持有的单个 Incus 实例。实例可以是虚拟机或系统容器，两者对 Gitea、Runtime HTTP API 和用户生命周期透明；workspace 保存在实例根存储中。
+Manager 为一个 Codespace 创建并持有的单个 Incus 实例。实例可以是虚拟机或系统容器，两者对 Gitea、Gateway 和用户生命周期透明；workspace 保存在实例根存储中。
 
 <span id="codespace-manager"></span>
 ### Codespace Manager
@@ -22,10 +22,12 @@ Manager deployment 内的用户 Endpoint 与 SSH 接入组件。
 ### ManagerService
 Gitea 实现、Manager 调用的 Connect RPC over HTTP/HTTPS 服务；scheme 由部署配置决定。
 
-<span id="runtime-http-api"></span>
-### Runtime HTTP API
-Manager 实现、Runtime Instance 的受控 helper 使用 Runtime Token 调用的 HTTP(S)/JSON API，只提供 Git SSH 公钥确认和 Endpoint 管理；create/resume 输入与结果通过 Incus exec 环境和本地文件传递。是否要求 HTTPS 由 Manager 配置决定。
+<span id="runtime-endpoint-manifest"></span>
+### Runtime Endpoint Manifest
+Runtime Instance 内的本地 JSON 文件，用于声明 Endpoint。Runtime helper 只写这个文件；Manager 通过 Incus file API 主动读取并替换本地 Gateway 路由和 Runtime Metadata。这个设计让 Runtime 不需要访问 Manager 端口，避免为 VM、容器、本地和远程 Incus 分别设计私网直连规则。
 
+<span id="operation"></span>
+### Operation
 <span id="operation"></span>
 ### Operation
 Gitea 当前下发给 Manager 的异步生命周期操作，类型为 create、resume、stop、delete，来源为用户操作或空闲触发。queued operation 有固定等待期限；running operation 通过短 lease 保持当前执行授权，并由首次领取时间计算固定总执行期限，持续续租不能越过该期限。operation 只表示 active 指令，完成后不保留历史状态；`abort_create|abort_resume` 是站点排空时用于结束现有 create/resume 的清理命令，不增加新的 operation 类型。
@@ -44,7 +46,7 @@ Manager 通过 Declare 上报 Runtime 总容量，Gitea 规范化写入 `meta_js
 
 <span id="endpoint"></span>
 ### Endpoint
-使用 `endpoint_id` 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime Metadata，并以必填 `public` 布尔值明确选择 Gateway session 认证或公共访问；每个 running Codespace 另有稳定且固定需要认证的 `workspace` 逻辑入口，Manager 在 Runtime 声明同名 Endpoint 时连接该 upstream，否则由内置 Web SSH 管理器连接当前 internal SSH 入口。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。
+使用 `endpoint_id` 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime Metadata，并以必填 `public` 布尔值明确选择 Gateway session 认证或公共访问；每个 running Codespace 另有稳定且固定需要认证的 `workspace` 逻辑入口，Manager 在 Runtime 声明同名 Endpoint 时连接 Endpoint proxy，否则由内置 Web 终端通过 Incus exec 创建 shell。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。
 
 <span id="gateway-open-token"></span>
 ### Gateway Open Token
@@ -56,23 +58,21 @@ Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs
 
 <span id="codespace-git-ssh-key"></span>
 ### Codespace Git SSH Key
-Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。`start.sh` 在首次 SSH clone 前生成 Ed25519 密钥对，create 重试和 SSH remote 的 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 `EnsureCodespaceGitSSHKey` 确认到 Gitea 的 `codespace_ssh_key`。`GIT_SSH_KNOWN_HOSTS` 提供 Runtime 严格校验 Gitea SSH clone 入口所需的服务器 Host Key 信任材料；它不是用户 SSH Key，也不是 Gateway SSH 配置。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key、Manager 连接内部 sshd 的 client key 是三个独立凭据。
+Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。`start.sh` 在首次 SSH clone 前生成 Ed25519 密钥对，create 重试和 SSH remote 的 resume 校验并复用；私钥只保存在 Runtime，公钥由 Manager 通过 `EnsureCodespaceGitSSHKey` 确认到 Gitea 的 `codespace_ssh_key`。`GIT_SSH_KNOWN_HOSTS` 提供 Runtime 严格校验 Gitea SSH clone 入口所需的服务器 Host Key 信任材料；它不是用户 SSH Key，也不是 Gateway SSH 配置。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key 彼此独立；Gateway 进入 Runtime 通过 Incus API，不使用这把 Git SSH key。
 
 <span id="registration-token"></span>
 ### Registration Token
 管理员为 owner scope 使用的当前明文注册凭据，存储在 `codespace_manager_token` 表，每个 owner 最多一行。settings 页面进入时自动确保当前行存在；Manager 通过 `RegisterManager` 注册并获得 manager secret；Registration Token 重置会原地替换该行，不保存历史，owner scope 删除时物理删除该行。
 
-<span id="runtime-token"></span>
-### Runtime Token
-Manager 签发给 Runtime Instance 调用 Runtime HTTP API 的 token。
-
+<span id="manager-secret"></span>
+### Manager Secret
 <span id="manager-secret"></span>
 ### Manager Secret
 Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 重置不影响已注册 Manager。
 
 <span id="runtime-metadata"></span>
 ### Runtime Metadata
-Manager 上报到 Gitea 缓存的 Endpoint、internal SSH 和 boot 当前完整快照。每个 Codespace 由一个发布任务管理单调递增的 `metadata_generation`；缓存未命中后直接重发当前快照，外部缓存实现在 TTL 内保留的合法快照可以继续使用。`running` 对应已经完成的 `ready` boot，启动中的阶段只出现在 active create/resume。
+Manager 上报到 Gitea 缓存的 Endpoint、boot 和 CPU/内存/磁盘当前完整快照。每个 Codespace 由一个发布任务管理单调递增的 `metadata_generation`；缓存未命中后直接重发当前 typed snapshot，外部缓存实现在 TTL 内保留的合法快照可以继续使用。`running` 对应已经完成的 `ready` boot，启动中的阶段只出现在 active create/resume。CPU/内存/磁盘指标只用于创建者详情展示，不参与生命周期、授权、容量领取或治理排序。SSH、SFTP 和 Web 终端的实际后端保存在 Manager 本地 Incus backend 快照中。
 
 <span id="interactive-access"></span>
 ### Interactive Access

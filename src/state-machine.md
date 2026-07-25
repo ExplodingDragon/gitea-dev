@@ -167,11 +167,14 @@ ReportRuntimeTransition
 
 queued idle stop 被用户交互取消或被用户 stop 接管时不递增 `operation_rversion`。取消保留已使用的版本并清空 active operation；接管保留相同 stop 意图和版本，只把来源更新为 `user`。这样响应丢失的 `RequestIdleStop` 重试不会创建并行 operation，而用户 stop 也不会因已有相同停止意图返回冲突。
 
+站点排空下的 `abort_create` 和 `abort_resume` 复用当前 running create/resume 的 `operation_rversion`。**设计如此：**abort 不是新的生命周期 operation，而是要求 Manager 把当前启动操作收束为本地清理并提交原 operation 的 `final failed`；普通 create、resume、stop、delete 仍然通过递增版本表达新的下发意图。
+
 `operation_rversion` 写入 `FetchOperations` 返回数据，并由 `FinalizeOperation`、`UpdateLog` 携带。Gitea 按 `codespace_uuid + operation_rversion + manager_id` 校验 operation 上报归属。旧版本上报返回 `stale_operation`，主状态不变。
 
 实现验收点：
 
 - 创建或替换 operation 时递增 `operation_rversion`，领取、Fetch 续租和 final 不递增。
+- 站点排空 abort 返回当前 running create/resume 的同一 `operation_rversion`；Manager 用原 operation 类型提交 `final failed`，不能把 abort 当成新版本 operation。
 - 同一 codespace 同时最多存在一个 queued 或 running active operation。
 - operation 来源始终为 `user` 或 `idle`；用户交互只能取消 queued idle stop，已经领取的 running stop 按原版本完成。
 - final 和 timeout 直接写入目标主状态并清空 active operation，数据库中没有 done/failed operation 状态或历史。
@@ -629,7 +632,6 @@ Manager 按错误分类处理 `ReportRuntimeTransition`：传输失败原样保�
 
 ```text
 endpoints
-internal_ssh
 boot
 metadata_generation
 ```
@@ -690,7 +692,7 @@ stateDiagram-v2
 
 `private -> public` 先关闭 `connecting/live`、使认证 allowed 失效，再开放公共 ready；`public -> private` 先取消 `validating/forwarding/streaming`、使公共 allowed 失效，再进入等待认证。upstream、端口、协议和 workspace 实际目标变化同样先关闭旧连接，再替换路由。Host、Origin、Service Worker 或 code 格式在入口校验失败时直接结束请求，不进入以上状态，也不推进 `interaction_generation`。**设计如此：访问方式和跨域判定属于当前连接的本地生命周期，不增加 Gitea 主状态、operation 或历史记录。**
 
-Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready、普通 Endpoint existence 和 internal SSH 判定。`workspace` 的 Runtime Endpoint 是否存在只决定 Manager 连接该 upstream 还是 Manager 内置 Web SSH，不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。
+Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready、普通 Endpoint existence 判定。SSH 的实际后端由 Manager 本地 Incus backend 快照决定；Gitea 只判断当前启动是否 ready 和用户是否允许连接。`workspace` 的 Runtime Endpoint 是否存在只决定 Manager 连接 Endpoint proxy 还是 Manager 内置 Web 终端，不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。
 
 `boot.stage` 使用以下适用顺序，`boot.operation_rversion` 标识产生快照的 Manager 启动上下文：
 
@@ -726,7 +728,7 @@ Manager 本地执行阶段固定为 `lease_paused -> prepare_runtime -> run_init
 | `validate_runtime` | `publish-runtime` |
 | 已持久化 ready 快照、正在等待 Gitea 回执的 `publish_ready`，以及后续 `finalize`、`completed` | `ready` |
 
-init、prepare 和 activate 各自提交严格结果及本阶段 `CODESPACE_ENV` 变更；Manager 只验证凭据身份、workspace 和 internal SSH 等通用输出，脚本内部子步骤只写日志。进入 `write_credentials` 前先关闭 Runtime HTTP API 和用户入口；两个 Token 文件原子替换完成后，Runtime Token verifier 与 `run_prepare` 在同一 Manager 快照提交。崩溃后本地仍为 `write_credentials`，或者后续阶段发现文件与 verifier 不一致时，同一 active create/resume 持久化回到该阶段并重做凭据、prepare、activate 和校验。`publish_ready` 先持久化 `boot.stage=ready` 的完整快照再发送；响应丢失时保留该快照并幂等重报。进入 `lease_paused` 会停止实例；同版本续租后仍可保留单调的 ready boot stage，但 Manager 必须重新完成 prepare、activate 和连通校验，确认本次启动可用后才重报 ready 并推进到 `finalize`。**设计如此：Manager 本地阶段用于崩溃恢复并允许凭据重放，boot stage 用于 Gitea 校验当前启动进度且保持单调；两者职责不同，因此不是一一对应关系。脚本内部实现不增加本地阶段或 Gitea stage。**
+init、prepare 和 activate 各自提交严格结果及本阶段 `CODESPACE_ENV` 变更；Manager 只验证凭据身份、workspace、Git 本地凭据、Incus exec/file 和 Endpoint proxy 等通用输出，脚本内部子步骤只写日志。进入 `write_credentials` 前先关闭用户入口；Gitea Token 文件、Git SSH 公钥和 known_hosts 确认完成后，`run_prepare` 在同一 Manager 快照提交。崩溃后本地仍为 `write_credentials`，同一 active create/resume 在凭据提交中断后持久化回到该阶段并重做凭据、prepare、activate 和校验。`publish_ready` 先持久化 `boot.stage=ready` 的完整快照再发送；响应丢失时保留该快照并幂等重报。进入 `lease_paused` 会停止实例；同版本续租后仍可保留单调的 ready boot stage，但 Manager 必须重新完成 prepare、activate 和 Incus backend 校验，确认本次启动可用后才重报 ready 并推进到 `finalize`。**设计如此：Manager 本地阶段用于崩溃恢复并允许凭据步骤重新执行，boot stage 用于 Gitea 校验当前启动进度且保持单调；两者职责不同，因此不是一一对应关系。脚本内部实现不增加本地阶段或 Gitea stage。**
 
 create 和 resume 的 final done 都要求 boot 版本等于当前 operation 且 metadata 已为 `ready`。resume 启动 Runtime 后，在 active operation 内先运行 init，申请并写入新 Token，再运行 prepare 和 activate，刷新实际 remote 的本地凭据配置并上报本次 resume 版本的 `ready`；旧版本的 `ready` 不能完成当前 resume。凭据或 ready 上报临时失败时，Manager 在 operation lease 内退避重试；确认无法写入 credential 时停止本轮启动的 Runtime，create 提交 final failed 并进入 failed，resume 提交 final failed 并保持可恢复的 stopped。普通 Endpoint、用户服务和 repository 可达性不参与 ready 判定。这样 `running` 始终表示本次启动所需的本地凭据配置和交互入口已经就绪，open/SSH 不存在等待另一个启动阶段的中间状态。
 
@@ -741,7 +743,7 @@ Gitea 按主状态和 active operation 校验 boot 上下文：
 
 同一 `boot.operation_rversion` 的 stage 只能按规定顺序前进；一旦接受 `ready`，后续同版本快照继续保持 `ready`。resume final failed、timeout 或 abort 会在主状态事务提交后尽力清除当前 Runtime Metadata，Manager 清除本轮 boot 发布上下文，不恢复或发布历史 `ready`。此后迟到的当前 resume 版本快照因已经没有 active resume 而返回 `stale_operation`；清理失败时数据库中的 `stopped` 主状态仍会阻止交互。`recoverable_failed`、timeout 和 abort 允许下次 resume 使用更高 operation 版本重建完整快照；`unrecoverable_failed` 按前述流程继续进入 failed。
 
-稳定 running 的 Gitea Token 文件缺失时，Manager 关闭新准入，通过 `RequestGiteaToken` 取得当前行的同一明文并原子写回，校验本地 helper 后继续沿用当前 `ready`。Runtime Token 文件缺失或 verifier 不匹配时不在 running 内跨存储修复：Manager 关闭会话并停止 Runtime，再通过 `ReportRuntimeTransition(stopped)` 收敛主状态并保留实例根存储，下一次 resume 在 active operation 内生成新值。根存储已损坏时改为报告 failed。**设计如此：active create/resume 使用可重放的 `write_credentials`，稳定 running 使用 stopped 边界恢复 Runtime Token，两种场景都有唯一结果且不增加新的 Gitea 主状态。**
+稳定 running 的 Gitea Token 文件缺失时，Manager 关闭新准入，通过 `RequestGiteaToken` 取得当前行的同一明文并原子写回，校验本地 helper 后继续沿用当前 `ready`。Git SSH 或 workspace 本地凭据损坏时不在 running 内跨存储修复：Manager 关闭会话并停止 Runtime，再通过 `ReportRuntimeTransition(stopped)` 收敛主状态并保留实例根存储，下一次 resume 在 active operation 内重新确认。根存储已损坏时改为报告 failed。**设计如此：active create/resume 使用可重放的 `write_credentials`，稳定 running 使用 stopped 边界恢复 Git 与 workspace 本地凭据，两种场景都有唯一结果且不增加新的 Gitea 主状态。**
 
 写入条件：
 
@@ -755,20 +757,20 @@ Runtime Metadata 变化频繁且可重建，放在 cache 中。cache miss 只影
 
 Gitea 在接受请求时写入 `last_reported_unix=now`，该时间不属于 Manager 快照内容，也不参与 generation 内容比较。Manager 对 active create、active resume 和 running Codespace 使用最近一次成功 Declare 返回的 metadata 刷新周期；稳定 stopped 等待下一次 resume 再启动发布。
 
-每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、internal SSH 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 `ready`，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后。
+每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、workspace route、Incus backend 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 `ready`，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后。
 
 实现验收点：
 
 - metadata cache 接受当前 Manager 的新版本快照和相同版本、相同内容的 TTL 刷新。
 - cache miss 不触发主状态变更，交互入口返回 metadata rebuilding 分类。
-- stopped resume 在 metadata cache miss 时仍可创建 operation；open/SSH 必须等待 ready，普通 Endpoint 还要求目标存在，SSH 还要求 internal SSH 完整。
+- stopped resume 在 metadata cache miss 时仍可创建 operation；open/SSH 必须等待 ready，普通 Endpoint 还要求目标存在，SSH 还要求 Manager 本地 Incus backend 可用。
 - 普通 Endpoint 按当前 metadata 的 `public` 值只进入一种访问路径；公共访问同样等待 ready，workspace 始终使用认证路径。
 - private/public 切换先关闭旧 session、请求和长连接并失效对应 allowed，再开放新访问路径；路由或生命周期关闭时所有瞬时访问状态回到 unavailable。
 - Host、Origin、Service Worker 和 Open Code 入口拒绝不创建 session、公共连接或交互版本；公共 validating/forwarding/streaming 不写持久状态。
 - resume final done 只在当前 operation 版本的 metadata 已为 `ready` 且 Token 行完整时接受；Manager 在 ready 前按 workspace 实际 remote 验证本地 HTTP helper 或 SSH 公钥关系，不探测 repository 可达性。final 成功后无需恢复独立的凭据刷新任务。
 - 同一 boot 版本的阶段只能前进，`ready` 不能回退；`running` 状态下所有已接受快照都保持 `ready`。
 - resume failed、timeout 或 abort 后，迟到的同版本快照返回 stale；cache 清理失败也不能使 stopped Codespace 获得交互权限。
-- resume failed、timeout 或 abort 后不恢复历史 ready；下一次 resume 从保留的 Incus 实例重建 credential、Endpoint、internal SSH 和 ready。
+- resume failed、timeout 或 abort 后不恢复历史 ready；下一次 resume 从保留的 Incus 实例重建 credential、Endpoint proxy、Incus backend 和 ready。
 - 稳定 running 的凭据修复保持 boot ready；修复失败时先停止 Runtime，再按 workspace 是否可恢复上报 stopped 或 failed。
 - 本地 metadata generation 丢失时，Manager 可根据 stale detail 恢复版本基线后重报当前完整快照。
 - 同代不同 metadata 返回不可重试的 `generation_conflict`；版本无法递增返回 `version_exhausted`，两者都不写入新快照或继续自动升代，Manager 随后按 Incus 归属字段清理该 Codespace。

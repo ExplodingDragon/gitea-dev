@@ -2,7 +2,7 @@
 
 ## 数据表
 
-Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、Manager 地址、当前 Codespace Gitea Token，以及使用 Git SSH 的 Codespace 公钥绑定；Gitea 缓存保存 Runtime Metadata 与 Gateway Open Token；Git SSH 私钥、Endpoint port、Runtime Token、Incus 状态和实时容量由 Runtime 或 Manager 管理。容量由 Manager 在每次 Fetch 时声明，Gitea 据此领取 operation，因此数据库无需维护另一份运行容量计数。
+Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、Manager 地址、当前 Codespace Gitea Token，以及使用 Git SSH 的 Codespace 公钥绑定；Gitea 缓存保存 Runtime Metadata 与 Gateway Open Token；Git SSH 私钥、Endpoint port、Incus 状态和 CPU/内存/磁盘实时用量由 Runtime 或 Manager 管理。容量由 Manager 在每次 Fetch 时声明，Gitea 据此领取 operation，因此数据库无需维护另一份运行容量计数。CPU/内存/磁盘用量只随 Runtime Metadata 缓存进入创建者详情展示，不进入数据库，也不参与调度。
 
 ### codespace
 
@@ -55,7 +55,7 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 Codespace 主表的更新采用字段级 SQL：每条写路径都用明确的 `SET` 列表更新本节属于该动作的列，并用必要列组成更新条件。`repo_id` 在创建记录时写入，repository 删除时可以把它改为 0；状态流转、operation claim/续租/final、日志元数据、自动暂停设置和 `last_active_unix` 更新的 `SET` 列表都排除 `repo_id`。这一字段归属使 repository 删除的批量 `repo_id=0` 与只取得 Codespace lock 的生命周期写入无论按哪种顺序提交，最终都保留 `repo_id=0`。字段级写入同时缩小并发更新范围，因此 repository 删除无需逐个取得 Codespace lock。
 
-endpoint、boot、resource usage、internal SSH 和 last_reported 保存在 Gitea cache。
+Endpoint、boot、CPU/内存/磁盘 resource usage 和 last_reported 保存在 Gitea cache。
 
 ### codespace_manager
 
@@ -158,7 +158,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 
 登记事务先提交 `public_key` 与 `codespace_ssh_key` 的一致结果，再调用 Gitea 现有公钥授权同步入口。内置 SSH 或外部 `AuthorizedKeysCommand` 直接使用数据库；配置使用外部 `authorized_keys` 文件时重写文件，同步失败则 RPC 返回错误并由相同公钥重试。已经从数据库删除的旧 key ID 即使暂时残留在文件中，也无法通过 Gitea 强制命令鉴权。
 
-私钥和专用 `known_hosts` 只保存在 Incus 实例的 Runtime 用户目录。Gitea 和 Manager 都不持久化私钥；Manager 只在当前 Runtime API 请求中转发公钥。stop、stopped、resume 失败/超时/abort 都保留关系行与对应 `PublicKey`，仓库命令是否可用由当前初始化或运行状态实时判定。进入 failed/deleting、物理删除和 failed retention 才在现有 Codespace 事务中删除公钥。repository 删除只把 `repo_id` 写为 0，现有公钥随 Codespace 保留但无法匹配任何仓库，保证 repository 生命周期不反向破坏 Codespace 的 resume、stop 和 delete。
+私钥和专用 `known_hosts` 只保存在 Incus 实例的 Runtime 用户目录。Gitea 和 Manager 都不持久化私钥；Manager 在 create/resume 中通过 Incus 读取公钥并转发给 Gitea。stop、stopped、resume 失败/超时/abort 都保留关系行与对应 `PublicKey`，仓库命令是否可用由当前初始化或运行状态实时判定。进入 failed/deleting、物理删除和 failed retention 才在现有 Codespace 事务中删除公钥。repository 删除只把 `repo_id` 写为 0，现有公钥随 Codespace 保留但无法匹配任何仓库，保证 repository 生命周期不反向破坏 Codespace 的 resume、stop 和 delete。
 
 **设计理由：专用 Key 类型保留创建者语义。**普通用户 Key 会认证为该用户对全部仓库的账户凭据，Deploy Key 会认证为仓库部署凭据；两者都不能表达“只代表创建者访问当前 Codespace 绑定仓库”。一对一关系和每次 SSH 命令的当前权限检查提供了所需范围，不需要引入 SSH 证书、证书续期或新的密钥服务。
 
@@ -278,9 +278,9 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 Codespace 通过 Gitea `modules/cache.GetCache()` 使用站点已经配置的缓存实现，只保存短期易失数据：
 
 - `codespace:open-code:{code_hash}`（一次性的 authorization code 校验缓存，参见 [Gateway Open Token](glossary.md#gateway-open-token)）
-- `codespace:runtime-meta:{codespace_uuid}`（当前 Endpoint、internal SSH 和 boot 动态快照，参见 [Runtime Metadata](glossary.md#runtime-metadata)）
+- `codespace:runtime-meta:{codespace_uuid}`（当前 Endpoint、boot 和 CPU/内存/磁盘动态快照，参见 [Runtime Metadata](glossary.md#runtime-metadata)）
 
-memory/twoqueue 的内容随进程退出而丢失；Redis/memcache 可在各项 TTL 内跨 Gitea 重启保留。两种结果都符合缓存语义：Open Code 交换始终重新校验数据库、用户、Manager 和 Endpoint，因此对象停止或删除后即使缓存项暂时存在也不能通过校验；Runtime Metadata 也必须结合数据库主状态与 Manager 在线状态判定。Manager/Gateway 重启时还会关闭全部本地 Codespace session 准入，逐项恢复凭据、SSH、路由并重报 ready 后才开放，因此外部 cache 保留的旧 ready 只用于 Gitea 当前判断，不能单独建立本地连接。Open Code 使用 `OPEN_TOKEN_EXPIRE`，Runtime Metadata 使用 `MANAGER_OFFLINE_TIMEOUT * 2`；这些协议 TTL 直接传给缓存接口，与通用 `[cache] ITEM_TTL` 分开配置。
+memory/twoqueue 的内容随进程退出而丢失；Redis/memcache 可在各项 TTL 内跨 Gitea 重启保留。两种结果都符合缓存语义：Open Code 交换始终重新校验数据库、用户、Manager 和 Endpoint，因此对象停止或删除后即使缓存项暂时存在也不能通过校验；Runtime Metadata 也必须结合数据库主状态与 Manager 在线状态判定。Manager/Gateway 重启时还会关闭全部本地 Codespace session 准入，逐项恢复凭据、Incus backend、路由并重报 ready 后才开放，因此外部 cache 保留的旧 ready 只用于 Gitea 当前判断，不能单独建立本地连接。Open Code 使用 `OPEN_TOKEN_EXPIRE`，Runtime Metadata 使用 `MANAGER_OFFLINE_TIMEOUT * 2`；这些协议 TTL 直接传给缓存接口，与通用 `[cache] ITEM_TTL` 分开配置。
 
 需要按对象串行执行的 Codespace 写路径直接调用 Gitea `modules/globallock.Lock(ctx, key)`。默认 `[global_lock] SERVICE_TYPE=memory` 时锁位于当前进程，站点配置 Redis 时沿用同一个 Gitea 全局锁后端；两者均服务于单活动 Gitea 进程部署。短期数据直接使用站点 `[cache]`，Session Provider 不参与 Codespace 缓存或锁。
 
@@ -353,92 +353,66 @@ CreateCodespace、Manager 注册/删除和 registration token 变更在 Codespac
 
 ## Runtime Metadata 结构
 
-`ReportRuntimeMetadata` 只写当前 Runtime Metadata 快照。允许的结构：
+`ReportRuntimeMetadata` 只写当前 Runtime Metadata 快照。快照使用 proto 中的 `RuntimeMetadata` typed message：
 
-```json
-{
-  "runtime": {
-    "internal_ssh": {
-      "host": "10.0.0.12",
-      "port": 2222,
-      "user": "codespace",
-      "auth_mode": "publickey",
-      "host_key_fingerprint": "SHA256:..."
-    }
-  },
-  "endpoints": [
-    {
-      "endpoint_id": "workspace",
-      "label": "Workspace",
-      "public": false
-    },
-    {
-      "endpoint_id": "app-3000",
-      "label": "App 3000",
-      "public": true
-    }
-  ],
-  "boot": {
-    "operation_rversion": 1,
-    "stage": "start-environment",
-    "started_unix": 0,
-    "last_update_unix": 0
-  }
+```text
+RuntimeMetadata {
+  endpoints: []RuntimeEndpoint
+  boot: RuntimeBoot
+  resource_usage: RuntimeResourceUsage
 }
 ```
 
 规则：
 
-- 顶层固定且必填为 `runtime`、`endpoints`、`boot`；`boot` 固定且必填为 `operation_rversion`、`stage`、`started_unix`、`last_update_unix`。规范之外的字段被拒绝，使 Manager、Gitea 和 Gateway 对同一快照得到一致解释。
-- `endpoints` 始终以 JSON 数组存储；没有 Endpoint 时使用空数组，不省略字段。
-- `internal_ssh` 不进入 Gitea 面向用户的页面数据或响应。
-- `internal_ssh` 在 SSH 尚未就绪的 boot 阶段可以不出现；一旦出现以及 `boot.stage=ready` 时，`host/user/auth_mode/host_key_fingerprint` 必须为非空字符串，`port` 必须在 1-65535，`auth_mode` 为 `publickey`。字段是否存在直接表达 SSH 就绪状态，避免用空 host/port 表示未就绪。
-- `boot.stage` 只允许 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime`、`ready`。create 与 resume 都由 Manager 按通用 init/prepare/activate 顺序推进；脚本内部的包管理器、Git 和运行环境子步骤只写日志，不增加状态枚举。同一 `boot.operation_rversion` 只前进，已经接受 `ready` 后保持 `ready`。
+- `endpoints`、`boot` 和 `resource_usage` 都由 proto 字段表达。`boot` 固定包含 `operation_rversion`、`stage`、`started_unix` 和 `last_update_unix`；`endpoints` 没有 Runtime 声明时为空列表。协议使用这些明确字段作为唯一来源。**设计如此：**Gitea、Manager 和 codespace-proto-go 共享同一份生成结构，字段新增、大小计算、内容 hash 和页面展示都基于同一组 typed 字段，避免 JSON 空白、key 顺序或手写结构体让两端解释不一致。
+- SSH、SFTP、Web 终端和 Endpoint proxy 的实际后端目标不进入 Runtime Metadata。Gitea 只用 ready boot 判断 SSH 是否可以进入认证流程，Manager 本地再检查 Incus exec/file、workspace 和 Gateway session 准入。**设计如此：**运行侧地址、UID/GID、proxy listener 和 Incus backend 都是 Manager 本地状态，写入 Gitea cache 会制造第二份临时路由来源；保留单一来源可以避免 stale cache 把用户连接到旧目标。
+- `boot.stage` 使用 `RuntimeBootStage` 枚举，只表达 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime`、`ready` 六个阶段。create 与 resume 都由 Manager 按通用 init/prepare/activate 顺序推进；脚本内部的包管理器、Git 和运行环境子步骤只写日志，不增加状态枚举。同一 `boot.operation_rversion` 只前进，已经接受 `ready` 后保持 `ready`。
 - `started_unix > 0`，`last_update_unix >= started_unix`；同一 operation 启动上下文的 `started_unix` 保持不变，阶段推进或状态刷新更新 `last_update_unix`。
 - active create/resume 上报的 `boot.operation_rversion` 等于当前 operation。running 快照固定为 `ready`，boot 版本不大于当前 `codespace.operation_rversion`；stopped 且无 active operation 时不发布 Runtime Metadata。resume failed、timeout 或 abort 后，Manager 清除本轮 boot 发布上下文，迟到的本次 resume 版本上报因 active operation 已结束而被拒绝；下一次 resume 使用更高 operation 版本从保留的 Incus 实例重建完整快照。
-- create 和 resume 的 `final done` 都要求当前快照的 boot 版本等于当前 operation 且 `stage=ready`。resume 在 active operation 内申请 Token、写入 Runtime credential 并上报 ready；Gitea 还要求当前 Token 行完整，才把主状态从 stopped 改为 running。Manager 在 ready 前根据本地实际 remote 验证 HTTP helper 或 SSH 密钥、公钥绑定与 known_hosts；该结果不进入 Runtime Metadata，Gitea final 不重复判断实际协议。旧版本的 ready 不能完成当前恢复；cache miss 时 Manager 用正 generation 重建当前 operation 快照。Manager 保留最新 boot 终态的 `operation_type + operation_rversion + outcome`，其中 outcome 为 `done|recoverable_failed|unrecoverable_failed`，用于重启恢复和不可恢复 resume 在 final failed 后继续上报 failed。`done` 和 `recoverable_failed` 可由下一次合法初始化替换；`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成。stopped 主状态存在已领取且租约未到期的 active resume 时，初始化所需的 Gitea Token 与已有 Git SSH Key 可用于恢复本地凭据配置；面向用户的 open 和 Gateway SSH 仍等待 `final done` 原子写入 running。**设计如此：ready 证明已初始化 workspace 的本地凭据配置和交互入口完整，不证明 repository 仍然存在或可访问；`repo_id=0` 时仍可恢复 running，Git HTTP(S)、LFS 和 repository API 没有绑定仓库能力但保留公开只读访问，写入、管理、私有或不可见目标由 Gitea 拒绝。Git SSH Key 不能匹配任何仓库。**
+- create 和 resume 的 `final done` 都要求当前快照的 boot 版本等于当前 operation 且 `stage=ready`。resume 在 active operation 内申请 Token、写入 Runtime credential 并上报 ready；Gitea 还要求当前 Token 行完整，才把主状态从 stopped 改为 running。Manager 在 ready 前根据本地实际 remote 验证 HTTP helper 或 SSH 密钥、公钥绑定与 known_hosts；该结果不进入 Runtime Metadata，Gitea final 不重复判断实际协议。旧版本的 ready 不能完成当前恢复；cache miss 时 Manager 用正 generation 重建当前 operation 快照。**设计如此：ready 证明已初始化 workspace 的本地凭据配置和交互入口完整，不证明 repository 仍然存在或可访问；`repo_id=0` 时仍可恢复 running，后续 Git HTTP(S)、LFS、Git SSH 和 repository API 按 Gitea 当前 binding 与权限返回结果。**
+- `RuntimeResourceUsage` 只保存 CPU、内存和磁盘三类当前用量。CPU 使用 millicores，内存和磁盘使用 bytes，`observed_unix` 是 Manager 采样时间；各 used/limit 字段必须大于或等于 0，limit 为 0 表示当前无法从 Incus 取得明确限制。Manager 从 Incus API 采样该数据，Runtime helper 或工作环境脚本不负责上报指标。**设计如此：**指标来自 Manager 对实例的外部观察，脚本内部环境不应影响控制面协议；CPU、内存和磁盘足够覆盖创建者详情页的常见判断，网络、进程、I/O 明细会增加解释成本且不参与当前生命周期，暂不进入协议。
+- resource usage 只用于创建者详情展示，不参与 create/resume final、open、SSH、公共 Endpoint、自动暂停、容量领取或治理列表排序。采样失败不会阻止 ready 或访问，只让页面显示指标暂不可用。
 - `endpoint_id` 由 Manager 上报，固定匹配 `^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`，并在同一 `codespace_uuid` 内保持唯一。该规则明确排除首尾连字符，最长 ID 与分隔符、32 位 UUID 组成恰好 63 字节的普通 Endpoint DNS label。
-- Endpoint 数量不超过协议固定上限 64，规范化 JSON 不超过 `RUNTIME_METADATA_MAX_SIZE`。
-- 不同 codespace 可以使用相同 `endpoint_id`。
-- `label` 只用于 UI 展示，可以重复，不是路由键。它必须是合法 UTF-8，使用 Go `strings.TrimSpace` 去除首尾 Unicode 空白后保存，经 `utf8.RuneCountInString` 计算的长度为 1 到 64，并且不包含 `unicode.IsControl` 判定的控制字符、`<` 或 `>`。Manager 与 Gitea 执行相同校验，不做 Unicode 归一化、字符替换或自动清洗；规范化内容 hash 使用校验后的规范值，UI 仍按普通文本 escape。
-- 每个 Endpoint 必须包含布尔 `public`；false 使用 Gateway session 认证，true 表示普通 Endpoint 可以在 Gitea 和 Manager 双重校验后匿名访问。该值由持有 Runtime Token 的工作环境进程明确声明，不从 repository 可见性、创建用户权限、端口或 label 推导，也不在 Gitea 页面保存第二份确认状态。声明随 Manager 当前快照跨 stop 保留，stopped 阶段没有访问入口，resume ready 后重新发布当前值。
-- `endpoints` 只保存 Runtime 实际声明；稳定的 `workspace` 描述由 Gitea 另行生成。同名记录存在时 Manager 使用其 Runtime upstream，不存在时 Manager 使用内置 Web SSH；两种情况的 Open Token binding 都是 `endpoint_id=workspace`。**设计如此：`workspace` 的 `public` 固定为 false。**这保证同名 Runtime Endpoint 删除后回退到内置 Web SSH 时不会继承公共访问能力；需要公开服务时使用普通 Endpoint。
-- Runtime Metadata 保存在 Gitea cache。
-- key：`codespace:runtime-meta:{codespace_uuid}`
-- value：当前 `endpoints + internal_ssh + boot`、Gitea 接受请求时写入的 `last_reported_unix`，以及 request envelope 中的 `metadata_generation` 和规范化内容 hash
-- ttl：`MANAGER_OFFLINE_TIMEOUT * 2`
-- 只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。
-- Gitea 信任 Runtime Metadata cache 仅表示 open/SSH 的 ready、普通 Endpoint existence/public 属性、internal SSH 和 UI 展示信任当前 cache 内容；resume 不读取该 cache。
-- Gitea 缓存未命中后，Runtime Metadata 由 Manager 重建；外部缓存实现在 TTL 内保留的合法快照可以继续使用。
-- Manager 离线时，新的 open、公共 Endpoint 请求和 SSH 都不能通过授权校验。
-- Runtime Metadata 仅记录当前最新快照，cache miss 只影响交互与展示。
-- `metadata_generation` 由 Manager 每个 Codespace 的单一 metadata 发布任务管理。boot、Endpoint、internal SSH 和恢复流程先更新同一份本地完整快照并唤醒该任务；规范化内容变化时 checked increment 并原子持久化，内容不变时复用原 generation 刷新 TTL。更高版本覆盖 cache，相同版本且规范化内容相同时只刷新 TTL，相同版本但内容不同时返回不可重试的 generation conflict，更低版本返回当前版本。Manager 只对 stale 使用服务端当前值加一；同代不同内容表示本地状态损坏或第二写入者，返回硬错误并删除该 Codespace 的归属 Incus 实例和本地状态文件。
-- metadata 发布任务同一时刻最多发送一个请求，并在发送前保存该请求的 generation 和完整快照。成功空响应确认 Gitea 接受了本次请求；请求快照中的 boot 等于当前 create/resume operation 且 stage 为 `ready` 时，本轮 boot 就已满足 final 前置条件。即使本地已经产生更高 Endpoint generation，发布任务也只需继续发送最新快照，不会撤销已成立的 ready。该接受记录只存在于 Manager 进程内，重启后通过相同 generation、相同内容的幂等重报恢复。
+- Endpoint 数量不超过协议固定上限 64，typed snapshot 编码大小不超过 `RUNTIME_METADATA_MAX_SIZE`。不同 codespace 可以使用相同 `endpoint_id`。
+- `label` 只用于 UI 展示，可以重复，不是路由键。它必须是合法 UTF-8，使用 Go `strings.TrimSpace` 去除首尾 Unicode 空白后保存，经 `utf8.RuneCountInString` 计算的长度为 1 到 64，并且不包含 `unicode.IsControl` 判定的控制字符、`<` 或 `>`。Manager 与 Gitea 执行相同校验，不做 Unicode 归一化、字符替换或自动清洗；内容 hash 使用校验后的规范值，UI 仍按普通文本 escape。
+- 每个 Endpoint 必须包含布尔 `public`；false 使用 Gateway session 认证，true 表示普通 Endpoint 可以在 Gitea 和 Manager 双重校验后匿名访问。该值由写入 Runtime 本地 manifest 的工作环境进程明确声明，不从 repository 可见性、创建用户权限、端口或 label 推导，也不在 Gitea 页面保存第二份确认状态。声明随 Manager 当前快照跨 stop 保留，stopped 阶段没有访问入口，resume ready 后重新发布当前值。
+- `endpoints` 只保存 Runtime 实际声明；稳定的 `workspace` 描述由 Gitea 另行生成。同名记录存在时 Manager 使用其 Endpoint proxy，不存在时 Manager 使用内置 Web 终端；两种情况的 Open Token binding 都是 `endpoint_id=workspace`。**设计如此：`workspace` 的 `public` 固定为 false。**这保证同名 Runtime Endpoint 删除后回退到内置 Web 终端时不会继承公共访问能力；需要公开服务时使用普通 Endpoint。
+- Runtime Metadata 保存在 Gitea cache。key 为 `codespace:runtime-meta:{codespace_uuid}`；value 为当前 `endpoints + boot + resource_usage`、Gitea 接受请求时写入的 `last_reported_unix`，以及 request envelope 中的 `metadata_generation` 和规范化内容 hash；ttl 为 `MANAGER_OFFLINE_TIMEOUT * 2`。
+- 只要所属 Manager 在线，Gitea 即信任当前 cache 中的 Runtime Metadata。Gitea 信任该 cache 仅表示 open/SSH 的 ready、普通 Endpoint existence/public 属性和 UI 展示信任当前 cache 内容；resume 不读取该 cache。Manager 离线时，新的 open、公共 Endpoint 请求和 SSH 都不能通过授权校验。
+- `metadata_generation` 由 Manager 每个 Codespace 的单一 metadata 发布任务管理。boot、Endpoint、resource usage、workspace route、Incus backend 和恢复流程先更新同一份本地完整快照并唤醒该任务；规范化内容变化时 checked increment 并原子持久化，内容不变时复用原 generation 刷新 TTL。更高版本覆盖 cache，相同版本且规范化内容相同时只刷新 TTL，相同版本但内容不同时返回不可重试的 generation conflict，更低版本返回当前版本。Manager 只对 stale 使用服务端当前值加一；同代不同内容表示本地状态损坏或第二写入者，返回硬错误并删除该 Codespace 的归属 Incus 实例和本地状态文件。
+- metadata 发布任务同一时刻最多发送一个请求，并在发送前保存该请求的 generation 和完整快照。成功空响应确认 Gitea 接受了本次请求；请求快照中的 boot 等于当前 create/resume operation 且 stage 为 `ready` 时，本轮 boot 就已满足 final 前置条件。即使本地已经产生更高 Endpoint 或 resource usage generation，发布任务也只需继续发送最新快照，不会撤销已成立的 ready。
 - metadata generation 无法递增时返回不可重试的 `version_exhausted`，不提交本地快照、路由或 generation 的部分结果；Manager 按单 Codespace 持久状态损坏流程清理该 UUID，不增加独立恢复阶段。
 - `last_reported_unix` 由 Gitea 在接受请求时写入，不参与 Manager 快照内容或 generation 比较。
-- Runtime Metadata 规范化使用固定 JSON 字段、对象 key 排序和按 `endpoint_id` 排序的 endpoints；内容 hash 不受 Manager 原始 JSON 空白或对象 key 顺序影响。
+- Runtime Metadata 的规范化基于 typed 字段：Endpoint 按 `endpoint_id` 排序，label 使用校验后的规范文本，boot 使用 enum 值，resource usage 使用数值字段；内容 hash 不受缓存内部序列化格式影响。
 - Runtime Metadata 是动态运行信息，用于展示和交互入口。主状态由 operation 状态写入和 reconciliation 处理，推进依据来自数据库状态。
 
 实现验收点：
 
-- [x] Manager 本地 Codespace 快照保存 ready boot 与 internal SSH 基准；Endpoint 实际变化时使用同一快照生成包含 `runtime`、`endpoints`、`boot` 的完整 Runtime Metadata JSON，并推进本地 metadata generation。没有 Endpoint 时 `endpoints` 仍编码为空数组。
-- metadata generation 相同的重试幂等，更低 generation 不覆盖 cache。
-- 相同 generation、不同规范化内容被拒绝；相同内容的周期刷新可以延长 TTL。
-- metadata generation stale 以服务端当前值为基线升代；同代冲突和 checked increment 耗尽分别返回 `generation_conflict` 和 `version_exhausted` 硬错误。
-- [x] codespace 本地 Endpoint 快照读写和 Runtime API 对单个 Codespace 最多 64 个 Endpoint 执行同一上限；超过上限的新建请求返回 `429 endpoint_limit_exceeded`，已有 Endpoint 更新不受该上限阻止，启动时拒绝超限状态文件。
-- [x] endpoint ID 在单个 codespace 内唯一；每项具有必填布尔 `public`，`workspace` 只能为 false；internal SSH 不进入 Runtime API 的 Endpoint 响应。
-- Endpoint label 在 Manager 和 Gitea 使用相同 UTF-8、去除首尾 Unicode 空白、1 到 64 字符及禁止字符规则；非法 label 不写入本地路由或 Gitea cache，合法中文和其他普通展示文本保持原值。
-- metadata ready 且没有 `workspace` 记录时，默认 workspace open 仍有效，UI 使用稳定 workspace 描述，Manager 将其解析为内置 Web SSH。
-- [x] resume 在 final 前完成同一 operation 版本的系统初始化、Token 写入、环境恢复和 ready 上报；Manager 重启后从 active operation 和本地 boot 上下文继续，final 成功后无需恢复独立凭据任务。
-- 未知字段、缺失固定字段、非法 boot stage、错误 boot operation 版本和不完整 internal SSH 被拒绝；create 在当前 operation 的 ready 快照前不能 final done。
-- active create、active resume 和 running 使用固定 boot 版本与阶段矩阵；无 active operation 的 stopped 拒绝 metadata，同版本 ready 不回退，已结束 resume 的迟到快照不能重建当前启动上下文。
-- [x] active create/resume 的 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime` 和 `ready` boot 快照保存到同一 Codespace metadata 快照，并通过同一串行发布任务上报。中间阶段只唤醒发布任务，允许被后续阶段合并；`ready` 阶段同步等待 Gitea 接受后才允许 final done。设计如此是为了让页面进度可收敛，同时不让短暂控制面错误阻塞早期本地启动步骤。
-- [x] ready、Endpoint 变化和周期刷新使用同一 Codespace 的串行 metadata 发布任务，该任务重新读取当前完整快照并发送最新 generation；create/resume final 等待包含当前 operation ready 的快照被接受，不等待随后产生的 Endpoint generation，发布任务仍会继续到本地最新快照被接受。
-- [ ] Gateway SSH 建立后，SSH 相关 metadata 与会话复检接入同一 metadata 发布和 Gateway session 生命周期；该项随 Gateway SSH 完整连接实现验收。
-- [ ] Manager 恢复 active create/resume 时，从本地阶段重新保存当前 boot 快照并唤醒同一发布任务；该项随完整启动恢复状态机实现验收。
-- [x] codespace 本地状态在 metadata generation 耗尽时不提交内容变化的 Endpoint 快照或内存路由；Runtime API 返回 `503 runtime_unavailable` 并保留最大 generation。
-- metadata generation 耗尽后的 Gitea `version_exhausted` 硬错误、Manager 最小 pending 清理和 operation 收敛由完整 metadata 发布任务与生命周期清理流程实现。
-- cache TTL 刷新不改写 `last_active_unix` 或主状态。
+- [x] Manager 本地 Codespace 快照保存 ready boot、resource usage、workspace route 与 Incus backend 基准；Endpoint 或资源指标变化时使用同一快照生成包含 `endpoints`、`boot`、`resource_usage` 的完整 Runtime Metadata typed snapshot，并推进本地 metadata generation。没有 Endpoint 时 `endpoints` 仍编码为空列表。
+- [x] Gitea 和 Manager 使用 codespace-proto-go 生成的 `RuntimeMetadata` 及其子结构作为 Runtime Metadata 的协议和服务层输入。
+- [x] metadata generation 相同且规范化内容相同时按幂等刷新处理；更低 generation 返回 stale，不覆盖 cache。
+- [x] 相同 generation、不同规范化内容被拒绝；相同内容的周期刷新只刷新 Gitea cache 中的上报时间与 TTL，不改写 Codespace 主状态。
+- [x] metadata generation stale 时，Manager 以服务端当前值为基线升代，并重新上报本地已经持久化的当前完整快照；同代冲突和 checked increment 耗尽分别作为 `generation_conflict` 和 `version_exhausted` 硬错误处理。
+- [x] CPU/内存/磁盘指标由 Manager 从 Incus API 采样后进入 Runtime Metadata；Runtime helper 和脚本不提交指标字段。采样失败时 create/resume final、open、SSH 和公共 Endpoint 仍按 ready 与访问校验运行，创建者详情显示指标暂不可用。
+- [x] Gitea 创建者详情能展示 CPU、内存和磁盘当前用量及采样时间；治理列表不使用这些指标排序或授权。
+- [x] codespace 本地 Endpoint 快照读写和 Runtime 本地 manifest 对单个 Codespace 最多 64 个 Endpoint 执行同一上限；超过上限的新建请求返回 `429 endpoint_limit_exceeded`，已有 Endpoint 更新不受该上限阻止，启动时拒绝超限状态文件。
+- [x] endpoint ID 在单个 codespace 内唯一；每项具有必填布尔 `public`，`workspace` 只能为 false；Incus backend 不进入 Runtime 本地 manifest 的 Endpoint 响应或 Runtime Metadata。
+- [x] Endpoint label 在 Manager 和 Gitea 使用相同 UTF-8、去除首尾 Unicode 空白、1 到 64 字符及禁止字符规则；非法 label 不写入本地路由或 Gitea cache，合法中文和其他普通展示文本保持原值。
+- [x] metadata ready 且没有 `workspace` 记录时，默认 workspace open 仍有效，UI 使用稳定 workspace 描述，Manager 将其解析为内置 Web 终端；Runtime 后续声明同名 `workspace` Endpoint 时切换为 Endpoint proxy 并关闭旧内置终端 session。
+- [x] resume 在 final 前完成同一 operation 版本的系统初始化、Token 写入、环境恢复和 ready 上报；Manager 重启后只把未完成的 active operation 恢复为 `lease_paused`，取得同版本续租后重新 start 并按正常启动流程继续，final 成功后无需恢复独立凭据任务。
+- [x] 缺失固定 boot 字段、非法 boot stage 和错误 boot operation 版本被拒绝；create 在当前 operation 的 ready 快照前不能 final done。
+- [x] active create、active resume 和 running 使用固定 boot 版本与阶段矩阵；无 active operation 的 stopped 拒绝 metadata，同版本 ready 不回退，已结束 resume 的迟到快照不能重建当前启动上下文。
+- [x] active create/resume 的 `prepare-runtime`、`initialize-system`、`prepare-workspace`、`start-environment`、`publish-runtime` 和 `ready` boot 快照保存到同一 Codespace metadata 快照，并通过同一串行发布任务上报。中间阶段只唤醒发布任务，允许被后续阶段合并；`ready` 阶段同步等待 Gitea 接受后才允许 final done。
+- [x] ready、Endpoint 变化、resource usage 变化和周期刷新使用同一 Codespace 的串行 metadata 发布任务；create/resume final 等待包含当前 operation ready 的快照被接受，不等待随后产生的 Endpoint 或指标 generation，发布任务仍会继续到本地最新快照被接受。
+- [x] Codespace 停止、删除、本地清理或 metadata 快照已经不存在时，Manager 释放该 Codespace 的本地 metadata 发布任务；任务正在重试时也能被当前 Codespace 生命周期取消。
+- [x] Gateway SSH 建立后，认证、Incus backend 解析和会话复检接入同一 ready 与 Gateway session 生命周期；Gateway 使用 Manager 本地 Incus backend、workspace 和 UID/GID 连接 Runtime。
+- [x] Gateway SSH 的 stop/delete 即时关闭通过 SSH transport 取消索引完成；生命周期事件不仅删除 session 记录，还取消已经建立的 SSH transport。
+- [x] Gateway SSH 的目标变化即时关闭通过 Manager 本地目标变化通知和 SSH transport 取消索引完成；新连接使用新的 ready 快照，旧连接不会继续使用旧 Incus backend 或 Endpoint proxy 目标。
+- [x] Gateway SSH 的 idle timeout 按 SSH transport 的实际 channel 活动计时；channel open、channel request 和任一方向数据传输刷新计时，超时后关闭 transport 并释放 live session。
+- [x] codespace 本地状态在 metadata generation 耗尽时不提交内容变化的 Endpoint、resource usage 快照或内存路由；Manager 保留最大 generation 并拒绝发布新 Runtime 本地 manifest 内容。
+- [x] metadata generation 耗尽后的 Gitea `version_exhausted` 硬错误、Manager 最小 pending 清理和 operation 收敛由完整 metadata 发布任务与生命周期清理流程实现。
+- [x] cache TTL 刷新不改写 `last_active_unix` 或主状态。
 
 ## 日志存储
 

@@ -50,6 +50,16 @@ enum RuntimeState {
   RUNTIME_STATE_FAILED = 4;
 }
 
+enum RuntimeBootStage {
+  RUNTIME_BOOT_STAGE_UNSPECIFIED = 0;
+  RUNTIME_BOOT_STAGE_PREPARE_RUNTIME = 1;
+  RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM = 2;
+  RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE = 3;
+  RUNTIME_BOOT_STAGE_START_ENVIRONMENT = 4;
+  RUNTIME_BOOT_STAGE_PUBLISH_RUNTIME = 5;
+  RUNTIME_BOOT_STAGE_READY = 6;
+}
+
 enum IdleStopNotApplicableReason {
   IDLE_STOP_NOT_APPLICABLE_REASON_UNSPECIFIED = 0;
   IDLE_STOP_NOT_APPLICABLE_REASON_OPERATION_CONFLICT = 1;
@@ -286,12 +296,52 @@ message UpdateLogResponse {
 message ReportRuntimeMetadataRequest {
   int32 protocol_version = 1;
   string codespace_uuid = 2;
-  // JSON data matching the Runtime Metadata schema.
-  string metadata_json = 3;
-  int64 metadata_generation = 4;
+  int64 metadata_generation = 3;
+  RuntimeMetadata metadata = 4;
 }
 
 message ReportRuntimeMetadataResponse {}
+
+message RuntimeMetadata {
+  repeated RuntimeEndpoint endpoints = 1;
+  RuntimeBoot boot = 2;
+  RuntimeResourceUsage resource_usage = 3;
+}
+
+message RuntimeEndpoint {
+  string endpoint_id = 1;
+  string label = 2;
+  bool public = 3;
+}
+
+message RuntimeBoot {
+  int64 operation_rversion = 1;
+  RuntimeBootStage stage = 2;
+  int64 started_unix = 3;
+  int64 last_update_unix = 4;
+}
+
+message RuntimeResourceUsage {
+  RuntimeCPUUsage cpu = 1;
+  RuntimeMemoryUsage memory = 2;
+  RuntimeDiskUsage disk = 3;
+  int64 observed_unix = 4;
+}
+
+message RuntimeCPUUsage {
+  int64 used_millicores = 1;
+  int64 limit_millicores = 2;
+}
+
+message RuntimeMemoryUsage {
+  int64 used_bytes = 1;
+  int64 limit_bytes = 2;
+}
+
+message RuntimeDiskUsage {
+  int64 used_bytes = 1;
+  int64 limit_bytes = 2;
+}
 
 // --- RequestGiteaToken ---
 
@@ -578,11 +628,12 @@ x-codespace-manager-secret: <manager secret>
 - `DeclareManagerResponse` 返回正数 `heartbeat_interval_milliseconds`、`runtime_metadata_refresh_interval_milliseconds` 和 `control_plane_max_message_size_bytes`，并返回来自 Gitea `ROOT_URL` 的规范 absolute `http|https` `gitea_web_url`。该 URL 必须有 host，不含 userinfo、query 或 fragment，path 是规范 AppSubURL 并以 `/` 结尾；HTTP 与 HTTPS 都可使用。Manager 启动后先以 recovering 立即声明，成功取得全部字段后才启动周期任务和领取流程；后续成功响应原子替换当前服务端参数。字段非法时 Manager 保持 recovering 和零容量，不采用本地猜测值。
 - `DeclareManager.tags` 最多 64 项，单项 lower-case 后使用 `[a-z0-9_-]+`、长度为 1-64，并规范化去重。
 - `gateway_url` 使用无尾随点的规范 ASCII DNS 主机名，每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符，并与 Gitea `ROOT_URL` 处于不同可注册域；`gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一。任一校验或唯一性冲突都不产生部分声明更新。
-- `metadata_json` 规范化后不超过 `RUNTIME_METADATA_MAX_SIZE`。
+- `ReportRuntimeMetadata.metadata` 使用 `RuntimeMetadata` typed message。`endpoints`、`boot` 和 `resource_usage` 都通过 proto 字段表达。Gitea 按规范化后的 typed snapshot 计算编码大小，不能超过 `RUNTIME_METADATA_MAX_SIZE`。**设计如此：**Manager、codespace-proto-go 和 Gitea 共享同一份生成结构，字段含义由 proto 定义承担；页面展示、缓存 hash 和 Gateway 判定使用同一组字段。
 - Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；ID 固定匹配 `^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`，每项必须包含布尔 `public`。`workspace` 项的 `public` 必须为 false，并继续使用无 ID 前缀的 workspace Host。
 - 每个 Endpoint 的 `label` 必须是合法 UTF-8；去除首尾 Unicode 空白后保存，按 Unicode 字符数计算的长度为 1 到 64，且不包含控制字符、`<` 或 `>`。Manager 与 Gitea 使用相同规则，不执行 Unicode 归一化、替换或自动清洗；非法 label 不写入本地路由或 Gitea cache。
-- Runtime Metadata 的 boot 上下文按状态校验：active create/resume 使用当前 operation 和适用的 `prepare-runtime|initialize-system|prepare-workspace|start-environment|publish-runtime|ready` 顺序，running 固定为 boot 版本不大于当前 operation 的 `ready`；stopped 且无 active operation 时拒绝 metadata。同一 boot 版本一旦 ready 就保持 ready。
-- `ReportRuntimeMetadataResponse` 为空。成功响应确认 Gitea 接受了该请求携带的 `metadata_generation + metadata_json`；Manager 使用发送前保存的 generation 和完整快照更新 ready 接受记录并判断是否还需发送本地更新版本。功能关闭返回 `state_unavailable`，Manager 保留本地快照和 generation 重试。
+- Runtime Metadata 的 boot 上下文按状态校验：active create/resume 使用当前 operation 和适用的 `RUNTIME_BOOT_STAGE_PREPARE_RUNTIME`、`RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM`、`RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE`、`RUNTIME_BOOT_STAGE_START_ENVIRONMENT`、`RUNTIME_BOOT_STAGE_PUBLISH_RUNTIME`、`RUNTIME_BOOT_STAGE_READY` 顺序，running 固定为 boot 版本不大于当前 operation 的 `READY`；stopped 且无 active operation 时拒绝 metadata。同一 boot 版本一旦 ready 就保持 ready。
+- `RuntimeResourceUsage` 只表达 CPU、内存和磁盘三类当前用量。CPU 使用 millicores，内存和磁盘使用 bytes；`observed_unix` 是 Manager 采样时间。各 used/limit 字段必须大于或等于 0，limit 为 0 表示当前无法从 Incus 取得明确限制。指标采样失败不会使 ready、final、open、SSH 或 Endpoint 授权失败，只让页面暂时显示无可用指标。**设计如此：**这些指标用于创建者判断当前工作区资源状态，不承担配额、调度或生命周期判断；复杂的网络、进程和 I/O 细项收益低且解释成本高，本设计不放入控制面协议。
+- `ReportRuntimeMetadataResponse` 为空。成功响应确认 Gitea 接受了该请求携带的 `metadata_generation + metadata` typed snapshot；Manager 使用发送前保存的 generation 和完整快照更新 ready 接受记录并判断是否还需发送本地更新版本。功能关闭返回 `state_unavailable`，Manager 保留本地快照和 generation 重试。
 - `OpenTokenBinding.endpoint_id` 和 Endpoint session binding 始终非空；默认 open 固定使用 `workspace`。
 - Gitea 按功能开关、站点默认值和对象模式解析 `auto_stop_enabled + idle_timeout_seconds`。Manager 保存这两个实际运行值和 `interaction_generation`，不计算设置摘要；default 与 custom 当前解析结果相同时在运行侧具有相同策略，数据库中的 mode 仍决定站点默认值以后变化时是否跟随。
 - `RequestIdleStop` 直接提交 Manager 观察到的开关、超时和交互版本。Gitea 先返回已经存在的同一 idle stop，再按当前 operation 和主状态返回 `not_applicable`；其余情况比较三个观察值，任一变化时返回完整 `observation_changed(runtime_settings)`。只有当前设置启用、三个值一致、Codespace 为 running 且版本可以递增时才创建 idle stop，并以统一 `pending(operation_rversion)` 表达首次创建或幂等重试。版本不能递增时返回不可重试的 `version_exhausted`。
@@ -597,6 +648,8 @@ x-codespace-manager-secret: <manager secret>
 - [x] `EnsureCodespaceGitSSHKey` 只接受与调用方 Manager 绑定、当前已领取且期限未到期的 create/resume 初始化阶段，并且当前站点推导出的 SSH clone 能力可用。create 只有在 `repo_clone_ssh_url` 非空时可以为 SSH 尝试调用；resume 由脚本仅在 workspace 当前实际 remote 为 SSH 时调用。绑定不存在时创建，绑定为相同公钥时幂等返回当前 `known_hosts_lines`；已有不同公钥或全局指纹冲突时返回 `key_conflict`，不替换当前绑定。响应至少包含一条与 Gitea SSH 对外 host 和有效端口匹配的规范化 Host Key 行。
 - [x] User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一规范指纹锁并在事务内复查。Codespace 路径先取得 Codespace lock 再取得指纹锁；不同 Codespace 或不同 Key 类型并发提交相同公钥时只允许一个符合类型规则的创建结果，历史重复指纹返回数据完整性硬错误。
 - 所有编码后的 protobuf request 和 response 都不超过 `CONTROL_PLANE_MAX_MESSAGE_SIZE`；`UpdateLog.lines` 单行受 Gitea 内部日志行大小保护值限制。日志按返回的消息上限分批，inventory、observed operation、Runtime Metadata 和单条日志物理行是必须能整体传输的协议单元。
+- codespace-proto-go 生成包包含 `RuntimeMetadata`、`RuntimeEndpoint`、`RuntimeBoot`、`RuntimeResourceUsage`、`RuntimeCPUUsage`、`RuntimeMemoryUsage` 和 `RuntimeDiskUsage`，Gitea 与 Manager 不维护另一套同名业务 struct。
+- Runtime Metadata 的内容 hash 基于校验后的 typed 字段：Endpoint 按 `endpoint_id` 排序，label 使用规范化文本，boot 使用 enum 值，resource usage 使用数值字段。请求中不存在 JSON 空白或对象 key 顺序导致的 hash 差异。
 
 实现验收点：
 
@@ -633,7 +686,7 @@ x-codespace-manager-secret: <manager secret>
 - 控制面稳定后，完整 inventory 在一个报告周期加当前 RPC 退避内重新下发 Gitea 当前自动暂停设置。
 - ReportInstances 对每个 reported UUID 恰好返回一个结果；仍绑定当前 Manager 的非 cleanup 结果携带设置，同一结果至多携带一个差异 action。
 - Open 和 SSH 成功结果携带最新 `interaction_generation`；Manager 使用该值替换本地观察值并重新开始空闲计时。
-- 默认 workspace、Runtime workspace Endpoint 和 Manager 内置 Web SSH 都使用同一个 Open Token binding 结构，由 `endpoint_id=workspace` 表达稳定授权对象。
+- 默认 workspace、Runtime workspace Endpoint 和 Manager 内置 Web 终端都使用同一个 Open Token binding 结构，由 `endpoint_id=workspace` 表达稳定授权对象。
 - RequestGiteaToken 请求只包含 `codespace_uuid`；服务端根据当前 Codespace、active operation、Manager 和功能状态决定返回 Token 或 `state_unavailable`。单一请求形态确保调用方无法通过自报用途改变授权结果。
 - RequestGiteaToken 成功响应的 `token/server_url` 均非空；Manager 不从 clone URL 或内部控制面地址推导 Runtime 使用的 Gitea 根地址。
 - active create、active resume 和无 active operation 的 running 可以请求 Token；active stop 返回 `state_unavailable`，但创建 stop 前已有的 Token 继续按 running 阶段授权到 stop final。
