@@ -783,7 +783,9 @@ metadata_generation
 </ul>
 <p>Runtime Metadata 变化频繁且可重建，放在 cache 中。cache miss 只影响展示和交互入口，不改变主状态。</p>
 <p>Gitea 在接受请求时写入 <code>last_reported_unix=now</code>，该时间不属于 Manager 快照内容，也不参与 generation 内容比较。Manager 对 active create、active resume 和 running Codespace 使用最近一次成功 Declare 返回的 metadata 刷新周期；稳定 stopped 等待下一次 resume 再启动发布。</p>
-<p>每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、workspace route、Incus backend 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 <code>ready</code>，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后。</p>
+<p>Manager 显式管理 Runtime Metadata 的发布资格。create/resume 在保存本次 boot 快照后激活发布任务；Manager 重启后先保持全部发布任务关闭，再由完整 inventory 确认某个本地实例与 Gitea 都处于稳定 running、且没有 active operation 时恢复该对象的发布。Endpoint 或资源用量变化只唤醒已经激活的任务，不能创建新任务。<strong>设计如此：本地状态文件负责保存恢复材料，不能单凭文件中曾经存在 Runtime Metadata 就推断实例当前可接入；完整 inventory 同时观察 Incus 和 Gitea 当前状态，适合作为重启后的发布恢复边界。</strong></p>
+<p>stop、delete、租约中断的 create/resume、健康检查停止、稳定 running 凭据故障和 inventory 收敛动作统一结束发布生命周期：先关闭该 Codespace 的现有访问，清除本地 Endpoint 路由、Runtime Metadata 和相关 session，停用发布任务，再执行对应的 Incus stop/delete 或状态报告。清理只移除当前运行实例的可发布快照，保留 resume 所需的 startup input、共享脚本环境和 operation/transition 状态；状态文件同时记录发布已关闭，迟到的非空 Endpoint 更新会直接失败，下一次 create/resume 保存新 boot 快照时才重新开放。每个 Codespace 状态文件的读改写在 Manager 内串行执行，避免资源采样、Endpoint 更新和停止清理互相覆盖。<strong>设计如此：Runtime Metadata 与 Endpoint 表达“当前可以连接到哪里”，而 startup input 和共享脚本环境表达“下一次如何启动”；两类数据生命周期不同，停止时分开处理可以保留恢复能力，同时让 stopped 立即失去接入条件。发布关闭记录用于解决已经进入执行队列的 Endpoint 更新晚于停止清理完成的问题，不承担新的生命周期状态。</strong></p>
+<p>每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、workspace route、Incus backend 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 <code>ready</code>，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。<code>stale_operation</code> 表示该快照对应的启动上下文已经结束，发布任务清除快照并终止；它不是网络临时错误，因此不进入周期重试。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后，也不会让已经结束的 operation 持续升代上报。</p>
 <p>实现验收点：</p>
 <ul>
 <li>metadata cache 接受当前 Manager 的新版本快照和相同版本、相同内容的 TTL 刷新。</li>
@@ -800,6 +802,11 @@ metadata_generation
 <li>本地 metadata generation 丢失时，Manager 可根据 stale detail 恢复版本基线后重报当前完整快照。</li>
 <li>同代不同 metadata 返回不可重试的 <code>generation_conflict</code>；版本无法递增返回 <code>version_exhausted</code>，两者都不写入新快照或继续自动升代，Manager 随后按 Incus 归属字段清理该 Codespace。</li>
 <li>metadata 发布任务串行发送当前完整快照；任一成功请求包含当前 operation 的 ready 时即可满足 final 的 metadata 前置条件，之后产生的更高 Endpoint generation 继续异步收敛。</li>
+<li>create/resume 保存本次 boot 快照后显式激活发布；Manager 重启不扫描状态文件恢复发布任务，只有 inventory 确认的稳定 running 才恢复周期发布。</li>
+<li>Endpoint 和资源用量变化只唤醒当前活跃发布任务；stopped 对象即使保留其他恢复状态，也不会因本地文件变化重新创建发布任务。</li>
+<li>stop、delete、租约中断、健康停止、凭据故障停止和 inventory 收敛在修改 Incus 状态前关闭访问并清除 Runtime Metadata、Endpoint 和 session；startup input、共享脚本环境及必要的 operation/transition 状态继续保留。</li>
+<li>同一 Codespace 状态文件的资源采样、Endpoint 更新和停止清理按串行顺序提交；停止清理完成后，并发更新不能恢复已清除的 Runtime Metadata 或 Endpoint。</li>
+<li>Runtime Metadata 上报收到 <code>stale_operation</code> 后清除当前可发布快照并结束该对象的发布任务，后续刷新周期不再重试该快照。</li>
 <li>Manager 本地阶段按固定映射生成六个 boot stage；暂停保持最后已持久化的 stage，只有 Gitea 接受当前版本 ready 快照后才把本地阶段推进到 <code>finalize</code>。</li>
 <li><code>lease_paused</code> 后的同版本恢复复用持久初始化结果，但重新执行本次实例启动所需的 init/start 和校验；已达到 ready 的 boot stage 保持单调，旧 ready 回执不能跳过重新校验。</li>
 </ul>
