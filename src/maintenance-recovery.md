@@ -92,7 +92,7 @@ Manager 记录不存在时返回 `manager_unregistered`，Secret 不匹配时返
 Manager 启动流程：
 
 1. 取得该 Manager 本地状态目录独占锁；锁已被其他进程持有时退出，不发送 RPC。
-2. 读取并校验 Manager 根快照；失败时以固定硬错误退出，不发送 RPC 或修改 Incus 实例。先读取全部已有 Codespace 快照的格式版本，再为有效对象初始化关闭 session 准入、空 session 集合和空 ready 接受记录；优先续做 `cleanup_pending=true` 的本地清理和 `health_stop_pending=true` 的实例停止。已经确认为版本 1、但完整结构校验失败的单个快照按“持久状态损坏处理”清理该 UUID；文件不可读、不是合法 JSON 或无法取得受支持格式版本时按 Manager 整体硬错误处理。
+2. 读取并校验 Manager 根快照；失败时以固定硬错误退出，不发送 RPC 或修改 Incus 实例。先读取全部已有 Codespace 快照的格式版本，再为有效对象初始化关闭 session 准入、空 session 集合和空 ready 接受记录；优先续做 `cleanup_pending=true` 的本地清理和 `health_stop_pending=true` 的实例停止。健康停止使用意图中已经保存的 observed operation 版本，不依赖停止前已清除的 Runtime Metadata。已经确认为版本 1、但完整结构校验失败的单个快照按“持久状态损坏处理”清理该 UUID；文件不可读、不是合法 JSON 或无法取得受支持格式版本时按 Manager 整体硬错误处理。
 3. 校验配置和 host key，绑定 Gateway HTTP/WebSocket 和 Gateway SSH listener；任一必要 listener 失败时退出，不 Declare online。
 4. `DeclareManager(manager_runtime_state=recovering)`，取得服务端心跳周期、Runtime Metadata 刷新周期和控制面消息上限；响应非法时以零容量保持 recovering，不开始新的 Incus 枚举或修改，步骤 2 已经持久化的 `cleanup_pending` 继续按原授权完成。
 5. 全量枚举带当前 Manager 归属字段的 Incus 实例，并读取每个实例的当前状态。
@@ -170,8 +170,8 @@ sequenceDiagram
 
 - recovering 状态写入 `codespace_manager.runtime_state`。
 - 功能启用时，Manager 在 recovering 期间接受 `FinalizeOperation`、`UpdateLog`、`ReportInstances`、`ReportRuntimeMetadata` 和 `ReportRuntimeTransition`；站点排空时按排空能力表处理。
-- Manager 完整扫描 Incus 实例、恢复 Runtime 映射和 worker 上下文后声明 online；各 Codespace 的 metadata、`health_stop_pending`、`pending_runtime_transition` 和 `cleanup_pending` 在 online 后继续处理。
-- active create、active resume 和 running Codespace 恢复时只启动一个读取当前完整快照的 metadata 发布任务；Endpoint、boot、SSH 和周期刷新共享其 generation。稳定 stopped 不启动周期发布。
+- Manager 完整扫描 Incus 实例、恢复 Runtime 映射和 worker 上下文后声明 online；`health_stop_pending`、`pending_runtime_transition` 和 `cleanup_pending` 按本地收敛状态继续处理，Runtime Metadata 发布资格按当前 operation 或 inventory 结果恢复。
+- active create/resume 先保持 `lease_paused`，取得同版本续租并继续启动流程后激活唯一 metadata 发布任务；稳定 running 由完整 inventory 同时确认 Gitea 与 Incus 状态后激活。Endpoint、boot、SSH 和周期刷新共享其 generation；稳定 stopped 不启动周期发布。
 - Declare online 后 Fetch 使用真实容量和当前操作类型；单个 Codespace 的交互恢复未完成不阻塞其他 operation，Declare 本身不分配 operation。
 - Manager 进程启动时所有 Codespace 的本地 session 准入关闭；online 后只有完成凭据、SSH、路由和当前 ready 上报的 running 对象逐个开放，外部 cache 保留旧 metadata 不能提前建立连接。
 - 单个 Codespace 的临时恢复错误保持该对象准入关闭，并进入固定运行健康检查流程；其他健康对象可以开放。Manager 等本轮开始时确定且仍符合条件的对象全部取得首次结果后判断共享故障；未达到共享条件时，连续 3 次失败的对象停止实例并上报 `stopped`。明确认证拒绝或目标身份不一致时立即执行相同停止收敛。实例或根存储已确认不可恢复时上报 `failed`。
@@ -457,7 +457,7 @@ Gitea 已经创建的 idle stop 使用普通 operation 规则恢复：queued sto
 
 ## Gateway Session 恢复
 
-Gateway session 是 Manager/Gateway 本地连接状态。Gitea 重启不恢复 Gateway session；Manager/Gateway 根据本地 TTL、idle timeout、Runtime 断开和 `RevalidateGatewaySession` 周期判定关闭或延续连接。失效 cookie 的顶层 HTML GET 通过 Declare 返回的 Gitea 浏览器根 URL 进入登录确认，其他请求返回 401。公共连接同样不持久化；重启后先完成该 Codespace 的本地交互恢复和当前 ready 重报，再由本地公共路由与 `ValidatePublicEndpoint` 的短期允许结果建立新连接。普通 HTTP 允许结果最多复用 1 秒，缓存未命中、已过期或本地路由变化时重新校验；WebSocket 和流式 HTTP 继续按各自周期校验。新的认证打开、公共请求和 SSH 仍分别经过当前主状态、Manager 在线态和 Runtime Metadata 校验。
+Gateway session 是 Manager/Gateway 本地连接状态。Gitea 重启不恢复 Gateway session；Manager/Gateway 根据本地 TTL、idle timeout、Runtime 断开和 `RevalidateGatewaySession` 周期判定关闭或延续连接。失效 cookie 的顶层 HTML GET 通过 Declare 返回的 Gitea 浏览器根 URL 进入带 `open_endpoint` 的 Codespace 详情页，登录后自动显示打开弹窗；其他请求返回 401。公共连接同样不持久化；重启后先完成该 Codespace 的本地交互恢复和当前 ready 重报，再由本地公共路由与 `ValidatePublicEndpoint` 的短期允许结果建立新连接。普通 HTTP 允许结果最多复用 1 秒，缓存未命中、已过期或本地路由变化时重新校验；WebSocket 和流式 HTTP 继续按各自周期校验。新的认证打开、公共请求和 SSH 仍分别经过当前主状态、Manager 在线态和 Runtime Metadata 校验。
 
 实现验收点：
 
@@ -465,4 +465,4 @@ Gateway session 是 Manager/Gateway 本地连接状态。Gitea 重启不恢复 G
 - 新 generation 的完整 inventory 驱动 missing 判定；响应丢失后重新扫描并使用更高 generation。
 - active create deadline 未到期时，Runtime 暂未出现在完整 inventory 中不会被误判为 failed；Manager 重启不延长该期限。
 - Gateway 已有 session 通过专用 revalidate RPC 恢复权限检查，不重复消费 open code。
-- Gateway 重启后，需要认证的深层链接可经 Gitea 登录确认恢复原 path/query；公共请求重新取得本地并发名额并实时校验，不恢复旧连接或影响自动暂停。
+- Gateway 重启后，需要认证的深层链接可经 Gitea 详情页登录和自动弹窗确认恢复原 path/query；公共请求重新取得本地并发名额并实时校验，不恢复旧连接或影响自动暂停。

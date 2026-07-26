@@ -221,7 +221,7 @@ sequenceDiagram
 - `ENABLED=true` 时 Gitea 在 Codespace 组件初始化前推导 Git clone 能力；首选协议必须可用，至少一种 clone 能力可用。SSH clone 关闭时 create payload 不下发 SSH URL，`EnsureCodespaceGitSSHKey` 返回状态不可用；排空模式允许关闭任一入口并继续完成 stop、delete 与管理清理。
 - Manager 本地版本基线丢失后，running 主状态对应 stopped Runtime 或无 active operation 的 failed inventory 可从 report transition action 取得当前版本；stopped 主状态对应 running Runtime 固定停止 Incus 实例并保留根存储，新的启动只来自 resume operation。Manager 持有正版本操作上下文但低于 Gitea 当前 active operation 时，failed inventory 可通过 refetch 取得当前 payload；版本相同时直接提交当前 operation 的 final failed；`observed_operation_rversion=0` 表示上下文缺失，只等待原租约超时。单 Codespace 不可恢复时可上报 failed 状态报告，Manager 整体离线本身不批量改写 Codespace。
 - running 只由当前 create/resume 的 ready metadata 和 Token 都完整的 final done 建立；同一 boot 版本 ready 不回退，resume 失败后清除本轮发布上下文并拒绝迟到快照，下一次 resume 从保留的 Incus 实例重建。
-- 每个 Codespace 只有一个串行 metadata 发布任务管理完整快照和 generation。`ReportRuntimeMetadata` 的成功空响应确认 Gitea 接受本次请求快照；请求携带当前 operation ready 时即可继续 final，后续 Endpoint 或资源指标 generation 异步收敛。Endpoint 声明和 CPU/内存/磁盘采样以字段形式保存在既有 Codespace 当前快照中，使路由、boot、resource usage、Incus backend 和 generation 共享“临时文件、文件同步、rename、父目录同步”的提交点；提交后才替换内存路由并返回成功。进程重启读取提交前或提交后的任一完整快照时，通过 Fetch、inventory 和 Runtime 幂等请求恢复。同步期间新增入口暂不展示，已删除入口由 Gateway 当前路由复检拒绝，指标缺失只影响详情页展示。
+- 每个 Codespace 只有一个串行 metadata 发布任务管理完整快照和 generation。`ReportRuntimeMetadata` 的成功空响应确认 Gitea 接受本次请求快照；请求携带当前 operation ready 时即可继续 final，后续 Endpoint 或资源指标 generation 异步收敛。Endpoint 声明和 CPU/内存/磁盘采样以字段形式保存在既有 Codespace 当前快照中，使路由、boot、resource usage、Incus backend 和 generation 共享“临时文件、文件同步、rename、父目录同步”的提交点；提交后才替换内存路由并返回成功。进程重启读取提交前或提交后的任一完整快照时，通过 Fetch 和 inventory 确认当前生命周期后恢复发布：续租后的 active create/resume 与 inventory 确认的稳定 running 才激活任务，稳定 stopped 保持关闭。同步期间新增入口暂不展示，已删除入口由 Gateway 当前路由复检拒绝，指标缺失只影响详情页展示。
 - Endpoint label 使用 Manager 与 Gitea 共同执行的合法 UTF-8、去除首尾 Unicode 空白、1 到 64 个 Unicode 字符和禁止控制字符、`<`、`>` 规则；非法值不进入本地路由或 Gitea cache，合法值按普通文本展示。
 - Gateway 的 Open/SSH 最终检查、session 名额预留和登记使用 Codespace 本地协调锁；stop/delete/cleanup 和 Endpoint 路由变更通过同一锁取消连接中与已建立 session，不会在关闭扫描后补登记新连接。
 - Open Code 只在格式损坏、显式过期或全部实时校验通过后进入删除；暂时访问条件不满足时保留到原 TTL，成功 binding 一定对应已经删除的 code。
@@ -229,10 +229,10 @@ sequenceDiagram
 - 每个 `serve` 进程使用独立身份和状态目录，并同时持有 Manager worker、Gateway HTTP 和 Gateway SSH；状态目录锁阻止同一目录启动第二个进程。复制身份到另一状态目录属于错误部署，版本或 generation 冲突使用既有保守硬错误处理。
 - Gateway 不读取 Gitea 数据库，Endpoint 与 SSH 鉴权都通过 ManagerService 完成。
 - 默认 open 的 `OpenTokenBinding.endpoint_id` 始终是 `workspace`；Runtime 未声明 workspace Endpoint 时，同一 URL 使用 Manager 内置 Web 终端。
-- 需要认证的 Endpoint 直接导航在无有效 session 时经 Gitea GET 登录确认和 POST 打开动作恢复原 path/query；非导航、WebSocket 和修改请求返回 401，Gateway 不重放请求。
+- 需要认证的 Endpoint 直接导航在无有效 session 时，经带 `open_endpoint` 的 Gitea 详情页完成登录并自动显示打开弹窗，用户确认 POST 后恢复原 path/query；非导航、WebSocket 和修改请求返回 401，Gateway 不重放请求。
 - 普通 Endpoint 的 `public` 字段明确选择唯一访问方式；公共请求通过本地路由与 Gitea 双重校验，使用独立并发名额，不建立用户 session、不更新交互或活跃时间，也不阻止自动暂停。workspace 始终需要认证。
 - Web 终端只使用 Manager 当前 Incus backend、workspace 和非 root UID/GID，浏览器不能选择 host、user 或 key；终端 WebSocket 沿用原 Gateway session，stop/delete/路由切换和复检失败会关闭 Incus exec。
-- 创建者详情页面数据中的 workspace label、非 workspace Endpoint 列表、CPU/内存/磁盘当前用量和 SSH 命令由服务端规范化；`open_endpoint` 只在需要认证的普通 Endpoint 列表非空时出现，SSH 只展示 Manager 公开地址和 host key。资源指标只用于创建者查看当前工作区状态，缺失时显示暂不可用，不影响操作。完整详情页与状态 HTML 片段使用同一服务端数据和权限判断。组织所有者和站点管理员使用不含详情、日志、自动暂停、Endpoint、资源指标或 SSH 的治理列表数据，只能执行当前状态允许的直接管理动作。
+- 创建者详情页面数据中的 workspace、非 workspace Endpoint 列表、CPU/内存/磁盘当前用量和 SSH 命令由服务端规范化；`open_endpoint` 查询参数只用于 Gateway 登录恢复时选择当前页面中的入口，SSH 只展示 Manager 公开地址和 host key。资源指标只用于创建者查看当前工作区状态，缺失时显示暂不可用，不影响操作。完整详情页与状态 HTML 片段使用同一服务端数据和权限判断。组织所有者和站点管理员使用不含详情、日志、自动暂停、Endpoint、资源指标或 SSH 的治理列表数据，只能执行当前状态允许的直接管理动作。
 - 组织 Codespace 治理按已经绑定的运行容量归属判断：绑定组织 Manager 后进入该组织治理列表；未绑定或绑定全局 Manager 时不进入组织列表，由创建者和站点管理员管理。repository transfer 不改变已经成立的 Manager binding 和治理范围。
 - 同一浏览器重复 Open 以旧 cookie 原子替换同 binding session，不额外占用配额或触发自动暂停 0/1 变化；未激活的新 session 在 30 秒后清理。
 - SSH 认证成功后的 Incus 后端准备同样使用固定 30 秒上限；公钥删除立即阻止新连接，已经建立的连接继续受用户状态、功能开关、生命周期、复检、TTL 和空闲超时控制。
