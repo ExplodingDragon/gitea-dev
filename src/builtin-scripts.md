@@ -48,10 +48,10 @@ Manager 创建或启动 Incus 实例并确认 file/exec API 可用后，把脚�
 create: init.sh -> start.sh
 resume: start.sh
 stop: stop.sh -> Incus stop
-delete: 直接删除实例和本地状态
+delete: 销毁实例并删除本地状态
 ```
 
-三个脚本共享同一个 `flock`，每次调用由 launcher 建立独立进程组，并使用 Manager 生成的唯一结果文件。stdout/stderr 写入当前 operation 日志。脚本不接收 `operation_rversion`；Manager 把调用、结果和自己保存的 operation 上下文关联。stop 脚本用于优雅收尾，失败会进入日志诊断，Manager 仍继续执行 Incus stop，使 Gitea 生命周期可以收敛到 stopped。
+三个脚本共享同一个 `flock`，每次调用由 launcher 建立独立进程组，并使用 Manager 生成的唯一结果文件。stdout/stderr 写入当前 operation 日志。脚本不接收 `operation_rversion`；Manager 把调用、结果和自己保存的 operation 上下文关联。stop 脚本用于优雅收尾，成功时本次共享环境会保存到 Manager 本地 state，失败会进入日志诊断且不会覆盖旧共享环境，Manager 仍继续执行 Incus stop，使 Gitea 生命周期可以收敛到 stopped。delete 不运行 stop 脚本，它按销毁语义删除 Incus 实例和本地状态；脚本私有状态随根存储一起删除。
 
 凭据和 Git SSH 材料使用固定路径，脚本直接按路径访问：
 
@@ -92,7 +92,7 @@ create 的 `init.sh` 取得创建时锁定的 repository 输入；resume 不取�
 | `GITEA_COMMIT_SHA` | create 必须得到的锁定 commit SHA |
 | `CODESPACE_REPO_NAME` | create 时的 repository 名称 |
 
-Manager 在 create/resume 的 start 前写入 root seed：Gitea Token、Git SSH 私钥、公钥和 known_hosts。`init.sh` 在 create 中安装首次 seed 并上报实际 UID/GID；`start.sh` 每次启动安装当前 seed，并只恢复已有 workspace 的本地凭据和运行入口。这个顺序让 Go 侧统一生成控制面凭据，同时让 Runtime 内用户、权限和首次 workspace 初始化由 init 根据真实系统状态一次性完成。
+Manager 在 create/resume 的 start 前写入 root seed：Gitea Token、Git SSH 私钥、公钥和 known_hosts。Git SSH 私钥和公钥先写入 seed，再用同一公钥向 Gitea 确认绑定；Gitea 返回的 known_hosts 和本轮 Token 随后写入同一 seed。`init.sh` 在 create 中安装首次 seed 并上报实际 UID/GID；`start.sh` 每次启动安装当前 seed，并只恢复已有 workspace 的本地凭据和运行入口。这个顺序让 Go 侧统一生成控制面凭据，同时让 Runtime 内用户、权限和首次 workspace 初始化由 init 根据真实系统状态一次性完成；初始化中断后重试也能复用同一把 Git SSH key，避免把一次失败变成公钥冲突。
 
 `CODESPACE_ENV` 指向当前 Codespace 的共享环境文件。脚本使用追加方式发布后续调用需要的变量：
 
@@ -123,7 +123,7 @@ Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，并校
 
 - [x] create 执行 `init.sh -> start.sh`；resume 只执行 `start.sh`；stop 执行 `stop.sh` 后继续 Incus stop。
 - [x] start 不 clone、fetch、checkout，不读取 repository payload，不覆盖 workspace 当前 HEAD 和用户后续可能修改的 Git identity。
-- [x] Gitea Token、Git SSH 私钥、公钥和 known_hosts 由 Manager 写入 root seed；init 和 start 都能把当前 seed 安装到固定最终路径。
+- [x] Gitea Token、Git SSH 私钥、公钥和 known_hosts 由 Manager 写入 root seed；Git SSH 私钥和公钥在 `EnsureCodespaceGitSSHKey` 前先落到 seed，init 和 start 都能把当前 seed 安装到固定最终路径。
 - [x] 共享环境由结构化解析，不作为 shell 源文件执行；预定义变量同名追加被忽略。
 - [x] create 缺少 init 提交的 workspace 时不能进入 start；resume 缺少已保存 workspace 时不能启动。
 
@@ -146,7 +146,7 @@ Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，并校
 - `recoverable_failed`：当前 operation lease 内可以重试；本次共享环境追加不提交。
 - `unrecoverable_failed`：继续使用当前 Runtime 无法得到可信结果；create 收敛到 failed，resume final failed 后继续上报 failed。
 
-Manager 主动取消时丢弃结果。其他结果缺失、损坏、owner/mode 错误、出现未知字段或 schema 不匹配时按 `recoverable_failed` 处理。脚本退出码只用于日志诊断，不替代结果文件。stop 脚本失败不会阻止 Incus stop；这是为了让用户停止操作优先获得确定的 stopped 结果，脚本问题通过日志修复。
+Manager 主动取消时丢弃结果。其他结果缺失、损坏、owner/mode 错误、出现未知字段或 schema 不匹配时按 `recoverable_failed` 处理。脚本退出码只用于日志诊断，不替代结果文件。stop 脚本成功会提交本次共享环境，供下一次 resume 使用；stop 脚本失败不会阻止 Incus stop，也不会覆盖旧环境。这是为了让用户停止操作优先获得确定的 stopped 结果，同时保留上一次可信恢复输入。
 
 Manager 本地阶段固定表达为启动编排阶段，脚本入口只对应 init、start 和 stop：
 
@@ -169,7 +169,7 @@ lease_paused
 - [x] 结果结构只包含 `outcome` 和固定 stage；运行方式、容器标识、容器用户、UID/GID 与内部转发信息通过共享环境或脚本私有文件表达。
 - [x] 每次调用只有结果为 done 且共享环境通过校验时才推进后续 Manager 流程；Incus 侧在失败、损坏结果或共享环境校验失败时恢复调用前环境。
 - [x] `lease_paused` 恢复时，create 重新执行 init 并校验已提交 workspace，resume 重新执行 start，随后都执行连通校验；恢复只复用 active operation 快照中的脚本文本和共享环境。
-- [x] stop 脚本失败写入日志后继续 Incus stop；Incus stop 成功才提交 stop final done。
+- [x] stop 脚本成功时保存共享环境；stop 脚本失败写入日志后继续 Incus stop 且不覆盖旧环境；Incus stop 成功才提交 stop final done。
 
 ## Endpoint 与 Incus 后端契约
 
@@ -177,7 +177,7 @@ Endpoint helper 的 `upstream_port` 始终表示 Runtime 实例内已经可以�
 
 脚本若把服务运行在 Runtime 内的另一层环境中，先在实例内把该服务暴露到一个可由 Incus proxy 访问的本地端口，再调用 helper 登记该端口。脚本负责恢复和删除自己创建的内部转发；stop 可以关闭脚本私有服务，delete 会删除包含这些状态的根存储。Endpoint manifest 仍只处理 `endpoint_id`、label、`http|https`、目标端口和必填 `public` 布尔值。
 
-shell、exec 和 SFTP 使用同一实例边界。Manager/Gateway 通过 Incus exec/file/SFTP API 进入 Runtime，执行身份使用 init 输出的非 root UID/GID，默认 cwd 使用 init/start 输出的 workspace。自定义脚本若创建内部开发环境，需要把用户希望进入的工作区和命令入口整理到实例可见的 workspace 或脚本私有状态中；Manager 不解析容器标识。
+shell、exec 和 SFTP 使用同一实例边界。Manager/Gateway 通过 Incus exec/file/SFTP API 进入 Runtime，执行身份使用 init 输出的非 root UID/GID，默认 cwd 使用 init/start 输出的 workspace。SFTP 使用 Incus 实例文件 SFTP endpoint，由 Gateway 提供用户认证和 workspace 根目录映射，不要求 Runtime 内运行 SSH 服务或 `sftp-server`。自定义脚本若创建内部开发环境，需要把用户希望进入的工作区和命令入口整理到实例可见的 workspace 或脚本私有状态中；Manager 不解析容器标识。
 
 **设计如此：Runtime 内部的进程具有同一个 Codespace 权限边界。**用户在实例内拥有 sudo，容器不是额外授权边界；manifest 文件归属于当前实例，Endpoint proxy 和 Incus exec/file 校验负责防止脚本发布不可达目标。因此 Manager 不需要理解内部容器标识。
 
@@ -185,7 +185,7 @@ shell、exec 和 SFTP 使用同一实例边界。Manager/Gateway 通过 Incus ex
 
 - [x] Endpoint API 对所有脚本实现都只接收 Runtime 实例内目标端口；Endpoint 条目不能指定 host。
 - [x] 内部环境的端口转发由脚本建立；Manager 只保存目标端口并创建 Incus proxy。
-- [x] shell、exec 和 SFTP 的身份来自 init 输出的 UID/GID，cwd 来自 init/start 输出的 workspace，并在 ready 前由 Manager 通过 Incus file/exec 实际校验。
+- [x] shell、exec 和 SFTP 的身份来自 init 输出的 UID/GID，cwd 来自 init/start 输出的 workspace，并在 ready 前由 Manager 通过 Incus file/exec 实际校验；SFTP 使用 Incus 实例文件 SFTP endpoint，不依赖 Runtime 内 SSH 服务。
 - [x] 自定义脚本无法通过 Endpoint manifest 指定其他 host。
 
 ## 内置脚本实现

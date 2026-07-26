@@ -159,7 +159,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 
 登记事务先提交 `public_key` 与 `codespace_ssh_key` 的一致结果，再调用 Gitea 现有公钥授权同步入口。内置 SSH 或外部 `AuthorizedKeysCommand` 直接使用数据库；配置使用外部 `authorized_keys` 文件时重写文件，同步失败则 RPC 返回错误并由相同公钥重试。已经从数据库删除的旧 key ID 即使暂时残留在文件中，也无法通过 Gitea 强制命令鉴权。
 
-私钥和专用 `known_hosts` 只保存在 Incus 实例的 Runtime 用户目录。Gitea 和 Manager 都不持久化私钥；Manager 在 create/resume 中读取 Runtime 已有 key 或生成新 key，用公钥确认 Gitea 绑定，再把私钥、公钥和最新 known_hosts 作为 root seed 写入 Runtime。stop、stopped、resume 失败/超时/abort 都保留关系行与对应 `PublicKey`，仓库命令是否可用由当前初始化或运行状态实时判定。进入 failed/deleting、物理删除和 failed retention 才在现有 Codespace 事务中删除公钥。repository 删除只把 `repo_id` 写为 0，现有公钥随 Codespace 保留但无法匹配任何仓库，保证 repository 生命周期不反向破坏 Codespace 的 resume、stop 和 delete。
+私钥和专用 `known_hosts` 只保存在 Incus 实例的 Runtime 用户目录。Gitea 和 Manager 都不持久化私钥；Manager 在 create/resume 中读取 Runtime 最终路径已有 key，最终路径缺失时读取 root seed 中已有 key，两处都缺失才生成新 key。Manager 先把私钥和公钥作为 root seed 写入 Runtime，再用同一公钥确认 Gitea 绑定，最后把最新 known_hosts 和本轮 Token 写入 seed。这样登记后初始化失败的重试仍复用同一把 key，不会因为再次生成公钥而触发冲突。stop、stopped、resume 失败/超时/abort 都保留关系行与对应 `PublicKey`，仓库命令是否可用由当前初始化或运行状态实时判定。进入 failed/deleting、物理删除和 failed retention 才在现有 Codespace 事务中删除公钥。repository 删除只把 `repo_id` 写为 0，现有公钥随 Codespace 保留但无法匹配任何仓库，保证 repository 生命周期不反向破坏 Codespace 的 resume、stop 和 delete。
 
 **设计理由：专用 Key 类型保留创建者语义。**普通用户 Key 会认证为该用户对全部仓库的账户凭据，Deploy Key 会认证为仓库部署凭据；两者都不能表达“只代表创建者访问当前 Codespace 绑定仓库”。一对一关系和每次 SSH 命令的当前权限检查提供了所需范围，不需要引入 SSH 证书、证书续期或新的密钥服务。
 

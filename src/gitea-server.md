@@ -532,7 +532,7 @@ create 的 repository archived/empty/unavailable、ref not found 和 repo permis
 - `DeclareManager` 同时作为 heartbeat。
 - Declare 要么完整接受，要么完整拒绝；任一字段格式或地址唯一性校验失败时，不更新任何声明字段或 `last_online_unix`。其他 RPC 认证成功也不隐式恢复 online。超过 offline timeout 的 Manager 必须先 Declare recovering，完成完整 inventory、Runtime 映射和 worker 上下文分类后再 Declare online，才能领取新的 create/resume。
 - response 确认完整快照已经接受，并返回服务端选定的心跳周期、Runtime Metadata 刷新周期、控制面消息大小上限和规范 `gitea_web_url`。前三项控制运行周期与传输，`gitea_web_url` 来自 Gitea `ROOT_URL`，供 Gateway 把缺少本地 session 的浏览器导航带回 Gitea 登录确认页；Manager 注册时保存的 Gitea URL 可能是内网控制面地址，不能承担该职责。这些响应字段不增加新的持久状态。
-- 设 `MANAGER_OFFLINE_TIMEOUT` 的毫秒值为 `O`。Gitea 返回 `heartbeat_interval_milliseconds=floor(O/4)`、`runtime_metadata_refresh_interval_milliseconds=floor(O/2)`；Runtime Metadata TTL 保持 `O*2`。Manager 启动后立即以 recovering Declare，成功取得三个正数和合法 `gitea_web_url` 后才启动周期任务和领取流程，后续成功响应原子替换当前值。
+- 设 `MANAGER_OFFLINE_TIMEOUT` 的毫秒值为 `O`。Gitea 返回 `heartbeat_interval_milliseconds=floor(O/4)`、`runtime_metadata_refresh_interval_milliseconds=floor(O/2)`；Runtime Metadata TTL 保持 `O*2`。Manager 启动后立即以 recovering Declare，成功取得三个正数和合法 `gitea_web_url` 后才启动周期任务和领取流程，后续成功响应原子替换当前值。相同的 Runtime Metadata 刷新周期不重新开始计时；只有首次取得或实际变化时才重新调度，这样心跳不会把 ready metadata 的续期推迟到 TTL 之后。
 - Manager 使用本地单调时钟维持单个进行中的 Declare，请求完成后在返回的心跳周期内发起下一次；临时错误的退避也不超过该周期。心跳不使用正抖动，使服务端选定的周期就是最晚重试边界。
 - Manager 重启恢复期间通过 `DeclareManager` 上报 `manager_runtime_state=recovering`，必要 listener、完整 inventory、Runtime 映射和 worker 上下文分类完成后上报 `manager_runtime_state=online`。
 - `codespace_manager.runtime_state` 只保存 Manager 声明的 `online|recovering`；offline 根据 `last_online_unix + MANAGER_OFFLINE_TIMEOUT` 实时派生，不回写该字段。
@@ -571,7 +571,7 @@ SSH 是 Manager 的必备能力。Web Endpoint 和 SSH 都属于 codespace 的�
 - Declare 在 Manager lock 内通过数据库唯一约束整体写入 Gateway/SSH 地址和声明快照；冲突时事务全部回滚，与 Manager 删除并发时只产生完整声明或记录不存在两种结果。
 - 容量或 Runtime 总数超过 10000 时不进入 online 可领取状态。
 - recovering heartbeat 只更新声明快照和 `last_online_unix`，不读写 active operation deadline。
-- Declare 响应中的三个数值参数都为正数，心跳周期等于离线超时毫秒值的四分之一向下取整，metadata 刷新周期等于二分之一向下取整，消息上限等于当前有效配置；`gitea_web_url` 是包含 AppSubURL、path 以 `/` 结尾且不含 userinfo/query/fragment 的规范 HTTP(S) `ROOT_URL`。修改 Gitea 配置不要求同步修改 Manager 配置。
+- Declare 响应中的三个数值参数都为正数，心跳周期等于离线超时毫秒值的四分之一向下取整，metadata 刷新周期等于二分之一向下取整，消息上限等于当前有效配置；`gitea_web_url` 是包含 AppSubURL、path 以 `/` 结尾且不含 userinfo/query/fragment 的规范 HTTP(S) `ROOT_URL`。修改 Gitea 配置不要求同步修改 Manager 配置；持续收到相同 Declare 响应时，Manager 仍按既定刷新周期续期 Runtime Metadata。
 - Manager 在 operation deadline 之后才 Declare recovering 时，Fetch 和 final 均按普通超时结果处理。
 - Manager 恢复完整 inventory、Runtime 映射并完成 worker 上下文分类后可以 Declare online，再逐 Codespace 恢复 metadata、credential、Incus backend、Endpoint proxy 和本地 `health_stop_pending`、`pending_runtime_transition`、`cleanup_pending`。单个 Codespace 在本地验证完成前保持 session 准入关闭，但不阻塞 Manager 领取其他 operation；stopped Runtime 只在后续 resume 阶段重新验证 Incus exec/file、workspace 和 proxy。
 - Manager online 后的 Fetch 使用真实 `startup_capacity_available`、`cleanup_capacity_available` 和当前 `accepted_operation_types`；只有全局 Incus、listener 或控制面能力不可用时才以 recovering 或两类零容量暂停新任务领取。
@@ -637,7 +637,7 @@ Fetch 在处理每条 running operation 时，于 Codespace lock 内先检查 `o
 
 Fetch 对每个 queued 候选在 claim 前检查 `operation_created_unix + QUEUE_TIMEOUT`。已到硬截止时间的候选由处理函数在 Codespace lock 内按 `codespace_uuid + operation_rversion + operation_status=queued` 条件执行 timeout State Finalization，然后继续本批其他候选。该项不计入 `max_new_operations`，未被 Fetch 遇到的过期记录由 reconciliation Cron 处理。
 
-timeout State Finalization 使用固定映射：queued create/delete 进入 failed，queued resume/stop 分别保持 stopped/running；running create/delete 进入 failed，running resume/stop 写为 stopped。所有分支清空 active operation；failed 结果删除 Token 与 Git SSH Key，stopped 结果删除 Token 并保留 Git SSH Key，保持 running 的 queued stop 保留现有开发凭据。该映射保留已经初始化的 workspace 和恢复所需 SSH 私钥配对关系，并使停止目标在 Manager 恢复后可由 inventory 的 `stop_local_runtime` 继续完成；详细原因见[状态机超时处理](state-machine.md#超时处理)。
+timeout State Finalization 使用固定映射：queued create/delete 进入 failed，queued resume/stop 分别保持 stopped/running；running create/stop/delete 进入 failed，running resume 写为 stopped。所有分支清空 active operation；failed 结果删除 Token 与 Git SSH Key，stopped 结果删除 Token 并保留 Git SSH Key，保持 running 的 queued stop 保留现有开发凭据。该映射保留 resume 已经初始化的 workspace 和恢复所需 SSH 私钥配对关系；stop 超时进入 failed 是因为 Gitea 没有收到 Manager 对 stopped 结果的证明。详细原因见[状态机超时处理](state-machine.md#超时处理)。
 
 单次 Fetch 不持有覆盖整批操作的事务。running lease 刷新和每条 queued claim 都在各自短事务中条件更新；claim 提交后再构造 payload。payload 加入响应前重新读取同一 UUID，并确认 `operation_rversion`、`manager_id`、`operation_type`、`operation_trigger` 和 `operation_status=running` 与本次 claim 一致；账户清理已经删除记录或其他流程已经替换 operation 时跳过该候选。create repository/user 数据加载或 payload 构造失败时，服务在仍持有 Manager lock 的情况下，以单独短事务按当前 `codespace_uuid + operation_rversion + manager_id + operation_status=running` 条件释放尚未下发的 claim：恢复 queued 和 operation 时间字段，create 同时恢复 `manager_id=0`，来源保持不变。该候选失败会写服务端日志并继续处理同批后续候选。数据库连接等系统性错误、RPC 响应失败或响应丢失保留已经提交的 claim；它保持 running 并等待原 deadline。每条 claim 独立提交，无法确认 payload 已被 Manager 持久化时不会再次启动动作。
 
@@ -658,7 +658,7 @@ timeout State Finalization 使用固定映射：queued create/delete 进入 fail
 - running operation 在 observed 续租或返回当前 payload 前检查 deadline；过期项直接 timeout，不进入 response。
 - 领取通过数据库条件更新完成；affected rows 为 0 时继续尝试下一个候选。
 - 遇到过期 queued 候选时条件写入 timeout 结果，不领取、不计入 `max_new_operations`，且不阻断同批其他候选。
-- timeout 按 operation 类型写入稳定主状态；resume/stop timeout 不进入 failed 或触发破坏性 workspace cleanup。
+- timeout 按 operation 类型写入稳定主状态；resume timeout 不进入 failed 或触发破坏性 workspace cleanup，stop timeout 进入 failed 后按 failed 记录收敛。
 - Fetch tags 只来自认证 Manager 最新 `tags_json`；客户端修改 tags 并成功 Declare 后，下一次候选查询和 claim 使用新值。
 - create claim 条件更新重新确认 repository 存在和当前 owner；与 transfer 并发时只产生 transfer 前成功绑定或 transfer 后旧 scope 领取失败两种结果。
 - global 与 owner-scoped Manager 同时匹配时允许任一合格 Manager 领取，但只有一个条件更新成功；成功 binding 不自动迁移。
@@ -1126,7 +1126,7 @@ missing = expected - reported
 
 数量差异来自 Gitea 记录和 Manager 本地 Runtime 列表不同。Gitea 用数据库主状态判断哪些 Runtime 应该存在，Manager 用快照报告本地实际列表，最后由 Gitea 返回处理结果。数据库 generation 条件写入确定同一 Manager 请求的新旧顺序，再按 UUID 分别执行条件状态事务。单个 UUID 失败不回滚其他已提交项；Manager 重新扫描并使用更高 generation，Gitea 从当前数据库状态继续计算。全部结果只在所有 UUID 处理成功且响应返回前 generation 复检通过时一起返回；发生错误时不返回部分结果。每个 UUID 最多返回 `cleanup_local_runtime`、`refetch_operation`、`clear_operation_context`、`stop_local_runtime` 或 `report_runtime_transition` 之一，优先级依次为 cleanup、refetch、clear、stop、report。Runtime Metadata 缺失和 final 的 ready 前置条件由各自接口处理。
 
-**设计理由：正常向前运行的 Gitea 数据库记录和 Manager inventory 已经构成完整的期望状态与实际状态比较。**数据库成功确认 UUID 不存在，表示 Gitea 已经通过用户、组织、force delete、retention 或其他物理删除路径结束对该对象的管理；Manager 上报的资源又带有当前不可变 Manager/UUID 归属字段，UUID 永不复用，因此可以返回 `cleanup_local_runtime`，无需重复保存墓碑或清理任务。记录仍存在时，只有 `status=failed` 或 binding 明确指向其他 Manager 才执行完整清理；未绑定 creating、running、stopped 和 resume/stop timeout 按当前记录继续保留资源。
+**设计理由：正常向前运行的 Gitea 数据库记录和 Manager inventory 已经构成完整的期望状态与实际状态比较。**数据库成功确认 UUID 不存在，表示 Gitea 已经通过用户、组织、force delete、retention 或其他物理删除路径结束对该对象的管理；Manager 上报的资源又带有当前不可变 Manager/UUID 归属字段，UUID 永不复用，因此可以返回 `cleanup_local_runtime`，无需重复保存墓碑或清理任务。记录仍存在时，只有 `status=failed` 或 binding 明确指向其他 Manager 才执行完整清理；未绑定 creating、running、stopped 和 resume timeout 按当前记录继续保留资源，stop timeout 已经进入 failed 并按 failed 记录收敛。
 
 cleanup 只来自成功的 `ReportInstances` 响应：Manager 已认证，完整 generation 已接受，逐项处理和响应返回前仍为当前 generation，数据库查询正常完成。数据库连接、查询、事务或 RPC 失败不生成部分删除授权。Manager 也只处理本地最新 generation 的响应。这样“查无记录”与“查询失败”具有不同结果；响应丢失后，下一次更高 generation 的完整扫描会再次得到当前 cleanup 结果。
 
@@ -1148,7 +1148,7 @@ cleanup 只来自成功的 `ReportInstances` 响应：Manager 已认证，完整
 - 站点排空时的差异指令只收敛 Incus 实例状态：running 主状态对应 stopped Runtime 可上报 stopped，stopped 主状态对应 running Runtime 执行本地停止。
 - 数据库明确无记录、当前 binding 冲突或 failed 状态返回 cleanup；未绑定 creating、running 和 stopped 在记录存在时保持各自主状态。
 - 数据库、认证、RPC 或 generation 校验失败不返回 cleanup，Manager 不从 Connect error、空 Fetch 或普通 `resource_absent` 推导资源删除。
-- `cleanup_local_runtime` 要求 Manager 先持久化本地清理，再删除归属 Incus 实例、会话、凭据和本地快照；resume/stop timeout 不会把资源变成该指令的目标。
+- `cleanup_local_runtime` 要求 Manager 先持久化本地清理，再按销毁语义删除归属 Incus 实例、会话、凭据和本地快照；resume timeout 不会把资源变成该指令的目标，stop timeout 进入 failed 后按 failed 记录收敛。
 - failed inventory 只在已绑定当前 Manager、持有正版本本地操作上下文且该版本低于 active operation 时返回 refetch；版本相同时由 Manager 直接提交 final failed，无 active operation 时可以返回 transition，observed version 为 0 且 active operation 仍存在时等待原 deadline。未绑定 creating 不取得 payload 或版本。
 - missing runtime 按当前主状态处理；deadline 未到期的 active create 不因启动恢复时的空 inventory 提前失败，重启不延长 deadline。
 - 旧 inventory generation 不触发 extra/missing 或主状态写入。
@@ -1438,7 +1438,7 @@ Codespace 创建者详情页只展示当前 Token 是否存在、`created_unix` 
 
 ### Codespace Git SSH Key
 
-[Codespace Git SSH Key](glossary.md#codespace-git-ssh-key) 由 Manager 在 Go 侧为每次 create/resume 初始化生成，并通过 `EnsureCodespaceGitSSHKey` 在 Gitea 创建或确认公钥绑定；Manager 同时把私钥、公钥和 known_hosts 作为 root seed 写入 Runtime，init 再安装到固定 Git 凭据路径。Gitea 只保存公钥。`PublicKey.Type=KeyTypeCodespace` 使 Gitea 内置 SSH 和外部 `authorized_keys` 继续使用现有 `serv key-{id}` 强制命令；`serv` 读取 key ID 后，通过 `codespace_ssh_key` 进入 Codespace 专用鉴权，而不是普通用户 Key 或 Deploy Key 分支。
+[Codespace Git SSH Key](glossary.md#codespace-git-ssh-key) 由 Manager 在 Go 侧为每次 create/resume 初始化读取或生成。Manager 先把私钥和公钥作为 root seed 写入 Runtime，再通过 `EnsureCodespaceGitSSHKey` 在 Gitea 创建或确认同一公钥绑定，随后把 known_hosts 写入 seed，init 再安装到固定 Git 凭据路径。Gitea 只保存公钥。`PublicKey.Type=KeyTypeCodespace` 使 Gitea 内置 SSH 和外部 `authorized_keys` 继续使用现有 `serv key-{id}` 强制命令；`serv` 读取 key ID 后，通过 `codespace_ssh_key` 进入 Codespace 专用鉴权，而不是普通用户 Key 或 Deploy Key 分支。
 
 `cmd/serv` 与 private serv handler 在读取 `PublicKey` 后使用穷尽 `switch` 按类型分流。`KeyTypeCodespace` 调用 Codespace 专用服务并返回现有 `ServCommandResults` 所需的 repository、创建用户和 `DeployKeyID=0`；后续 Git subprocess、LFS token 和 hook 环境继续走 Gitea 当前执行路径。`KeyTypeUser`、`KeyTypeDeploy` 和允许进入相应入口的 Principal 保持各自现有服务，未知类型在启动 Git 子进程前返回硬错误。客户端没有提交 Git 命令时，`KeyTypeCodespace` 只返回标准的无 Shell 提示，不进入普通用户 Key 的账户介绍分支。
 
@@ -1760,7 +1760,7 @@ runtime:
   driver: incus
   codespace_root: /codespace
   bootstrap:
-    shell: /bin/sh
+    shell: /bin/bash
     home_dir: /root
     user: 0
       group: 0
@@ -1827,7 +1827,7 @@ Manager 当前配置是 `node.name`、`runtime.environments[].tag`、`node.capac
 
 `runtime.incus.connect.unix_socket` 连接本机 Incus socket；`runtime.incus.connect.remote_addr` 连接远程 Incus endpoint。远程连接使用本机 Incus client 已建立的信任配置，Manager 配置文件不保存客户端证书、服务端证书或 trust token。**设计如此：**Incus 证书和信任关系由 Incus 自身工具创建、轮换和撤销，Manager 只选择连接目标；把证书生命周期放进 Manager 配置会让普通部署多一套安全材料管理流程。
 
-`runtime.incus.project.name` 是 Manager 的专用 Incus project。`manage: true` 时 Manager 启动时创建或校验该 project，并要求 project 启用 profiles、networks 和 storage volumes 隔离；项目内默认 profile、项目内 network 和实例都由 Manager 管理。storage pool 是宿主机级资源，只通过 `runtime.incus.storage.pool` 引用，并在启动时校验存在。managed network 已存在时必须是 managed bridge；不存在且 `runtime.incus.network.manage=true` 时由 Manager 创建。Manager 创建的 bridge network 使用自动 IPv4 地址、IPv4 NAT、显式 DHCPv4 和禁用 IPv6，使新实例能通过普通 DHCP 获得出站网络。**设计如此：**Incus project 是运行时命名空间，能把实例、profile、network 和 volume 的名字放进同一个管理边界；storage pool 不属于 project，自动创建会把 Codespace Manager 变成宿主机存储运维工具，收益不够。Manager 托管 network 明确开启 DHCPv4，是因为内置 lifecycle 脚本和常见自定义脚本通常需要访问 Gitea、包源或仓库；非托管 network/profile 由部署者提供等价网络能力，Manager 不实现自己的 IP 地址分配器。
+`runtime.incus.project.name` 是 Manager 的专用 Incus project。`manage: true` 时 Manager 启动时创建或校验该 project，并要求 project 启用 profiles、networks 和 storage volumes 隔离；项目内默认 profile、项目内 network 和实例都由 Manager 管理。storage pool 是宿主机级资源，只通过 `runtime.incus.storage.pool` 引用，并在启动时校验存在。managed network 已存在时必须是 managed bridge；不存在且 `runtime.incus.network.manage=true` 时由 Manager 创建。`runtime.incus.network.manage=true` 需要 `runtime.incus.project.manage=true`，因为 Incus network 在当前 project 的资源作用域内创建和挂载，Manager 只有同时管理 project 才能保证 profile、network 和实例引用同一作用域。Manager 创建的 bridge network 使用自动 IPv4 地址、IPv4 NAT、显式 DHCPv4 和禁用 IPv6，使新实例能通过普通 DHCP 获得出站网络。**设计如此：**Incus project 是运行时命名空间，能把实例、profile、network 和 volume 的名字放进同一个管理边界；storage pool 不属于 project，自动创建会把 Codespace Manager 变成宿主机存储运维工具，收益不够。Manager 托管 network 明确开启 DHCPv4，是因为内置 lifecycle 脚本和常见自定义脚本通常需要访问 Gitea、包源或仓库；非托管 network/profile 由部署者提供等价网络能力，Manager 不实现自己的 IP 地址分配器。
 
 ### Incus IPv4 故障排除
 
@@ -1905,7 +1905,7 @@ Repository 配置固定为 `.gitea/codespace.yaml`，与 Manager 本地配置不
 - Endpoint 请求只能选择 `http|https` scheme，不能关闭 HTTPS 证书校验或指定任意 host。
 - [x] Declare tags 与 `runtime.environments[].tag` 完全一致；虚拟机与系统容器环境都不会把实例类型写入 Gitea。Manager 配置以 `node`、`gateway` 和 `runtime` 为唯一顶层结构，tag、Incus 连接和运行环境都能从这三个结构中唯一确定。
 - 三个脚本入口在 Manager 启动时按“完整内置套件或完整自定义套件”完成静态校验，混合配置失败；同一 active operation 固定脚本内容与摘要，配置变化只影响之后开始的 create/resume。
-- [x] Incus project、非集群模式以及环境必填字段在领取 create/resume 前完成静态校验；`runtime.incus.project.manage=true` 时启动前校验 storage pool 存在、managed network 是 bridge、default profile 具有 root disk 和可选 NIC。Manager 创建的 managed bridge network 设置 `ipv4.address=auto`、`ipv4.nat=true`、`ipv4.dhcp=true` 和 `ipv6.address=none`。环境 `resources.cpu`、`resources.memory` 和 `resources.root_disk` 在 create 请求中分别写入 `limits.cpu`、`limits.memory` 和实例级根盘 `size`。设计如此是因为 CPU、内存和根盘大小属于新实例资源形状，必须在 Incus 创建记录时确定。
+- [x] Incus project、非集群模式以及环境必填字段在领取 create/resume 前完成静态校验；`runtime.incus.network.manage=true` 时配置校验要求 `runtime.incus.project.manage=true`；`runtime.incus.project.manage=true` 时启动前校验 storage pool 存在、managed network 是 bridge、default profile 具有 root disk 和可选 NIC。Manager 创建的 managed bridge network 设置 `ipv4.address=auto`、`ipv4.nat=true`、`ipv4.dhcp=true` 和 `ipv6.address=none`。环境 `resources.cpu`、`resources.memory` 和 `resources.root_disk` 在 create 请求中分别写入 `limits.cpu`、`limits.memory` 和实例级根盘 `size`。设计如此是因为 CPU、内存和根盘大小属于新实例资源形状，必须在 Incus 创建记录时确定。
 - Incus bridge 有 IPv4 和 DHCP range 但实例没有 IPv4 时，故障排除能区分 Manager 配置问题、实例内 DHCP 客户端问题和宿主机 firewalld zone 问题；firewalld 场景的修复指向把 Incus bridge 加入 `trusted` zone。
 - 证书权限最小化、image fingerprint 持久化、展开 profile 校验、根盘展开校验、所选脚本发布和通信网卡完整运行条件继续按后续实现验收。
 - Incus 端到端测试使用同一组 Incus 配置字段连接本地或远程 Incus；测试环境预先提供独立 project、image、profile、network、storage 和 ACL，测试入口只创建和清理带本次运行标识的实例。

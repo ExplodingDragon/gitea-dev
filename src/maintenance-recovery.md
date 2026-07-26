@@ -255,13 +255,13 @@ extra runtime 表示 Manager 本地存在一条 Gitea 当前没有记录为应�
 
 `cleanup_local_runtime` 是删除 Incus 实例、实例内凭据、本地会话和 codespace 快照的完整资源清理指令，不等同于只停止实例。Gitea 在正常向前的数据库历史中明确确认 UUID 不存在、记录绑定其他 Manager 或主状态为 failed 时返回该指令。Manager 的完整 inventory 只包含带当前不可变 `manager_id + codespace_uuid` 归属字段的实例，Codespace UUID 又永不复用，因此当前 generation 的明确结果可以安全地要求原 Manager 持久化并执行本地清理，不需要 Gitea 再保存删除墓碑、清理任务或完成回执。
 
-该判断只在 Manager 身份认证成功、完整 inventory generation 已被接受、处理该 UUID 前后复检仍为当前 generation，且数据库查询正常完成并明确返回无记录时成立。数据库连接、查询、事务或 RPC 发生错误时，整次请求返回临时错误，不把错误转换成 cleanup；Manager 也只接受仍匹配本地当前 generation 的成功响应。响应丢失或 Manager 在持久化 cleanup 前崩溃时，下一次使用更高 generation 的完整扫描会根据当前数据库重新得到 cleanup；`cleanup_pending` 已经持久化后则由本地任务直接续做。未绑定 creating 在 Gitea 中仍有记录，之后可能由当前或其他 Manager 合法领取，因此继续保留实例并等待 claim 或 queue timeout。running、stopped 和 resume/stop timeout 保留的实例根存储同样只有在记录仍存在时按各自主状态处理。
+该判断只在 Manager 身份认证成功、完整 inventory generation 已被接受、处理该 UUID 前后复检仍为当前 generation，且数据库查询正常完成并明确返回无记录时成立。数据库连接、查询、事务或 RPC 发生错误时，整次请求返回临时错误，不把错误转换成 cleanup；Manager 也只接受仍匹配本地当前 generation 的成功响应。响应丢失或 Manager 在持久化 cleanup 前崩溃时，下一次使用更高 generation 的完整扫描会根据当前数据库重新得到 cleanup；`cleanup_pending` 已经持久化后则由本地任务直接续做。`cleanup_pending` 使用销毁语义：必要时先执行 delete 专用强制停止，再删除 Incus 实例并确认缺失；它的结果只表达资源已经不存在，不形成可恢复 stopped 状态。未绑定 creating 在 Gitea 中仍有记录，之后可能由当前或其他 Manager 合法领取，因此继续保留实例并等待 claim 或 queue timeout。running、stopped 和 resume timeout 保留的实例根存储同样只有在记录仍存在时按各自主状态处理；stop timeout 已进入 failed，完整 inventory 会按 failed 记录返回 cleanup。
 
 实现验收点：
 
 - 数据库成功确认无记录、Manager 不匹配和 failed 记录返回 `cleanup_local_runtime`；未绑定 creating 保持等待且不返回 cleanup。
 - 数据库错误、RPC 错误、不完整 Incus 扫描、未被接受或已经过期的 inventory generation 都不会触发本地删除。
-- `cleanup_local_runtime` 先持久化 cleanup，再删除 Incus 实例和本地快照；数据库中仍存在的 running、stopped 和 resume/stop timeout 保留实例根存储，不会收到该指令。
+- `cleanup_local_runtime` 先持久化 cleanup，再按销毁语义删除 Incus 实例和本地快照；数据库中仍存在的 running、stopped 和 resume timeout 保留实例根存储，不会收到该指令，failed 与无记录按 cleanup 收敛。
 - 物理删除与 inventory 并发时，inventory 先查询到记录则本轮按原状态处理并在下一轮发现不存在，物理删除先提交则本轮直接返回 cleanup；两种顺序最终都删除归属 Incus 实例和本地状态文件。
 - UUID 永不复用，Manager 又只执行本地当前 generation 的响应，因此延迟 cleanup 不会命中后续新建 Codespace。
 - extra runtime 处理不创建 codespace 记录或改写其他 codespace 状态。
@@ -333,7 +333,7 @@ queued operation 等待超时表示 Manager 尚未执行动作，因此写回 op
 
 Fetch 遇到已超过该硬截止时间的 queued 候选时，在 Codespace lock 内按当前 UUID、operation 版本和 queued 状态条件执行同一 timeout State Finalization，不领取该项，也不把它计入 `max_new_operations`。Cron 处理未被 Fetch 扫到的过期记录。
 
-running operation 的当前 lease 或固定总期限到期后统一执行 timeout 映射：create/delete 写 failed，resume/stop 写 stopped。Manager 的 online、recovering 或 offline 状态只影响当前能否通信和领取新任务，不改变 `operation_started_unix` 或放宽 deadline。这样 Gitea 与 Manager 的重启顺序不会产生另一套超时结果，持续在线但始终无法完成的 worker 也有确定终点。
+running operation 的当前 lease 或固定总期限到期后统一执行 timeout 映射：create/delete/stop 写 failed，resume 写 stopped。Manager 的 online、recovering 或 offline 状态只影响当前能否通信和领取新任务，不改变 `operation_started_unix` 或放宽 deadline。stop 超时写 failed 是因为 Gitea 没有收到 Incus stopped 与 stop 收尾结果的证明；resume 超时写 stopped 是因为已有根存储仍是下一次恢复的来源。这样 Gitea 与 Manager 的重启顺序不会产生另一套超时结果，持续在线但始终无法完成的 worker 也有确定终点。
 
 Fetch 在 observed 续租或返回当前 running payload 前检查原 deadline；未到期时可以原子写入新 deadline，但不能越过固定总期限，observed-only 续租通过 `renewed_leases` 返回本次实际相对有效时长。已经到期时，Fetch 直接执行 timeout 且不返回 payload 或续租回执。当前版本 FinalizeOperation 在发现 deadline 已过而 Cron 尚未处理时，同样先执行按 operation 类型定义的 timeout State Finalization；请求 final 映射出的目标与 timeout 结果一致时返回 `idempotent_done`，其他 final 返回 `stale_operation`。Cron、Fetch 续租和 final 使用相同条件更新，第一个成功者生效。站点排空时，未到期的 create/resume 返回不续租的 abort 命令。
 
@@ -346,7 +346,7 @@ Manager 在发送 Fetch 前记录本地单调时钟，成功收到 payload 或�
 - Fetch 对遇到的过期 queued 候选直接写入 timeout 结果并继续本批，不等待 Cron。
 - deadline 在 claim、Fetch、renew 和 final 路径直接校验；请求处理与 Cron 并发时只有一个条件更新生效。
 - 过期 FinalizeOperation 不等待 Cron，按 operation 类型写稳定结果并返回确定 outcome。
-- resume/stop timeout 保留实例根存储，不进入 failed 或触发 `cleanup_local_runtime`；create/delete timeout 仍进入 failed。
+- resume timeout 保留实例根存储，不进入 failed 或触发 `cleanup_local_runtime`；create/stop/delete timeout 进入 failed，其中 stop timeout 表示停止结果没有得到证明。
 - 过期 running operation 不会被 Fetch observed 续租或返回 payload；Manager 普通 worker 在本地 deadline 后也不继续 Incus 变更。
 - Fetch observed-only 续租返回相对有效时长；绝对 deadline 只保存在 Gitea 数据库。无回执不建立新的 Manager 本地截止点，也不隐式清除 operation 上下文。
 - 最后一段 lease 可以短于标准时长；持续 `recoverable_failed` 或 Incus 重试不能越过 `operation_started_unix + OPERATION_MAX_DURATION`。
@@ -355,7 +355,7 @@ Manager 在发送 Fetch 前记录本地单调时钟，成功收到 payload 或�
 
 ## Operation 恢复
 
-Manager 重启后从本地完整快照恢复 Gitea 下发的 operation，先终止遗留 launcher、停止 active create/resume 实例，并把全部 worker 置为 `lease_paused`。上下文完整的 operation 通过普通 Fetch 请求同版本续租，只有取得新的相对有效时长后才重新启动并继续；上下文缺失或 Gitea 已按原 deadline 超时的 operation 不重新执行。resume 的 Gitea Token、Git SSH 材料、实际 remote 本地 Git 凭据配置和 ready 都在 final done 前完成，因此成功续租的 active resume 可复用已持久化的系统、workspace、凭据和规范共享环境。Manager 在重新启动实例后先核对固定 Gitea Token 文件、本地 Git 凭据和 Git SSH 材料；Gitea Token 缺失或 Git 本地凭据不完整时，把 worker 持久化到 `write_credentials`，重新申请 Token、生成 Git SSH key、确认公钥和 known_hosts、写入 root seed，再运行 `start.sh` 安装当前 seed，并重做连通校验。boot 阶段只向前推进，不因凭据补写而回退；SSH 公钥确认响应丢失时，Manager 使用本轮 Go 生成的公钥幂等重试。已经 final done 的 resume 没有后置任务。最新 boot 终态保存 operation 类型、版本和 `done|recoverable_failed|unrecoverable_failed`；前两种可由下一次合法初始化替换，`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成并继续驱动相应收敛。
+Manager 重启后从本地完整快照恢复 Gitea 下发的 operation，先终止遗留 launcher、停止 active create/resume 实例，并把全部 worker 置为 `lease_paused`。上下文完整的 operation 通过普通 Fetch 请求同版本续租，只有取得新的相对有效时长后才重新启动并继续；上下文缺失或 Gitea 已按原 deadline 超时的 operation 不重新执行。resume 的 Gitea Token、Git SSH 材料、实际 remote 本地 Git 凭据配置和 ready 都在 final done 前完成，因此成功续租的 active resume 可复用已持久化的系统、workspace、凭据和规范共享环境。Manager 在重新启动实例后先核对固定 Gitea Token 文件、本地 Git 凭据和 Git SSH 材料；Gitea Token 缺失或 Git 本地凭据不完整时，把 worker 持久化到 `write_credentials`，重新申请 Token、读取或生成 Git SSH key、先写 key seed、确认公钥和 known_hosts、写入完整 root seed，再运行 `start.sh` 安装当前 seed，并重做连通校验。boot 阶段只向前推进，不因凭据补写而回退；SSH 公钥确认响应丢失时，Manager 使用本轮已写入 seed 的公钥幂等重试。已经 final done 的 resume 没有后置任务。最新 boot 终态保存 operation 类型、版本和 `done|recoverable_failed|unrecoverable_failed`；前两种可由下一次合法初始化替换，`unrecoverable_failed` 保留到 failed 状态报告或 delete 完成并继续驱动相应收敛。
 
 | operation | Runtime 状态 | Manager 行为 |
 | --- | --- | --- |
@@ -439,7 +439,7 @@ failed Codespace 满足 `updated_unix <= now-OLDER_THAN` 时，由该任务取�
 
 自动暂停的普通空闲计时只存在于 Manager 进程的单调时钟，不把墙上时间或最后活动时间保存为跨重启截止点。Manager/Gateway 重启后认证 live session 已经丢失，公共连接也已经断开但原本就不进入空闲计数。恢复流程先扫描 Incus 实例、提交完整 inventory，并应用 Gitea 当前启用值、有效超时和交互版本。running/ready、设置启用、没有 worker 且认证 session 为 0 的 Codespace 从完整配置时长重新计时。进程停机时间不计入空闲，这给用户重新建立连接留下确定窗口，也避免系统时间调整导致启动后立即暂停。
 
-Gitea 已经创建的 idle stop 使用普通 operation 规则恢复：queued stop 可以被 Fetch 领取；running stop 从完整本地 operation 快照恢复为暂停 worker，成功 Fetch 续租并取得新的相对有效时长后继续。本地上下文缺失或 Gitea 已经超时时不重新执行；超时后 Gitea 写入 stopped，后续 inventory 若仍发现运行中的 Incus 实例则返回 `stop_local_runtime`。Gitea 尚未创建 stop 时，响应丢失最多导致 Manager 在退避后使用当前开关、超时和交互版本再次请求；`RequestIdleStop` 对已有 idle stop 返回 `pending(operation_rversion)`，因此不会创建并行 stop。
+Gitea 已经创建的 idle stop 使用普通 operation 规则恢复：queued stop 可以被 Fetch 领取；running stop 从完整本地 operation 快照恢复为暂停 worker，成功 Fetch 续租并取得新的相对有效时长后继续。本地上下文缺失或 Gitea 已经超时时不重新执行；running stop 超时后 Gitea 写入 failed，因为服务端没有收到 stopped 证明，后续完整 inventory 若仍发现归属实例，会按 failed 记录返回 cleanup。Gitea 尚未创建 stop 时，响应丢失最多导致 Manager 在退避后使用当前开关、超时和交互版本再次请求；`RequestIdleStop` 对已有 idle stop 返回 `pending(operation_rversion)`，因此不会创建并行 stop。
 
 设置在 Manager 离线期间变为 never 或改变超时，会随恢复 inventory 下发。Manager 使用最后收到的完整设置覆盖本地策略，交互版本只向前；延迟设置会在 `RequestIdleStop` 中被当前启用值、有效超时和交互版本拒绝并返回最新值。控制面恢复稳定后，下一次成功完整 inventory 会在一个 `inventory_report_interval` 加当前 RPC 退避内重新下发当前设置。
 
