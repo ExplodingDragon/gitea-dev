@@ -37,14 +37,14 @@ Manager 注册参考 Gitea Actions runner 方式。
 
 本节定义 Manager CLI 的注册调用、本地身份保存、后续 RPC 认证材料和单进程启动顺序；Gitea handler 的兑换事务、锁和数据库写入见 [RegisterManager](gitea-server.md#registermanager)。两处分别覆盖调用端和服务端，共用同一个 `RegisterManager` 协议。
 
-Manager 注册入口使用 Gitea 现有 owner 模型。Gitea 中 organization 是 `user` 表中的一种类型，repository owner、用户设置页和组织设置页都映射到同一套 `user.id`。因此 registration token 和 Manager 记录统一使用 `owner_id` 表达归属：
+Manager 注册入口分为站点全局和个人用户两类，registration token 与 Manager 记录统一使用 `user_id` 表达归属：
 
 | scope | 字段表达 | 含义 |
 | --- | --- | --- |
-| global | `owner_id = 0` | 站点级注册入口 |
-| owner | `owner_id = user.id` | owner 级注册入口，owner 可以是个人用户或组织 |
+| 站点全局 | `user_id = 0` | 站点管理员维护，可服务全部创建者 |
+| 个人用户 | `user_id = user.id` | 只服务该个人用户创建的 Codespace |
 
-注册入口直接复用 Gitea 的 owner 身份模型，个人用户和组织使用同一字段，设置页按当前上下文直接定位对应的注册入口。
+组织不提供注册入口。**设计如此：组织仓库可以作为代码来源，但工作区和运行容量属于实际创建它的个人用户；组织管理员不因此取得成员工作区或个人 Manager 的控制权。**
 
 命令：
 
@@ -61,7 +61,7 @@ gitea-codespace serve --config /etc/gitea-codespace/manager.yaml
 
 1. Gitea 创建 registration token。
 2. `gitea-codespace register` 从配置取得 `node.state_dir` 和 Gateway 对外地址，完成本地地址语法预检后，提交管理员输入的 Gitea URL、registration token 和当前 `protocol_version=1`。
-3. Gitea 创建 Manager 记录，`codespace_manager.owner_id` 继承 registration token 的 `owner_id`。
+3. Gitea 创建 Manager 记录，`codespace_manager.user_id` 继承 registration token 的 `user_id`。
 4. Gitea 返回一次性明文 `manager_id + manager_secret`。
 5. Manager 在 `state_dir` 写入身份、凭据和根状态文件，权限按敏感度收紧。
 6. `gitea-codespace serve` 先读取普通配置，再取得 `state_dir` 独占锁，随后从 `state_dir` 读取 Gitea URL、Manager ID 和 Manager Secret。
@@ -136,34 +136,32 @@ ManagerService 当前协议主版本固定为 1。Manager 的统一 Connect 客�
 
 | 页面 | registration token scope |
 | --- | --- |
-| 站点管理 Codespace 页面 | `owner_id = 0` |
-| 用户设置 Codespace 页面 | `owner_id = ctx.Doer.ID` |
-| 组织设置 Codespace 页面 | `owner_id = ctx.Org.Organization.ID` |
+| 站点管理 Codespace 页面 | `user_id = 0` |
+| 用户设置 Codespace 页面 | `user_id = ctx.Doer.ID` |
 
 registration token 设计：
 
 - registration token 存放在 `codespace_manager_token` 表。
 - 页面进入 Codespace 管理界面时，Gitea 按当前 scope 取得当前 registration token；当前 scope 没有记录时创建新 token 并展示给管理员。
-- 数据库保存明文 `token` 和唯一 `owner_id`；token 也使用唯一索引，使 `RegisterManager` 可以直接定位当前入口。
+- 数据库保存明文 `token` 和唯一 `user_id`；token 也使用唯一索引，使 `RegisterManager` 可以直接定位当前入口。
 - registration token 行存在且提交明文匹配时有效，可用于注册多个 Manager。
 - registration token 负责创建 Manager 身份，manager secret 负责证明已注册 Manager 身份。
 - settings 页面提供和 Actions runner 一致的复制与重置入口。重置在同一行原地替换随机 token，旧 token 立即失效；已经注册的 Manager secret 不受影响。
-- GetOrCreate、重置和 RegisterManager 都按 owner scope 使用 keyed lock，包括 global scope 的 `owner_id=0`。并发注册与凭据变更因此只有明确的事务先后。
-- RegisterManager 先按唯一 token 索引读取候选 owner，只用来选择 Codespace owner relation lock；锁内再次读取同一 token 行并匹配明文后才认证成功。锁前读取与锁内复读之间发生重置或 owner 删除会使注册返回 unauthenticated。
+- GetOrCreate、重置和 RegisterManager 都按站点或个人用户使用 keyed lock，包括站点入口的 `user_id=0`。并发注册与凭据变更因此只有明确的事务先后。
+- RegisterManager 先按唯一 token 索引读取候选 `user_id`，只用来选择 Codespace user relation lock；锁内再次读取同一 token 行并匹配明文后才认证成功。锁前读取与锁内复读之间发生重置或用户删除会使注册返回 unauthenticated。
 
 Registration Token 明文保存——它是管理员复制给 Manager 完成首次注册的入口凭据。唯一索引用于让 `RegisterManager` 通过提交 token 直接定位注册入口。Registration Token 和 Manager Secret 承担不同职责，注册入口和已注册 Manager 通信身份分别管理。
 
-**设计理由：Registration Token 表只保存每个 owner 当前有效的注册入口。**settings 页面自动保证当前 token 存在，重置原地替换；记录存在性即可完成认证判断。注册失败通过服务端日志诊断，因此凭据历史无需进入数据库或保留任务。用户或组织删除清理对应 owner scope 时，registration token 行随 owner 关系一并物理删除。
+**设计理由：Registration Token 表只保存站点或每个个人用户当前有效的注册入口。**settings 页面自动保证当前 token 存在，重置原地替换；记录存在性即可完成认证判断。注册失败通过服务端日志诊断，因此凭据历史无需进入数据库或保留任务。用户删除时，个人 registration token 随用户关系一并物理删除。
 
 实现验收点：
 
-- global Codespace 管理页读取或创建 `owner_id=0` 的当前 token。
-- 用户 Codespace 管理页读取或创建 `owner_id=ctx.Doer.ID` 的当前 token。
-- 组织 Codespace 管理页读取或创建 `owner_id=ctx.Org.Organization.ID` 的当前 token。
-- `codespace_manager_token.token` 和 `owner_id` 分别具备唯一索引。
-- 使用 global token 注册出的 Manager 记录 `owner_id=0`。
-- 使用用户 token 注册出的 Manager 记录 `owner_id=该用户 user.id`。
-- 使用组织 token 注册出的 Manager 记录 `owner_id=该组织 user.id`。
+- 站点 Codespace 管理页读取或创建 `user_id=0` 的当前 token。
+- 用户 Codespace 管理页读取或创建 `user_id=ctx.Doer.ID` 的当前 token。
+- 组织设置没有 Codespace registration token 或 Manager 入口。
+- `codespace_manager_token.token` 和 `user_id` 分别具备唯一索引。
+- 使用站点 token 注册出的 Manager 记录 `user_id=0`。
+- 使用用户 token 注册出的 Manager 记录 `user_id=该用户 user.id`，且该用户必须是个人用户。
 - 注册成功后返回一次性明文 `manager_secret`。
 - 注册成功后数据库保存 `secret_hash / secret_salt`。
 - [x] `register` 成功后不重写普通配置文件；注册时使用的 Gitea URL、`manager_id`、`manager_secret` 和根状态全部保存在 `state_dir`。
@@ -177,16 +175,16 @@ Registration Token 明文保存——它是管理员复制给 Manager 完成首�
 - [x] Gateway SSH Host Key 私钥属于 `state_dir`；Declare 中的算法、指纹和更新时间由该 key 派生，不由普通配置手写。
 - 注册响应不确定时 CLI 不自动重试，管理页可以识别并删除从未 Declare 的注册记录。
 - ManagerService 认证成功后 request context 中可取得 Manager 记录。
-- 同一 owner scope 的并发 GetOrCreate 最终只有一行；重置原地替换且不保留历史行。
-- RegisterManager 与 token 重置使用同一 Codespace owner relation lock，global scope 使用 `codespace_owner_0`。
-- RegisterManager 只有在 Codespace owner relation lock 内复读 token 并验证成功后才创建 Manager；锁前查询只定位 owner。
+- 同一站点或个人用户入口的并发 GetOrCreate 最终只有一行；重置原地替换且不保留历史行。
+- RegisterManager 与 token 重置使用同一 Codespace user relation lock，站点入口使用 `codespace_user_0`。
+- RegisterManager 只有在 Codespace user relation lock 内复读 token 并验证成功后才创建 Manager；锁前查询只定位 `user_id`。
 - [x] 同一 Manager 状态目录启动第二个 `serve` 进程时，第二个进程在发出任何 RPC 前因独占锁失败而退出。
 - 每个并行 Manager 进程均使用独立的 `manager_id`、secret 和状态目录；复制身份到其他状态目录时服务端按同一身份处理，检测到版本或 generation 冲突后进入既有保守硬错误流程。
 - [x] 每个 ManagerService request 只接受 `protocol_version=1`；不匹配不会创建身份、刷新在线时间或推进任何业务状态，Manager 保留资源并退出。
 
 ### Manager 规则
 
-Manager 通过 owner scope 和 tag 匹配 create operation。global 与 owner-scoped Manager 同时匹配时没有优先级，首个成功完成 Gitea 条件 UPDATE 的 Manager 获得 binding。`runtime_state` 与 `last_online_unix + timeout` 表达 online、recovering 和派生 offline；本次是否领取 create/resume 由 Fetch 的 capacity 和 accepted operation types 表达。
+Manager 通过创建者用户和 tag 匹配 create operation。站点全局 Manager 与创建者的个人 Manager 同时匹配时没有优先级，首个成功完成 Gitea 条件 UPDATE 的 Manager 获得 binding。`runtime_state` 与 `last_online_unix + timeout` 表达 online、recovering 和派生 offline；本次是否领取 create/resume 由 Fetch 的 capacity 和 accepted operation types 表达。
 
 Declare 声明：
 
@@ -242,7 +240,7 @@ Declare 使用明确类型字段提交客户端当前配置和运行能力的完
 - Manager tags 与 repository tag 使用相同的 lower-case 和 `[a-z0-9_-]+` 校验，单项最长 64 字符；Declare 时去重后写入 `tags_json`。
 - Manager 根据本地真实容量决定是否拉取 create/resume [Operation](glossary.md#operation)。
 - Gitea 通过数据库条件更新保证 operation 只被一个 Manager 领取。Manager 自行控制本地并发，不超容量拉取。
-- global 与 owner-scoped Manager 同时满足条件时均可竞争领取，不等待 scope 更具体的 Manager，也不在 binding 后自动迁移。
+- 站点全局 Manager 与创建者的个人 Manager 同时满足条件时均可竞争领取，不等待个人 Manager，也不在 binding 后自动迁移。
 
 Manager 主动 pull operation；启动槽位满时不拉取 create/resume，清理槽位满时不拉取 stop/delete，queued operation 自然等待。两个容量都为 0 时仍通过同一 Fetch 为已有 operation 续租。Gitea 看不到 Manager 本地 Runtime 队列、资源占用、待处理本地清理和启动中任务，数据库中的容量值仅由 `DeclareManager` 更新，用于 UI 和诊断展示；本次可领取数量只使用 Fetch request。Gitea 从认证 Manager 数据库记录读取最新 `tags_json`，解析为普通标量列表筛选 `codespace.environment_tag`，不从 Fetch request 接收 tags，也不做数据库 JSON 匹配；Go 层继续判断本次接受类型、容量和最终状态，条件 UPDATE 决定唯一领取者。
 
@@ -291,9 +289,9 @@ repository 配置中的 `tag` 只用于 Gitea 匹配 Manager。Manager 本地配
 
 同一个 tag 可以在不同 Manager 上分别映射为 Incus 虚拟机或系统容器，但必须提供相同的用户可见开发能力，例如相同架构、工具链和 workspace 约定。**设计如此：tag 表达可调度的开发环境能力，不表达底层虚拟化技术、用户授权或信任等级；虚拟机与系统容器对 Gitea、init.sh、Gateway 和用户操作完全透明。**需要让用户明确选择不同开发能力时，应使用不同 tag，而不是让 Gitea 理解实例类型。
 
-虚拟机拥有独立内核，适合作为不受信任代码的默认环境；系统容器共享宿主机内核，适合部署管理员确认可接受该安全边界的环境。repository 配置可以选择当前 owner scope 已声明的任一 tag，因此 global Manager 的每个环境都必须适合站点范围内符合创建权限的仓库代码，owner scoped Manager 的每个环境都必须适合该 owner 范围内符合创建权限的用户。image、profile、设备和实例类型只提供部署管理员愿意交给该范围内仓库代码的资源，不依赖 tag 名称隐藏宿主资源或长期凭据。
+虚拟机拥有独立内核，适合作为不受信任代码的默认环境；系统容器共享宿主机内核，适合部署管理员确认可接受该安全边界的环境。repository 配置可以选择合格 Manager 已声明的任一 tag，因此站点全局 Manager 的每个环境都必须适合站点范围内符合创建权限的仓库代码，个人 Manager 的每个环境都必须适合该用户有权读取并创建 Codespace 的仓库代码。image、profile、设备和实例类型只提供部署管理员愿意交给该范围内仓库代码的资源，不依赖 tag 名称隐藏宿主资源或长期凭据。
 
-需要不同信任边界的环境时，部署管理员使用独立 Manager 身份和 owner scope，并且不向普通创建范围声明对应 tag。Manager 启动时继续校验 project、环境结构和展开后的实际配置，不尝试自动判断任意 Incus profile 是否符合管理员的安全策略。**设计理由：profile 可以组合宿主设备和部署策略，通用代码无法可靠推断其业务信任含义；明确声明范围和部署责任比增加一套不完整的 tag ACL 或 profile 安全扫描更可验证。**
+需要不同信任边界的环境时，部署管理员使用独立的站点或个人 Manager 身份，并且不向不适用的创建范围声明对应 tag。Manager 启动时继续校验 project、环境结构和展开后的实际配置，不尝试自动判断任意 Incus profile 是否符合管理员的安全策略。**设计理由：profile 可以组合宿主设备和部署策略，通用代码无法可靠推断其业务信任含义；明确声明范围和部署责任比增加一套不完整的 tag ACL 或 profile 安全扫描更可验证。**
 
 Manager 领取 create 后，在首次调用 Incus 之前把本次环境的有效值写入 Codespace 本地快照，包括 tag、实例类型、source、profiles、CPU、内存和根盘大小。后续 resume、stop、delete 和重启恢复都使用这份快照，不重新套用当前 tag 映射；tag 配置变化只影响以后新建的 Codespace。这样 Manager 配置调整不会在一次 resume 中把已有实例切换到另一份环境。
 
@@ -406,7 +404,7 @@ Incus 端到端测试通过独立入口运行。测试启动时先识别当前�
 - [x] Manager 只通过 Incus 管理 Runtime；启动时验证 Incus 服务端可达、客户端为 trusted、服务端不是 public-only、配置的 project 为当前 project，且服务处于非集群模式。当前实现先完成这些前置校验，再允许 Incus provisioner 创建成功；环境字段和权限最小化继续按本节规则验收。
 - 每个 Codespace 恰好映射一个使用 `cs-{codespace_uuid_short}` 名称、带完整 `manager_id + codespace_uuid` 归属字段的 Incus 实例；名称冲突时使用完整归属字段作硬错误判定，workspace 随实例停止保留并随实例删除。测试同时验证该本地名称与 Gateway 使用的 `cs-{完整规范 UUID}` SSH 路由名分别从完整 UUID 派生，并各自在本地资源操作和 SSH 路由中使用。
 - [x] Declare tags 完全由 `runtime.environments[].tag` 生成；同一 tag 的虚拟机或系统容器差异不进入 Gitea 数据、RPC 或 repository 配置。Manager 配置以 `node`、`gateway` 和 `runtime` 为唯一顶层结构，tag、Incus 连接和运行环境都能从这三个结构中唯一确定。
-- global Manager 的每个已声明环境都适用于站点创建范围，owner scoped Manager 的每个已声明环境都适用于该 owner 创建范围；tag 只表达开发能力和资源形状，不作为用户授权或信任等级。需要不同信任边界时由独立 Manager 身份和 owner scope 提供，不向普通范围声明对应 tag。
+- 站点全局 Manager 的每个已声明环境都适用于站点创建范围，个人 Manager 的每个已声明环境都适用于该用户创建范围；tag 只表达开发能力和资源形状，不作为用户授权或信任等级。需要不同信任边界时由独立 Manager 身份提供，不向不适用的范围声明对应 tag。
 - [x] create payload 的 `environment_tag` 选择同名本地运行环境；环境缺失时不修改 Incus，并以 create final failed 结束该 operation。
 - create 在首次 Incus 修改前持久化有效环境快照；tag 映射变更不改变已有实例的 resume、stop 和 delete 行为，共享 profile 通过新版本名称演进。
 - Manager 使用 Incus exec/file API 作为 shell、exec、SFTP、健康检查和脚本执行基础；虚拟机环境必须提供可用 `incus-agent`，系统容器走同一 Go 代码路径。
@@ -753,7 +751,7 @@ Manager 重启时恢复当前设置和交互版本，不恢复空闲请求本身
 
 ### Manager 直接删除
 
-Manager delete 在 Gitea 保持 Codespace owner relation lock 和 Manager lock，按 UUID keyset 分批、逐 Codespace 短事务删除 binding、开发凭据和日志，空集合复检后再删除 Manager。每个子事务提交并释放 Codespace lock 后尽力清理相关 cache；cache 清理失败只记录服务端日志，不改变已提交结果。delete 不读取 Manager runtime state，不发送 RPC，也不等待 Runtime 回收。Manager 的 Incus 实例和本地状态文件可以继续存在；Manager 记录删除后旧 secret 无法认证，相关 Codespace UUID 也已从 Gitea 消失，因此运行侧残留只能形成部署侧资源占用或连接失败，不会破坏 Gitea 数据。
+Manager delete 在 Gitea 保持 Codespace user relation lock 和 Manager lock，按 UUID keyset 分批、逐 Codespace 短事务删除 binding、开发凭据和日志，空集合复检后再删除 Manager。每个子事务提交并释放 Codespace lock 后尽力清理相关 cache；cache 清理失败只记录服务端日志，不改变已提交结果。delete 不读取 Manager runtime state，不发送 RPC，也不等待 Runtime 回收。Manager 的 Incus 实例和本地状态文件可以继续存在；Manager 记录删除后旧 secret 无法认证，相关 Codespace UUID 也已从 Gitea 消失，因此运行侧残留只能形成部署侧资源占用或连接失败，不会破坏 Gitea 数据。
 
 这是组件所有权的设计边界：Gitea 对自己的数据库、凭据和日志给出同步删除结果，内部短事务失败时保留 Manager 父记录，相同请求可继续清理剩余项；Manager 部署对 Incus 实例和本地快照负责。Manager 记录删除后原身份无法再提交 `ReportInstances`，因此无记录 UUID 的 inventory 清理规则不适用于该身份；本设计不为 Manager 身份删除增加远端确认、删除中状态、补偿队列或跨身份扫描。删除确认界面负责向用户展示绑定 Codespace 数量和运行侧可能残留资源，用户确认后即可提交 Gitea 本地删除。
 

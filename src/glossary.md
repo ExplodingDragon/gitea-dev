@@ -38,7 +38,7 @@ Manager/Gateway 在 Codespace 为 running/ready、设置启用、没有生命周
 
 <span id="manager-matching"></span>
 ### Manager Matching
-Gitea 按 owner scope 和 repository tag 匹配可以领取 create operation 的 Manager。
+Gitea 按 Codespace 创建者和 repository tag 匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。
 
 <span id="manager-capacity"></span>
 ### Manager Capacity
@@ -54,7 +54,7 @@ Gitea 为打开需要认证的 Endpoint 签发的一次性短期 opaque token。
 
 <span id="gitea-token"></span>
 ### Gitea Token
-Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs_` 前缀并存储在 `codespace_gitea_token`。它代表 Codespace 创建用户，在有效 create/resume 初始化期和 `running` 都能授权新请求，用于开发协作 API、LFS，以及 HTTP 协议 Codespace 的 Git smart HTTP；创建用户登录限制、单仓库绑定和现有业务权限仍在每次请求中检查。稳定 `stopped` 没有 Token，它不是普通 PAT。
+Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs_` 前缀并存储在 `codespace_gitea_token`。它代表 Codespace 创建用户，在有效 create/resume 初始化期和 `running` 都能授权新请求，用于开发协作 API、LFS，以及 HTTP 协议 Codespace 的 Git smart HTTP；创建用户登录限制、源仓库权限、用户确认的附加仓库权限和现有业务规则仍在每次请求中检查。稳定 `stopped` 没有 Token，它不是普通 PAT。
 
 <span id="codespace-git-ssh-key"></span>
 ### Codespace Git SSH Key
@@ -62,10 +62,8 @@ Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。Man
 
 <span id="registration-token"></span>
 ### Registration Token
-管理员为 owner scope 使用的当前明文注册凭据，存储在 `codespace_manager_token` 表，每个 owner 最多一行。settings 页面进入时自动确保当前行存在；Manager 通过 `RegisterManager` 注册并获得 manager secret；Registration Token 重置会原地替换该行，不保存历史，owner scope 删除时物理删除该行。
+站点管理员或个人用户使用的当前明文注册凭据，存储在 `codespace_manager_token` 表；站点和每个个人用户最多一行。settings 页面进入时自动确保当前行存在；Manager 通过 `RegisterManager` 注册并获得 manager secret；Registration Token 重置会原地替换该行，不保存历史，个人用户删除时物理删除其对应行。组织没有 Registration Token。
 
-<span id="manager-secret"></span>
-### Manager Secret
 <span id="manager-secret"></span>
 ### Manager Secret
 Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 重置不影响已注册 Manager。
@@ -80,7 +78,7 @@ open Endpoint、SSH、继续运行、resume。
 
 <span id="administrative-permission"></span>
 ### 管理权限
-按调用者、Manager 归属和具体操作判定的 Codespace 管理能力。创建者可以查看自己的详情和日志、修改自动暂停设置并执行 stop/delete；组织所有者只可在组织治理列表中 stop/delete 绑定到该组织自有 Manager 的对象；站点管理员只可在全站治理列表中 stop/delete/force delete。未绑定 Manager 或绑定全局 Manager 的对象不进入组织治理列表，由创建者和站点管理员管理。Manager 首次领取 create 时提交的归属决定后续治理范围，仓库随后转移不改变已经建立的绑定。非创建者治理权限只提供治理列表和允许的操作，不提供对象详情、连接入口或自动暂停设置。
+按调用者和具体操作判定的 Codespace 管理能力。创建者可以查看自己的详情和日志、修改自动暂停设置并执行 stop/delete；站点管理员通过全站治理列表执行 stop/delete/force delete。组织所有者不会因为仓库归属或组织角色取得成员工作区权限。非创建者治理权限只提供治理列表和允许的操作，不提供对象详情、连接入口或自动暂停设置。
 
 <span id="state-finalization"></span>
 ### State Finalization
@@ -108,7 +106,7 @@ Gitea 在每个 `ReportInstances` 结果中返回的互斥处理动作：删除�
 
 <span id="minimal-page-data"></span>
 ### 最小页面数据
-Web 列表使用明确的服务端页面数据结构。创建者列表可以包含自身 repository/ref 和活跃时间；组织与站点治理列表只包含 UUID、展示态、创建者、Manager、更新时间、状态摘要和允许操作。两类页面数据都由服务端按权限构造，治理数据不包含 repository/ref/commit、日志、自动暂停、Endpoint 或 SSH。完整字段定义见 [Gitea 服务端 - 最小页面数据](gitea-server.md#最小页面数据)。
+Web 列表使用明确的服务端页面数据结构。创建者列表可以包含自身 repository/ref 和活跃时间；站点治理列表只包含 UUID、展示态、创建者、Manager、更新时间、状态摘要和允许操作。两类页面数据都由服务端按权限构造，治理数据不包含 repository/ref/commit、日志、自动暂停、Endpoint 或 SSH。完整字段定义见 [Gitea 服务端 - 最小页面数据](gitea-server.md#最小页面数据)。
 
 实现验收点：
 
