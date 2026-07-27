@@ -235,7 +235,7 @@ enum GitRefType {
 
 // ManagerService is implemented by Gitea and called by Codespace Manager.
 service ManagerService {
-  // RegisterManager exchanges the owner scope's current registration token for a Manager identity.
+  // RegisterManager exchanges the site's or an individual user's registration token for a Manager identity.
   rpc RegisterManager(RegisterManagerRequest) returns (RegisterManagerResponse);
 
   // DeclareManager updates Manager metadata, tags, and serves as heartbeat.
@@ -892,7 +892,7 @@ User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一�
 <li><code>CreateOperationPayload.repo_clone_http_url</code> 和 <code>repo_clone_ssh_url</code> 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 与 SSH 地址；只有对应 clone 能力可用时返回非空。<code>git_protocol</code> 表示本次 create 的首次首选项，并且必须指向一个非空 URL。内置 <code>init.sh</code> 在受控临时 workspace 中先使用首选地址，clone/fetch 非零退出且另一种 URL 非空时清理该目录并在同一次 init 调用中重试一次；最终失败写入不可恢复结果。本地前置错误和 HEAD 校验失败不切换协议。自定义脚本可以选择任一非空地址，Manager 仍以锁定 SHA 和实际 remote 的本地凭据配置作为结果校验。<code>repo_web_url</code> 使用包含 <code>AppSubURL</code> 的 <code>ROOT_URL</code>。</li>
 <li><code>CreateOperationPayload</code> 携带 <code>GitProtocol</code>；<code>ResumeOperationPayload</code> 不携带协议。实际 remote 为 SSH 时通过 <code>EnsureCodespaceGitSSHKey</code> 创建或确认 Codespace 公钥。</li>
 <li><code>CreateOperationPayload.user_identity</code> 必须携带创建用户的 Gitea 用户名、展示名、Git <code>user.name</code> 和隐私保护后的 Git email。Manager 用用户名派生 Runtime Linux 用户名，并只在 create 初始化时写入 Git identity；resume 不覆盖 workspace 中用户后续修改过的 Git identity。</li>
-<li><code>CreateOperationPayload.repository_config</code> 必须携带 repository 配置读取结果。文件存在时包含路径、来源 ref、正文和正文 SHA256；文件缺失时 <code>present=false</code>。用于调度的 tag 已经提升为 <code>CreateOperationPayload.environment_tag</code>，repository config 不再重复携带。Manager 领取 create 后把该结构保存到本地 state，并把正文写到 Runtime 固定文件；resume 不从 Gitea 重新读取 repository 配置。</li>
+<li><code>CreateOperationPayload.repository_config</code> 必须携带创建确认时固定的 repository 配置读取结果。文件存在时包含路径、<code>config_commit_sha</code> 对应的完整提交、正文和正文 SHA256；文件缺失时 <code>present=false</code>。用于调度的 tag 已经提升为 <code>CreateOperationPayload.environment_tag</code>，repository config 不再重复携带。Manager 领取 create 后把该结构保存到本地 state，并把正文写到 Runtime 固定文件；resume 不从 Gitea 重新读取 repository 配置。正文中的附加仓库权限只由 Gitea 解析和授权，Manager 将其视为普通配置内容，不接收 Gitea authorization ID 或规则表副本。</li>
 <li>observed-only 续租通过 <code>renewed_leases</code> 返回 UUID、版本和相对有效时长；普通 payload 使用相同的相对时长语义。Manager 据此建立不受两端墙上时钟差异影响的本地执行截止点。</li>
 <li>每个 operation payload 返回当前 <code>log_offset</code>，Manager 从该 offset 继续追加日志。</li>
 <li><code>UpdateLog</code> 成功返回服务端规范化写入后的 <code>next_offset</code>；offset conflict/gap 返回当前服务端 offset。</li>

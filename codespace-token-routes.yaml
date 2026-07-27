@@ -1,30 +1,42 @@
-schema_version: 2
-base_path: /api/v1
+# Codespace Token API 能力清单。
+#
+# 本文件说明目标路由分类；Gitea 路由中间件是实际执行入口，测试用代表性
+# 路由核对本清单。
+schema_version: 3
 
-# 本文件定义 Codespace Token 在 Gitea API 中的入口级策略。Gitea 已经把
-# owner/name 形式的 repository API 组织在同一层级；Codespace Token 对该层级
-# 统一准入，随后继续执行 repoAssignment、repo_id binding 或公开只读判定、
-# scope、unit、reader/writer/admin、分支保护和各 handler 原有业务检查。
-# explicit_routes 只记录不依赖 repository group 的少数入口；repository API
-# 通过 repository_groups 表达层级准入，新增到该层级的叶子路由继承 group 策略。
-policies:
-  self: 当前认证用户本身
-  public_info: 不关联 repository 的公共服务信息
-  repository_group: owner/name 形式的 repository API 层级；绑定仓库使用 Codespace 身份能力，非绑定公开仓库只允许公开读
-  signed_artifact: 只由 Gitea HMAC、过期时间和 artifact 状态独立授权的下载
+fixed_routes:
+  - { method: GET, path: /user, capability: self }
+  - { method: GET, path: /version, capability: public_info }
+  - { method: GET, path: /signing-key.gpg, capability: public_info }
+  - { method: GET, path: /signing-key.pub, capability: public_info }
 
-explicit_routes:
-  - { methods: [GET], path: /user, policy: self }
-  - { methods: [GET], path: /version, policy: public_info }
-  - { methods: [GET], path: /signing-key.gpg, policy: public_info }
-  - { methods: [GET], path: /signing-key.pub, policy: public_info }
-  - { methods: [GET], path: "/repos/{username}/{reponame}/actions/artifacts/{artifact_id}/zip/raw", policy: signed_artifact }
+signed_routes:
+  - { method: GET, path: "/repos/{username}/{reponame}/actions/artifacts/{artifact_id}/zip/raw", capability: signed_artifact }
 
-repository_groups:
-  - { path: "/repos/{username}/{reponame}", policy: repository_group }
+repository_capabilities:
+  code:
+    read: [仓库基本信息, clone, fetch, 文件内容, 分支, 标签, commit, commit 状态]
+    write: [push, 文件修改, 分支修改, 标签修改, commit 状态创建]
+  issues:
+    read: [Issue, 评论, 标签, 里程碑, 工时]
+    write: [Issue 及其关联对象修改]
+  pulls:
+    read: [Pull Request, Review, 代码比较]
+    write: [Pull Request, Review, 合并, 分支更新]
+  wiki:
+    read: [Wiki 页面和修订记录]
+    write: [Wiki 页面修改]
+  releases:
+    read: [Release 和附件]
+    write: [Release 和附件修改]
+  actions:
+    read: [工作流, 运行记录, Job, Artifact]
+    write: [工作流触发和运行记录修改]
 
-notes:
-  - repository_group 只覆盖由该 owner/name group 解析出 ctx.Repo.Repository 的 API；按数字 ID、全局搜索、用户、组织、包、管理和 Token 管理 API 不属于该层级。
-  - repository_group 下新增 API 自动接受 Codespace Token 的入口准入；绑定仓库继续使用创建用户当前权限和业务规则，非绑定仓库只有公开读请求可按 Gitea 现有公开访问规则处理。
-  - 代码实现把 repository_group 策略挂在 route group 上；本文件用于校验四类入口策略和 repository group 边界。
-  - signed_artifact route 不使用 Codespace Token、PAT、Session、Basic 或 query token；携带这些 header 不改变签名下载结果。
+rules:
+  - 源仓库能力使用创建者当前的 Gitea 仓库单元权限。
+  - 附加仓库能力同时要求匹配的用户确认记录和创建者当前的 Gitea 仓库单元权限。
+  - 未授权公开仓库的安全读取按匿名公开访问处理。
+  - 仓库管理、账户、组织、Package、Notification、凭据、创建 fork 和创建仓库不属于 Codespace Token 能力。
+  - Pull Request 请求同时校验路由能力和请求实际使用的每个外部 head 仓库。
+  - 后续新增仓库路由只有在代码中声明相应能力并增加代表性测试后才接受 Codespace Token。
