@@ -38,7 +38,7 @@ Manager/Gateway 在 Codespace 为 running/ready、设置启用、没有生命周
 
 <span id="manager-matching"></span>
 ### Manager Matching
-Gitea 按 Codespace 创建者和 repository tag 匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。
+Gitea 按 Codespace 创建者和固定的 `default` 环境匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。仓库 Dev Container 配置不参与 Manager 匹配。
 
 <span id="manager-capacity"></span>
 ### Manager Capacity
@@ -46,7 +46,7 @@ Manager 通过 Declare 的 `startup_capacity_total` 上报 Runtime 总容量，G
 
 <span id="endpoint"></span>
 ### Endpoint
-使用 `endpoint_id` 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime Metadata，并以必填 `public` 布尔值明确选择 Gateway session 认证或公共访问；每个 running Codespace 另有稳定且固定需要认证的 `workspace` 逻辑入口，Manager 在 Runtime 声明同名 Endpoint 时连接 Endpoint proxy，否则由内置 Web 终端通过 Incus exec 创建 shell。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。
+使用 `endpoint_id` 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime Metadata，并以必填 `public` 布尔值明确选择 Gateway session 认证或公共访问；每个 running Codespace 另有稳定且固定需要认证的 `workspace` 逻辑入口，由 Manager 代理到当前 Dev Container 的 code-server Web IDE。`workspace` 是平台保留入口，Runtime Endpoint 使用其他 ID。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。
 
 <span id="gateway-open-token"></span>
 ### Gateway Open Token
@@ -70,7 +70,7 @@ Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发�
 
 <span id="runtime-metadata"></span>
 ### Runtime Metadata
-Manager 上报到 Gitea 缓存的 Endpoint、boot 和 CPU/内存/磁盘当前完整快照。每个 Codespace 由一个发布任务管理单调递增的 `metadata_generation`；缓存未命中后直接重发当前 typed snapshot，外部缓存实现在 TTL 内保留的合法快照可以继续使用。`running` 对应已经完成的 `ready` boot，启动中的阶段只出现在 active create/resume。CPU/内存/磁盘指标只用于创建者详情展示，不参与生命周期、授权、容量领取或治理排序。SSH、SFTP 和 Web 终端的实际后端保存在 Manager 本地 Incus backend 快照中。
+Manager 上报到 Gitea 缓存的 Endpoint、boot 和 CPU/内存/磁盘当前完整快照。每个 Codespace 由一个发布任务管理单调递增的 `metadata_generation`；缓存未命中后直接重发当前 typed snapshot，外部缓存实现在 TTL 内保留的合法快照可以继续使用。`running` 对应已经完成的 `ready` boot，启动中的阶段只出现在 active create/resume。CPU/内存/磁盘指标只用于创建者详情展示，不参与生命周期、授权、容量领取或治理排序。SSH、SFTP、Web IDE 和 Endpoint proxy 的实际后端保存在 Manager 本地 Incus backend 快照中。
 
 <span id="interactive-access"></span>
 ### Interactive Access

@@ -92,7 +92,7 @@ Manager 记录不存在时返回 `manager_unregistered`，Secret 不匹配时返
 Manager 启动流程：
 
 1. 取得该 Manager 本地状态目录独占锁；锁已被其他进程持有时退出，不发送 RPC。
-2. 读取并校验 Manager 根快照；失败时以固定硬错误退出，不发送 RPC 或修改 Incus 实例。先读取全部已有 Codespace 快照的格式版本，再为有效对象初始化关闭 session 准入、空 session 集合和空 ready 接受记录；优先续做 `cleanup_pending=true` 的本地清理和 `health_stop_pending=true` 的实例停止。健康停止使用意图中已经保存的 observed operation 版本，不依赖停止前已清除的 Runtime Metadata。已经确认为版本 1、但完整结构校验失败的单个快照按“持久状态损坏处理”清理该 UUID；文件不可读、不是合法 JSON 或无法取得受支持格式版本时按 Manager 整体硬错误处理。
+2. 读取并校验版本 1 的 Manager 根快照；失败时以固定硬错误退出，不发送 RPC 或修改 Incus 实例。先读取全部已有 Codespace 快照并确认格式版本为 2，再为有效对象初始化关闭 session 准入、空 session 集合和空 ready 接受记录；优先续做 `cleanup_pending=true` 的本地清理和 `health_stop_pending=true` 的实例停止。健康停止使用意图中已经保存的 observed operation 版本，不依赖停止前已清除的 Runtime Metadata。已经确认为版本 2、但完整结构校验失败的单个快照按“持久状态损坏处理”清理该 UUID；文件不可读、不是合法 JSON 或无法取得受支持格式版本时按 Manager 整体硬错误处理。
 3. 校验配置和 host key，绑定 Gateway HTTP/WebSocket 和 Gateway SSH listener；任一必要 listener 失败时退出，不 Declare online。
 4. `DeclareManager(manager_runtime_state=recovering)`，取得服务端心跳周期、Runtime Metadata 刷新周期和控制面消息上限；响应非法时以零容量保持 recovering，不开始新的 Incus 枚举或修改，步骤 2 已经持久化的 `cleanup_pending` 继续按原授权完成。
 5. 全量枚举带当前 Manager 归属字段的 Incus 实例，并读取每个实例的当前状态。
@@ -100,7 +100,7 @@ Manager 启动流程：
 7. 恢复 Runtime 映射，并把每个本地 worker 上下文分类为“完整、可以请求续租”或“缺失、保持不执行并等待原 deadline”。全部恢复 worker 先保持暂停；只有上下文完整的 active operation 放入 `FetchOperations(observed_operations=...)`，服务端版本更高时重新取得当前 payload。
 8. 对 Fetch 成功返回的普通 payload 或续租回执，使用请求开始时的本地单调时钟和相对有效时长建立新本地截止点，再恢复对应 worker。服务端已经超时、RPC 暂时不可用或未返回明确续租结果时继续暂停。随后执行 inventory 返回的 cleanup、clear、stop 和 refetch 指令。
 9. 执行 `DeclareManager(manager_runtime_state=online)`，表示必要 listener、完整 inventory、Runtime 映射和 worker 上下文分类已经完成；恢复出的 active operation 和本地 pending 先占用各自 worker 槽位，后续 Fetch 使用真实 `startup_capacity_available`、`cleanup_capacity_available` 和当前 `accepted_operation_types`，可以领取其他 Codespace 的 operation。
-10. 同时逐 Codespace 完成交互恢复：active create/resume 继续当前 operation；Gitea 与本地都为 running 的对象验证凭据、Incus exec/file、workspace 和 Endpoint proxy 路由，并通过唯一 metadata 发布任务重报当前 ready 快照。临时 Incus backend 连接错误进入运行健康检查的关闭准入、30 秒复检和连续 3 次确认规则；VM agent 缺失、实例 identity 或 workspace 权限与快照矛盾时立即停止实例并建立 stopped `pending_runtime_transition`。本地 stopped/failed、`health_stop_pending`、`pending_runtime_transition` 或待清理对象继续提交明确状态结果并保持准入关闭。稳定 stopped 保留 Incus 实例及根存储，等待下一次 resume 从该实例重建 metadata。
+10. 同时逐 Codespace 完成交互恢复：active create/resume 继续当前 operation；Gitea 与本地都为 running 的对象验证凭据、Incus exec/file、workspace、Dev Container、code-server 和普通 Endpoint proxy 路由，并通过唯一 metadata 发布任务重报当前 ready 快照。临时 Incus backend 或 Web IDE 连接错误进入运行健康检查的关闭准入、30 秒复检和连续 3 次确认规则；VM agent 缺失、实例 identity 或 workspace 权限与快照矛盾时立即停止实例并建立 stopped `pending_runtime_transition`。本地 stopped/failed、`health_stop_pending`、`pending_runtime_transition` 或待清理对象继续提交明确状态结果并保持准入关闭。稳定 stopped 保留 Incus 实例及根存储，等待下一次 resume 从该实例重建 metadata。
 11. running 对象收到当前 ready 的成功上报，且不存在 `health_stop_pending`、`pending_runtime_transition` 或 `cleanup_pending` 后，在本地协调锁内开放 session 准入；单个仍在重试的对象保持关闭，不阻塞其他对象恢复或 operation 领取。
 
 **设计如此：Declare online 表示 Manager 的全局运行能力已恢复，不表示每个 Codespace 已经恢复交互。**全局边界包括必要 listener、完整 Incus inventory、Runtime 映射和 worker 上下文分类；逐 Codespace 的 Runtime Metadata、凭据、Incus backend、Endpoint proxy、路由和三个本地收敛状态在 online 后独立恢复。Fetch 使用真实容量，不把未完成的对象级恢复转换成整个 Manager 的零容量。Gateway/SSH 的前置检查与最终登记仍拒绝本地准入尚未开放的对象，因此外部 cache 保留的旧 ready 快照不能越过本地恢复边界。`operation_rversion` 相同且本地上下文完整的 running operation 可以请求续租，但收到新的相对有效时长前保持暂停；已经到期或上下文缺失的 operation 由普通超时和 inventory 规则收敛。
@@ -179,7 +179,7 @@ sequenceDiagram
 - 状态目录独占锁保证同一状态目录只有一个本地进程管理其中的 Incus 映射和版本状态；并行进程使用独立注册身份和状态目录。
 - Manager 从原子当前快照恢复 operation payload、generation 和 Runtime 映射；恢复 worker 在取得新的相对 lease 时长前保持暂停。Fetch 空响应不清除 worker，只有明确的 `clear_operation_context` 指令执行清理。
 - Manager 根快照缺失、当前格式损坏或与配置身份不匹配时启动硬失败，不发送 RPC 或修改 Incus；管理员删除原 Manager、清理归属实例和状态目录后重新注册。任一已有 Codespace 快照不可读、不是合法 JSON、缺少格式版本，或使用未知、0、负数或较新版本时同样整体退出，但保持实例和文件原状。
-- 单个 Codespace 快照文件缺失，或文件已经确认为版本 1 但完整结构校验失败时，Manager 关闭该 UUID 的准入并先持久化最小清理记录，再按不可变归属字段删除对应 Incus 实例；后续完整 inventory 使 running/stopped 进入 failed、deleting 完成物理删除，active create 在原 deadline 到期后进入 failed。
+- 单个 Codespace 快照文件缺失，或文件已经确认为版本 2 但完整结构校验失败时，Manager 关闭该 UUID 的准入并先持久化最小清理记录，再按不可变归属字段删除对应 Incus 实例；后续完整 inventory 使 running/stopped 进入 failed、deleting 完成物理删除，active create 在原 deadline 到期后进入 failed。
 - Manager 从快照恢复自动暂停开关、超时和交互版本；Gitea 已创建的 stop 通过普通 Fetch 恢复，其他对象在当前 inventory 设置应用后从完整时长重新计时。
 - Manager 在扫描和上报新 inventory 前续做全部 `cleanup_pending`；Incus 实例已删除但本地快照仍存在时也能完成清理。
 - 启动恢复遇到 `state_history_conflict` 时 Manager 整体停止；payload、续租回执或带版本 action 低于对应请求发出时的本地最高版本时，Manager 因 `operation_version_regression` 整体停止，请求期间产生的延迟响应只丢弃当前 UUID。

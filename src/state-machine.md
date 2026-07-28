@@ -692,9 +692,9 @@ stateDiagram-v2
     unavailable --> [*]: route removed or process exit
 ```
 
-`private -> public` 先关闭 `connecting/live`、使认证 allowed 失效，再开放公共 ready；`public -> private` 先取消 `validating/forwarding/streaming`、使公共 allowed 失效，再进入等待认证。upstream、端口、协议和 workspace 实际目标变化同样先关闭旧连接，再替换路由。Host、Origin、Service Worker 或 code 格式在入口校验失败时直接结束请求，不进入以上状态，也不推进 `interaction_generation`。**设计如此：访问方式和跨域判定属于当前连接的本地生命周期，不增加 Gitea 主状态、operation 或历史记录。**
+`private -> public` 先关闭 `connecting/live`、使认证 allowed 失效，再开放公共 ready；`public -> private` 先取消 `validating/forwarding/streaming`、使公共 allowed 失效，再进入等待认证。普通 Endpoint 的 upstream、端口、协议变化，以及新 ready 快照改变 Web IDE 目标时，同样先关闭旧连接再替换目标。Host、Origin、Service Worker 或 code 格式在入口校验失败时直接结束请求，不进入以上状态，也不推进 `interaction_generation`。**设计如此：访问方式和跨域判定属于当前连接的本地生命周期，不增加 Gitea 主状态、operation 或历史记录。**
 
-Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready、普通 Endpoint existence 判定。SSH 的实际后端由 Manager 本地 Incus backend 快照决定；Gitea 只判断当前启动是否 ready 和用户是否允许连接。`workspace` 的 Runtime Endpoint 是否存在只决定 Manager 连接 Endpoint proxy 还是 Manager 内置 Web 终端，不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。
+Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready、普通 Endpoint existence 判定。SSH 的实际后端和 `workspace` 的 code-server 目标都由 Manager 本地快照决定；Gitea 只判断当前启动是否 ready 和用户是否允许连接。`workspace` 是固定 Web IDE 授权对象，不出现在 Runtime Metadata endpoints 中，也不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。
 
 `boot.stage` 使用以下适用顺序，`boot.operation_rversion` 标识产生快照的 Manager 启动上下文：
 
@@ -730,7 +730,7 @@ Manager 本地执行阶段固定为 `lease_paused -> prepare_runtime -> write_cr
 | `validate_runtime` | `publish-ready` |
 | 已持久化 ready 快照、正在等待 Gitea 回执的 `publish_ready`，以及后续 `finalize`、`completed` | `ready` |
 
-init、start 和 stop 各自提交严格结果及本阶段 `CODESPACE_ENV` 变更；Manager 只验证凭据身份、workspace、Git 本地凭据、Incus exec/file 和 Endpoint proxy 等通用输出，脚本内部子步骤只写日志。进入 `write_credentials` 前先关闭用户入口；Gitea Token、Git SSH key 和 known_hosts seed 写入完成后，create 由 init 安装首次文件并提交 workspace，create 首启和 resume 都由 `start.sh` 安装当前 seed 并恢复启动入口。崩溃后本地仍为 `write_credentials`，同一 active create/resume 在凭据提交中断后持久化回到该阶段并重做凭据、当前 operation 需要的 init/start、后续启动和校验。`publish_ready` 先持久化 `boot.stage=ready` 的完整快照再发送；响应丢失时保留该快照并幂等重报。进入 `lease_paused` 会停止实例；同版本续租后仍可保留单调的 ready boot stage，但 Manager 必须重新完成当前 operation 所需的 init/start 和 Incus backend 校验，确认本次启动可用后才重报 ready 并推进到 `finalize`。**设计如此：Manager 本地阶段用于崩溃恢复并允许凭据步骤重新执行，boot stage 用于 Gitea 校验当前启动进度且保持单调；两者职责不同，因此不是一一对应关系。脚本内部实现不增加本地阶段或 Gitea stage。**
+init、start 和 stop 各自提交严格结果及本阶段 `CODESPACE_ENV` 变更；Manager 只验证凭据身份、workspace、Git 本地凭据、Incus exec/file、Dev Container、code-server 和普通 Endpoint proxy 等通用输出，脚本内部子步骤只写日志。进入 `write_credentials` 前先关闭用户入口；Gitea Token、Git SSH key 和 known_hosts seed 写入完成后，create 由 init 安装首次文件并提交 workspace，create 首启和 resume 都由 `start.sh` 安装当前 seed 并恢复启动入口。崩溃后本地仍为 `write_credentials`，同一 active create/resume 在凭据提交中断后持久化回到该阶段并重做凭据、当前 operation 需要的 init/start、后续启动和校验。`publish_ready` 先持久化 `boot.stage=ready` 的完整快照再发送；响应丢失时保留该快照并幂等重报。进入 `lease_paused` 会停止实例；同版本续租后仍可保留单调的 ready boot stage，但 Manager 必须重新完成当前 operation 所需的 init/start 和 Incus backend 校验，确认本次启动可用后才重报 ready 并推进到 `finalize`。**设计如此：Manager 本地阶段用于崩溃恢复并允许凭据步骤重新执行，boot stage 用于 Gitea 校验当前启动进度且保持单调；两者职责不同，因此不是一一对应关系。脚本内部实现不增加本地阶段或 Gitea stage。**
 
 create 和 resume 的 final done 都要求 boot 版本等于当前 operation 且 metadata 已为 `ready`。create 启动 Runtime 后，在 active operation 内先申请新 Token、读取或生成 Git SSH key、先写 key seed、确认公钥和 known_hosts、写入完整 root seed，再运行 init 安装首次 Runtime credential、首次 clone、锁定 commit、提交 workspace，并继续执行 `start.sh` 和 ready 上报；resume 启动 Runtime 后写入当前 root seed，随后运行同一个 `start.sh`，刷新实际 remote 的本地凭据配置并上报本次 resume 版本的 `ready`；旧版本的 `ready` 不能完成当前 resume。凭据或 ready 上报临时失败时，Manager 在 operation lease 内退避重试；确认无法写入 credential 时停止本轮启动的 Runtime，create 提交 final failed 并进入 failed，resume 提交 final failed 并保持可恢复的 stopped。普通 Endpoint、用户服务和 repository 可达性不参与 ready 判定。这样 `running` 始终表示本次启动所需的本地凭据配置和交互入口已经就绪，open/SSH 不存在等待另一个启动阶段的中间状态。
 
@@ -763,7 +763,7 @@ Manager 显式管理 Runtime Metadata 的发布资格。create/resume 在保存�
 
 stop、delete、租约中断的 create/resume、健康检查停止、稳定 running 凭据故障和 inventory 收敛动作统一结束发布生命周期：先关闭该 Codespace 的现有访问，清除本地 Endpoint 路由、Runtime Metadata 和相关 session，停用发布任务，再执行对应的 Incus stop/delete 或状态报告。清理只移除当前运行实例的可发布快照，保留 resume 所需的 startup input、共享脚本环境和 operation/transition 状态；状态文件同时记录发布已关闭，迟到的非空 Endpoint 更新会直接失败，下一次 create/resume 保存新 boot 快照时才重新开放。每个 Codespace 状态文件的读改写在 Manager 内串行执行，避免资源采样、Endpoint 更新和停止清理互相覆盖。**设计如此：Runtime Metadata 与 Endpoint 表达“当前可以连接到哪里”，而 startup input 和共享脚本环境表达“下一次如何启动”；两类数据生命周期不同，停止时分开处理可以保留恢复能力，同时让 stopped 立即失去接入条件。发布关闭记录用于解决已经进入执行队列的 Endpoint 更新晚于停止清理完成的问题，不承担新的生命周期状态。**
 
-每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、workspace route、Incus backend 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 `ready`，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。`stale_operation` 表示该快照对应的启动上下文已经结束，发布任务清除快照并终止；它不是网络临时错误，因此不进入周期重试。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后，也不会让已经结束的 operation 持续升代上报。
+每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、Web IDE 本地目标、Incus backend 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 `ready`，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。`stale_operation` 表示该快照对应的启动上下文已经结束，发布任务清除快照并终止；它不是网络临时错误，因此不进入周期重试。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后，也不会让已经结束的 operation 持续升代上报。
 
 实现验收点：
 
