@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>脚本契约、内置实现与 devcontainer 案例 - Gitea Codespace 设计文档</title>
+        <title>脚本契约与内置 Dev Container 实现 - Gitea Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,218 +155,118 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="codespace-脚本契约内置实现与-devcontainer-案例"><a class="header" href="#codespace-脚本契约内置实现与-devcontainer-案例">Codespace 脚本契约、内置实现与 devcontainer 案例</a></h1>
-<h2 id="脚本边界"><a class="header" href="#脚本边界">脚本边界</a></h2>
-<p>Manager 使用三个脚本管理 Runtime：</p>
+                        <h1 id="codespace-脚本契约与-dev-container-生命周期"><a class="header" href="#codespace-脚本契约与-dev-container-生命周期">Codespace 脚本契约与 Dev Container 生命周期</a></h1>
+<h2 id="生命周期入口"><a class="header" href="#生命周期入口">生命周期入口</a></h2>
+<p>Manager 使用三个 Bash 入口管理开发环境：</p>
 <ul>
-<li><code>init.sh</code>：只在 create 执行，负责把新实例初始化成可启动实例。</li>
-<li><code>start.sh</code>：每次启动执行，create 后首次启动和 stopped 后恢复都走同一个入口。</li>
-<li><code>stop.sh</code>：stop operation 中、Incus 实例停止前执行，用于脚本私有运行环境的有界收尾。</li>
+<li><code>init.sh</code> 在 create 中执行一次，准备实例系统、运行用户、Docker、固定版本的 Dev Container CLI、Git helper，并把仓库克隆到 workspace。</li>
+<li><code>start.sh</code> 在 create 的 init 成功后以及每次 resume 中执行，启动所选 Dev Container，恢复本次凭据，并提交内部容器 ID、实际用户和工作目录。</li>
+<li><code>stop.sh</code> 在 stop operation 中执行，按已保存的容器 ID 停止内部容器；随后 Manager 停止 Incus 实例并保留根存储。</li>
 </ul>
-<p>Manager 只理解这三个脚本入口、共享环境、结果文件和最终通用输出。软件包管理器、工作用户名称、内部开发环境、容器工具、挂载、端口转发和 repository lifecycle commands 都属于脚本实现。</p>
-<p><strong>设计如此：首次启动和恢复启动本质相同。</strong><code>init.sh</code> 完成一次性的系统初始化、workspace clone 和 Git identity 写入；<code>start.sh</code> 只面对已经存在的 workspace，恢复本次启动需要的凭据、helper、Endpoint 和脚本私有运行入口。因此 create 是 <code>init.sh -&gt; start.sh</code>，resume 是 <code>start.sh</code>，stop 是 <code>stop.sh -&gt; Incus stop</code>。这样 clone 失败只在 init 内闭环，不会被启动恢复路径反复重试；后续用户修改 workspace 也不会被恢复启动覆盖。</p>
-<p>内置脚本随 Manager 发布，实现上以独立 <code>.sh</code> 文件维护，并通过 Go <code>embed</code> 打包进 Manager 二进制。这样设计是为了让脚本可以按普通 shell 文件阅读、做语法检查和审阅变更，同时保持部署时只需要发布一个 Manager 程序。三个入口组成一个协作套件，Manager 启动时只接受完整内置套件或三个本地自定义文件：</p>
-<pre><code class="language-yaml">scripts:
-  init: builtin
-  start: builtin
-  stop: builtin
-</code></pre>
-<pre><code class="language-yaml">scripts:
-  init: /opt/gitea-codespace/init.sh
-  start: /opt/gitea-codespace/start.sh
-  stop: /opt/gitea-codespace/stop.sh
-</code></pre>
-<p>自定义套件的三个文件由 Manager 启动时读取，必须都是本地普通文件；内置与自定义入口混合时配置校验直接失败。Manager 在领取 create/resume/stop 后、首次执行脚本前，把本次实际使用的三个脚本及内容摘要写入当前 operation 本地快照，再原子发布到 Runtime 固定目录。同一 active operation 的重试和重启恢复继续使用已经发布且摘要相同的脚本；Manager 配置变化从下一次 operation 开始生效，不在执行中的 operation 内切换脚本。</p>
-<p>这些脚本由 Manager 以 root 执行，因此自定义来源属于 Manager 部署信任边界。repository 中的 devcontainer 配置只有在管理员显式配置 devcontainer 自定义案例时才由该案例读取；repository 不能提供或替换 <code>init.sh</code>、<code>start.sh</code>、<code>stop.sh</code>。这样 create 在 clone 前就有确定的初始化入口，也不需要增加脚本下载和签名协议。</p>
+<p>create 使用 <code>init.sh -&gt; start.sh</code>，resume 使用 <code>start.sh</code>，stop 使用 <code>stop.sh -&gt; Incus stop</code>。首次启动和恢复都通过同一个 start 入口，是因为二者都需要把一个已经存在的 workspace 恢复为可交互的 Dev Container；仓库克隆属于一次性初始化，因此只由 init 负责。</p>
+<p>内置脚本以独立 <code>.sh</code> 文件维护并通过 Go <code>embed</code> 打包进 Manager。这样既能直接审阅和执行 Bash 语法检查，也能让部署只发布一个 Manager 二进制。部署者可以在 Manager YAML 中同时指定本地 init、start、stop 文件来替换完整套件；三者使用相同输入和结果协议，并共同负责提交 Dev Container 运行目标。</p>
 <p>实现验收点：</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
-Manager 配置只接受 <code>init</code>、<code>start</code>、<code>stop</code> 三个入口，三者必须全部为 <code>builtin</code> 或全部为本地绝对普通文件。</li>
+create 只按 <code>init.sh -&gt; start.sh</code> 执行，resume 只执行 <code>start.sh</code>，stop 先执行 <code>stop.sh</code> 再停止 Incus 实例。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-脚本文本和 SHA256 摘要保存到 active operation 本地快照，lease 续租和 Manager 重启后继续使用同一组内容。</li>
+内置三个脚本以 Bash 编写、通过 Go <code>embed</code> 发布，并由 <code>make test-scripts</code> 检查真实脚本文件。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-内置脚本源码以独立 <code>.sh</code> 文件维护，并通过 Go <code>embed</code> 打包；测试直接读取脚本文本和执行安全分支。</li>
+本地自定义脚本只有在 init、start、stop 三个路径完整时启用，并提交与内置脚本相同的共享环境和结果。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-Manager 核心数据、RPC、配置和 Endpoint API 不包含 devcontainer、Docker、Node.js、CLI、容器标识和容器用户。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-运行健康检查只使用 Manager 保存的 workspace、UID/GID 和 Incus file/exec backend；健康检查不会调用项目命令或读取脚本私有实现状态。</li>
+init 中的 clone 失败在 create 内结束，不会被普通 resume 反复执行。</li>
 </ul>
-<h2 id="调用与共享环境"><a class="header" href="#调用与共享环境">调用与共享环境</a></h2>
-<p>Manager 创建或启动 Incus 实例并确认 file/exec API 可用后，把脚本、exec launcher 和通用 helper 原子写入 <code>/usr/local/libexec/gitea-codespace/</code>。调用顺序固定为：</p>
-<pre><code class="language-text">create: init.sh -&gt; start.sh
-resume: start.sh
-stop: stop.sh -&gt; Incus stop
-delete: 销毁实例并删除本地状态
+<h2 id="dev-container-配置选择"><a class="header" href="#dev-container-配置选择">Dev Container 配置选择</a></h2>
+<p>Dev Container 是仓库级开发环境的唯一配置格式。Gitea 在创建所选提交中发现以下候选位置：</p>
+<pre><code class="language-text">.devcontainer/devcontainer.json
+.devcontainer.json
+.devcontainer/*/devcontainer.json
 </code></pre>
-<p>三个脚本共享同一个 <code>flock</code>，每次调用由 launcher 建立独立进程组，并使用 Manager 生成的唯一结果文件。stdout/stderr 写入当前 operation 日志。脚本不接收 <code>operation_rversion</code>；Manager 把调用、结果和自己保存的 operation 上下文关联。stop 脚本用于优雅收尾，成功时本次共享环境会保存到 Manager 本地 state，失败会进入日志诊断且不会覆盖旧共享环境，Manager 仍继续执行 Incus stop，使 Gitea 生命周期可以收敛到 stopped。delete 不运行 stop 脚本，它按销毁语义删除 Incus 实例和本地状态；脚本私有状态随根存储一起删除。</p>
-<p>凭据和 Git SSH 材料使用固定路径，脚本直接按路径访问：</p>
-<pre><code class="language-text">/var/lib/gitea-codespace/gitea-token
-/var/lib/gitea-codespace/git/id_ed25519
-/var/lib/gitea-codespace/git/id_ed25519.pub
-/var/lib/gitea-codespace/git/known_hosts
-</code></pre>
-<p>Manager 通过 Incus exec environment 传递脚本输入。通用输入如下：</p>
-<div class="table-wrapper"><table><thead><tr><th>环境变量</th><th>可用调用</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>CODESPACE_UUID</code></td><td>全部</td><td>Codespace 完整 UUID</td></tr>
-<tr><td><code>CODESPACE_NAME</code></td><td>全部</td><td><code>cs-{short_uuid}</code> 派生名称</td></tr>
-<tr><td><code>CODESPACE_OWNER_NAME</code></td><td>全部</td><td>Codespace 创建用户名称</td></tr>
-<tr><td><code>CODESPACE_OPERATION</code></td><td>全部</td><td><code>create</code>、<code>resume</code> 或 <code>stop</code></td></tr>
-<tr><td><code>CODESPACE_RESULT</code></td><td>全部</td><td>本次调用唯一的结果文件路径</td></tr>
-<tr><td><code>CODESPACE_ENV</code></td><td>全部</td><td>三个脚本共享的环境文件</td></tr>
-<tr><td><code>CODESPACE_WORKSPACES_DIR</code></td><td>init/start</td><td>默认 workspace 根目录 <code>/workspaces</code></td></tr>
-<tr><td><code>GITEA_SERVER_URL</code></td><td>start</td><td>本轮 Token 响应中的 Gitea 对外根地址</td></tr>
-<tr><td><code>GITEA_TOKEN</code></td><td>start</td><td>从当前 Gitea Token 文件读取的本次进程快照</td></tr>
-</tbody></table>
-</div>
-<p>create 的 <code>init.sh</code> 取得创建时锁定的 repository 输入；resume 不取得这些字段，因为恢复只使用已有 workspace 和本地快照：</p>
-<div class="table-wrapper"><table><thead><tr><th>环境变量</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>GITEA_REPO_CLONE_HTTP_URL</code></td><td>Gitea 生成的规范 HTTP(S) clone URL</td></tr>
-<tr><td><code>GITEA_REPO_CLONE_SSH_URL</code></td><td>Gitea 生成的规范 SSH clone URL</td></tr>
-<tr><td><code>GITEA_GIT_PROTOCOL</code></td><td>首次 clone 的首选协议，值为 <code>http</code> 或 <code>ssh</code></td></tr>
-<tr><td><code>GITEA_REPO_WEB_URL</code></td><td>repository Web URL</td></tr>
-<tr><td><code>GITEA_REPO_ID</code></td><td>repository ID</td></tr>
-<tr><td><code>GITEA_REPO_FULL_NAME</code></td><td>repository 完整名称</td></tr>
-<tr><td><code>GITEA_OWNER_ID</code>、<code>GITEA_OWNER_NAME</code></td><td>repository owner 身份</td></tr>
-<tr><td><code>GITEA_OWNER_TYPE</code>、<code>GITEA_OWNER_DISPLAY_NAME</code></td><td>repository owner 类型与展示名称</td></tr>
-<tr><td><code>GITEA_REF_TYPE</code>、<code>GITEA_REF_NAME</code></td><td>创建来源 ref 类型与名称</td></tr>
-<tr><td><code>GITEA_COMMIT_SHA</code></td><td>create 必须得到的锁定 commit SHA</td></tr>
-<tr><td><code>CODESPACE_REPO_NAME</code></td><td>create 时的 repository 名称</td></tr>
-</tbody></table>
-</div>
-<p>Manager 在 create/resume 的 start 前写入 root seed：Gitea Token、Git SSH 私钥、公钥和 known_hosts。Git SSH 私钥和公钥先写入 seed，再用同一公钥向 Gitea 确认绑定；Gitea 返回的 known_hosts 和本轮 Token 随后写入同一 seed。<code>init.sh</code> 在 create 中安装首次 seed 并上报实际 UID/GID；<code>start.sh</code> 每次启动安装当前 seed，并只恢复已有 workspace 的本地凭据和运行入口。这个顺序让 Go 侧统一生成控制面凭据，同时让 Runtime 内用户、权限和首次 workspace 初始化由 init 根据真实系统状态一次性完成；初始化中断后重试也能复用同一把 Git SSH key，避免把一次失败变成公钥冲突。</p>
-<p><code>CODESPACE_ENV</code> 指向当前 Codespace 的共享环境文件。脚本使用追加方式发布后续调用需要的变量：</p>
-<pre><code class="language-sh">printf '%s\n' 'NAME=value' &gt;&gt; "$CODESPACE_ENV"
-</code></pre>
-<p>共享规则如下：</p>
-<ol>
-<li>Manager 在每次调用前把上一次成功阶段的规范环境写入 <code>CODESPACE_ENV</code>，并保存调用前内容。</li>
-<li>脚本只追加完整的 <code>NAME=value</code> 行；同名变量以最后一行生效。</li>
-<li>Manager 预定义变量由当前 operation 和 Manager 本地快照生成；脚本向共享环境追加同名变量时，Manager 忽略这些行且不保存。</li>
-<li>脚本结果为 <code>done</code> 后，Manager 解析完整文件，拒绝 NUL、换行值和非法变量名，移除预定义变量，按最后值合并其余重复项，再在 Runtime 内通过临时文件和 rename 写回规范结果。</li>
-<li>脚本失败、结果缺失或被取消时，Manager 恢复调用前环境；本次未完成的追加不会进入下一次调用。</li>
-<li>成功环境跨 init、start、stop 和后续 resume 保留，物理删除 Runtime 时随本地快照和实例一起删除。</li>
-</ol>
-<p>脚本在对应成功阶段写入以下通用共享输出：</p>
-<div class="table-wrapper"><table><thead><tr><th>调用</th><th>输出变量</th><th>说明</th></tr></thead><tbody>
-<tr><td>init</td><td><code>CODESPACE_CREDENTIAL_UID</code>、<code>CODESPACE_CREDENTIAL_GID</code>、<code>CODESPACE_USER</code></td><td>已安装最终凭据文件的非 root 运行身份</td></tr>
-<tr><td>init</td><td><code>CODESPACE_WORKSPACE_DIR</code></td><td>create 已克隆并锁定 commit 的绝对 workspace 路径</td></tr>
-<tr><td>start</td><td><code>CODESPACE_WORKSPACE_DIR</code></td><td>本次启动使用的绝对 workspace 路径</td></tr>
-</tbody></table>
-</div>
-<p>Manager 在 init 成功后校验凭据 UID/GID 为有效非 root 身份，并校验最终 Gitea Token、Git SSH key、known_hosts 和 runtime 目录已经可由该身份使用。create 还要求 init 提交绝对 workspace 路径，并校验 Git HEAD 等于 payload 锁定 SHA；resume 从共享环境读取已有 workspace。start 成功后，Manager 通过 Incus file/exec API 以保存的 UID/GID 和 workspace 做 ready 校验，并重建当前 Endpoint 的 proxy route。脚本私有变量不能替代这些通用校验。</p>
+<p>一级子目录中的多份文件表示多个可选开发环境，每次创建只选择一份，不把多份文件合并。规范根配置存在时默认选中规范根配置；只有子目录配置或仓库没有配置时，平台默认项仍可选。平台默认项由 Gitea 的 <code>DEVCONTAINER_DEFAULT_IMAGE</code> 生成一份独立配置，因此没有 Dev Container 文件的仓库也可以创建 Codespace。</p>
+<p>仓库文件使用 JSONC。Gitea 使用 <code>github.com/tailscale/hujson</code> 标准化后，只读取名称和 <code>customizations.gitea.repositories</code> 权限声明；原始文件的路径、创建提交和 SHA256 作为不可变选择保存。Manager clone 后从 workspace 读取文件，并用创建提交中的 blob 校验 SHA256；数据库和 RPC 只保存或传递这些不可变元数据，使配置内容始终以锁定提交中的仓库文件为准。</p>
+<p>选中的仓库配置直接交给固定版本的官方 Dev Container CLI。基础镜像 <code>devcontainer.metadata</code>、Features、Compose 文件以及 Dev Container 规范定义的其他组合行为由 CLI 处理；Gitea 和 Manager 不再实现第二套配置合并器。平台默认配置只包含站点默认镜像，不与任一仓库文件合并。这样运行结果与通用 Dev Container 工具保持一致，同时权限判断只依赖用户在 Gitea 创建确认页明确选择并审阅的仓库文件。</p>
 <p>实现验收点：</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
-create 执行 <code>init.sh -&gt; start.sh</code>；resume 只执行 <code>start.sh</code>；stop 执行 <code>stop.sh</code> 后继续 Incus stop。</li>
+Gitea 发现两个规范根位置和 <code>.devcontainer</code> 下一级子目录候选，按稳定顺序展示且每次只选择一份。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-start 不 clone、fetch、checkout，不读取 repository payload，不覆盖 workspace 当前 HEAD 和用户后续可能修改的 Git identity。</li>
+JSONC 注释和尾随逗号由 <code>tailscale/hujson</code> 处理；文件大小、候选数量和权限规则数量都有明确上限。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-Gitea Token、Git SSH 私钥、公钥和 known_hosts 由 Manager 写入 root seed；Git SSH 私钥和公钥在 <code>EnsureCodespaceGitSSHKey</code> 前先落到 seed，init 和 start 都能把当前 seed 安装到固定最终路径。</li>
+无仓库配置时可以选择平台默认项；平台默认配置使用 <code>DEVCONTAINER_DEFAULT_IMAGE</code>，不注入仓库配置。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-共享环境由结构化解析，不作为 shell 源文件执行；预定义变量同名追加被忽略。</li>
+创建确认哈希包含所选来源、路径、提交、内容摘要、平台默认镜像和附加权限。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-create 缺少 init 提交的 workspace 时不能进入 start；resume 缺少已保存 workspace 时不能启动。</li>
+RPC 只携带来源、路径、提交、摘要或平台默认镜像，不携带原始 JSONC 正文。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager 把仓库配置原样交给固定版本官方 CLI，CLI 负责规范规定的镜像元数据、Feature 与 Compose 组合。</li>
 </ul>
-<h2 id="结果与恢复"><a class="header" href="#结果与恢复">结果与恢复</a></h2>
-<p>每次 init、start 和 stop 调用都取得唯一的 <code>CODESPACE_RESULT</code>。脚本在同目录写临时文件、<code>fsync</code> 并 rename，最终文件固定为 <code>root:root 0600</code>。成功结果只包含：</p>
-<pre><code class="language-json">{"outcome":"done","stage":"initialize-system"}
+<h2 id="初始化与凭据"><a class="header" href="#初始化与凭据">初始化与凭据</a></h2>
+<p><code>init.sh</code> 根据镜像中的包管理器安装 Bash、Git、OpenSSH client、Python、Docker 和下载工具。Debian、Ubuntu、Fedora 和 Arch 的内置路径使用文档中声明的国内镜像源。Dev Containers CLI 使用对应版本仓库中的官方安装脚本安装到平台目录，并使用它自带的 Node.js 20；CLI 版本固定，Node.js 20 的补丁版本由官方安装脚本选择。这样不会受基础镜像中旧版 Node.js 的影响，也不会把 CLI 安装到开发用户的全局 npm 目录。企业镜像、离线源或其他发行版由部署者通过完整自定义脚本套件管理。</p>
+<p>运行用户从创建时的 Gitea 用户名派生，init 在实例内确认实际 UID/GID 后上报。Manager 在执行脚本前把本轮 Gitea Token、Codespace Git SSH 私钥、公钥和 known_hosts 写入 root seed。init 负责创建最终目录和 helper；start 每次把当前 seed 安装到固定位置，并把只读凭据和 helper 绑定挂载到 Dev Container。HTTP(S) remote 使用 credential helper 读取当前 Token，SSH remote 使用包装脚本把只读密钥复制到容器用户缓存后启用严格 Host Key 校验。</p>
+<p>create 的 clone 使用带 Codespace UUID 的临时目录，校验锁定 commit 后原子移动到 <code>/workspaces/{repo}</code>。首选 Git 协议失败且另一种 URL 可用时，只在同一次 init 中清理临时目录并回退一次。start 不 clone、fetch 或 checkout，因此恢复不会覆盖用户当前 HEAD。</p>
+<p>实现验收点：</p>
+<ul>
+<li><input disabled="" type="checkbox" checked=""/>
+Runtime 用户不是 root，实际 UID/GID 由 init 在实例内确认并持久化。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Manager 先写 root seed，再执行脚本；私钥不会写入 Gitea 数据库或 Manager 状态文件。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+HTTP(S) 和 SSH workspace 分别使用固定 helper，SSH 始终启用 known_hosts 严格校验。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+create 在临时目录完成 clone 和 commit 校验后原子提交 workspace；同次协议回退最多一次。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+resume 不修改 workspace HEAD、remote 或用户在 workspace 中调整的 Git identity。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+生命周期输出按行实时进入 operation 日志，脚本失败同时写明阶段和可恢复性结果。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+内置脚本使用固定版本的官方 Dev Containers CLI 安装脚本和独立 Node.js 20；基础镜像自带的 Node.js 版本不影响 CLI 启动。</li>
+</ul>
+<h2 id="启动结果web-ide-与-gateway"><a class="header" href="#启动结果web-ide-与-gateway">启动结果、Web IDE 与 Gateway</a></h2>
+<p><code>start.sh</code> 调用 <code>devcontainer up --workspace-folder ... --config ...</code>，从 CLI 的结构化成功结果取得 <code>containerId</code>、<code>remoteUser</code> 和 <code>remoteWorkspaceFolder</code>。这三个值与外层 workspace 一起写入 <code>CODESPACE_ENV</code>，Manager 持久化后才进入 ready 校验。</p>
+<p><code>start.sh</code> 通过固定版本的官方 Coder code-server Dev Container Feature 安装并启动 Web IDE。平台固定 code-server 版本、端口 <code>13337</code>、<code>auth=none</code>、监听地址 <code>0.0.0.0</code>，并关闭遥测和更新检查；打开目录使用 CLI 返回的实际 <code>remoteWorkspaceFolder</code>。code-server 不再建立第二层登录，因为所有浏览器请求已经由 Gateway 的 Open Code、Cookie、session 和持续授权复检保护。版本与端口由平台固定，是为了让 Manager 可以用单一健康检查和路由契约判断 ready，不需要为每个仓库增加 Web IDE 配置协议。</p>
+<p>平台默认 Dev Container 配置启用特权模式和 host 网络；仓库配置经官方 CLI 合并后的实际容器也必须满足这两个条件。host 网络只发生在当前 Incus Runtime 的网络命名空间内，使 code-server 和开发服务可由 Manager 通过 Runtime 地址直接连接，同时仍由 Incus 隔离不同 Codespace 与宿主机。Manager 在 CLI 成功后读取容器实际配置并校验，而不是仅相信仓库 JSON 字段，因为 Compose、镜像元数据和 Feature 合并都可能改变最终结果。**设计如此：**Web IDE 和开发端口使用统一的 Runtime 网络入口，避免再部署容器内 SSH 或专用转发守护进程；不满足运行契约的配置会在本次 start 中给出明确错误。</p>
+<p>新建内部容器时，<code>start.sh</code> 使用官方 CLI 的合并配置读取 <code>customizations.vscode.settings</code> 和 <code>customizations.vscode.extensions</code>。settings 写入 code-server 用户目录；扩展按声明顺序去重安装，单个扩展下载或安装失败写入生命周期警告但不阻止 shell 和 Web IDE 启动。容器 ID 对应的初始化标记使普通 resume 只恢复并检查同一个 code-server，不重复覆盖用户设置或安装扩展；容器被重新创建后使用新的 ID，重新应用该容器的初始化配置。</p>
+<p>Gateway 继续负责外部 HTTP/SSH 认证。Gateway SSH shell 和 exec 通过 Incus exec 在外层实例调用 <code>docker exec</code>，目标固定为已保存的内部容器、用户和工作目录；内部 Dev Container 不运行平台 sshd。PTY 的 stdin/stdout、窗口尺寸变更、常用信号和退出码沿现有 Incus exec 控制通道传递。SFTP 通过 Incus file API 访问当前 Runtime 实例，初始目录是共享 workspace，新建对象归属 init 确认的 UID/GID，其余路径、链接、元数据和权限使用该 Runtime 的正常文件系统语义。**设计如此：**Runtime 实例是文件访问的隔离边界，workspace 和用户身份分别提供便捷初始位置与多用户文件归属，不需要在 Dev Container 内额外部署 <code>sftp-server</code>，也不把 workspace 伪装成文件系统根目录。</p>
+<p>ready 和稳定健康检查同时验证外层 workspace/Git 凭据、内部容器仍处于 running，并通过 Runtime 地址请求 code-server <code>/healthz</code>。这样外层 Incus 实例仍在线、但开发容器或 Web IDE 已经退出时，Gateway 不会继续公布可用入口。stop 停止内部容器后 code-server 一同结束，resume 通过同一个 <code>start.sh</code> 恢复容器、Web IDE 和健康检查。</p>
+<p>普通 HTTP Endpoint 使用两部分共同完成：Dev Container 配置通过 <code>appPort</code>、Compose <code>ports</code> 或等价的运行参数把服务端口发布到外层实例，容器内的 <code>gitea-codespace-endpoint</code> 再声明同一个端口的名称、协议和访问范围。Manager 只为已经发布且显式声明的实例端口建立 Gateway 路由。<code>forwardPorts</code> 仍由官方 CLI 按 Dev Container 规范解析，但它本身不是 Gitea Gateway 的入口声明。**设计如此：**端口发布属于容器运行配置，外部访问身份和权限属于 Gateway；分开表达后，仓库可以继续使用标准 Dev Container 配置，同时 Gitea 不会把任意配置字段自动变成外部入口。</p>
+<p>实现验收点：</p>
+<ul>
+<li><input disabled="" type="checkbox" checked=""/>
+start 成功结果包含非空容器 ID、实际用户和绝对内部工作目录，并在 ready 前持久化。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+start 通过固定 Feature 安装固定版本 code-server，端口、认证模式、监听地址、遥测和更新行为由平台固定，打开目录使用实际内部 workspace。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+新建内部容器读取官方合并配置并应用 <code>customizations.vscode.settings/extensions</code>；单个扩展失败留下可见警告，容器初始化标记避免 resume 重复执行。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+CLI 完成后校验实际容器为 privileged + host network；不符合时以明确的不可恢复脚本结果结束。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+SSH shell 和 exec 的命令目标进入内部 Dev Container；PTY resize 和退出码保持可用。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Gateway 用户 SSH 公钥认证与 Codespace 出站 Git SSH Key 分别处理，二者不会共用密钥语义。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+SFTP 使用 Incus file API，初始目录是共享 workspace，可访问当前 Runtime 实例文件系统，新建对象使用 init 确认的 UID/GID，不依赖容器内 <code>sftp-server</code>。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+ready 与稳定健康检查都验证内部容器运行状态和 code-server <code>/healthz</code>；停止或失效后关闭新会话准入。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+stop 使用已保存容器 ID 停止内部容器并保留状态，下一次 resume 仍通过统一 start 入口恢复。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+普通 HTTP Endpoint 同时具备 Dev Container 端口发布和显式 Endpoint 声明；Gateway 展示与访问范围只来自后者。</li>
+</ul>
+<h2 id="脚本结果协议"><a class="header" href="#脚本结果协议">脚本结果协议</a></h2>
+<p>每次脚本调用都有独立的 <code>CODESPACE_RESULT</code>，脚本以原子替换写入 <code>root:root 0600</code> JSON：</p>
+<pre><code class="language-json">{"outcome":"done","stage":"start-environment"}
 </code></pre>
-<p><code>stage</code> 按调用固定为：</p>
-<ul>
-<li><code>initialize-system</code>：<code>init.sh</code></li>
-<li><code>start-environment</code>：<code>start.sh</code></li>
-<li><code>stop-environment</code>：<code>stop.sh</code></li>
-</ul>
-<p>失败结果只包含当前 stage 和以下 outcome 之一：</p>
-<ul>
-<li><code>recoverable_failed</code>：当前 operation lease 内可以重试；本次共享环境追加不提交。</li>
-<li><code>unrecoverable_failed</code>：继续使用当前 Runtime 无法得到可信结果；create 收敛到 failed，resume final failed 后继续上报 failed。</li>
-</ul>
-<p>Manager 主动取消时丢弃结果。其他结果缺失、损坏、owner/mode 错误、出现未知字段或 schema 不匹配时按 <code>recoverable_failed</code> 处理。脚本退出码只用于日志诊断，不替代结果文件。stop 脚本成功会提交本次共享环境，供下一次 resume 使用；stop 脚本失败不会阻止 Incus stop，也不会覆盖旧环境。这是为了让用户停止操作优先获得确定的 stopped 结果，同时保留上一次可信恢复输入。</p>
-<p>Manager 本地阶段固定表达为启动编排阶段，脚本入口只对应 init、start 和 stop：</p>
-<pre><code class="language-text">lease_paused
--&gt; prepare_runtime
--&gt; write_credentials
--&gt; run_init (create only)
--&gt; run_start
--&gt; validate_runtime
--&gt; publish_ready
--&gt; finalize
--&gt; completed
-</code></pre>
-<p><code>prepare-workspace</code> 仍作为 Runtime Metadata boot stage 保留，用于表达 workspace 已经可用于本次启动：create 由 init 提交 workspace 后进入该 stage，resume 从本地共享环境确认 workspace 后进入该 stage。它不是脚本阶段，也不对应 <code>prepare</code> 脚本。</p>
+<p><code>outcome</code> 为 <code>done</code>、<code>recoverable_failed</code> 或 <code>unrecoverable_failed</code>；<code>stage</code> 与本次入口固定对应 <code>initialize-system</code>、<code>start-environment</code>、<code>stop-environment</code>。共享环境写入 <code>CODESPACE_ENV</code>，每行使用 <code>NAME=value</code>，换行、NUL、无效变量名和平台保留名由 Manager 拒绝。operation 版本和 lease 由 Manager launcher 管理，不交给脚本自行判断。</p>
 <p>实现验收点：</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
-结果结构只包含 <code>outcome</code> 和固定 stage；运行方式、容器标识、容器用户、UID/GID 与内部转发信息通过共享环境或脚本私有文件表达。</li>
+每次调用只消费本次唯一结果文件，旧结果不能使新调用成功。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-每次调用只有结果为 done 且共享环境通过校验时才推进后续 Manager 流程；Incus 侧在失败、损坏结果或共享环境校验失败时恢复调用前环境。</li>
+结果 JSON 只接受固定字段和值，写入采用临时文件加原子替换。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-<code>lease_paused</code> 恢复时，create 重新执行 init 并校验已提交 workspace，resume 重新执行 start，随后都执行连通校验；恢复只复用 active operation 快照中的脚本文本和共享环境。</li>
+共享环境只接受合法名称和单行值，平台输入不能被脚本结果覆盖。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-stop 脚本成功时保存共享环境；stop 脚本失败写入日志后继续 Incus stop 且不覆盖旧环境；Incus stop 成功才提交 stop final done。</li>
-</ul>
-<h2 id="endpoint-与-incus-后端契约"><a class="header" href="#endpoint-与-incus-后端契约">Endpoint 与 Incus 后端契约</a></h2>
-<p>Endpoint helper 的 <code>upstream_port</code> 始终表示 Runtime 实例内已经可以访问的目标端口。Runtime helper 把 Endpoint 完整列表写入本地 manifest，Manager 在 start 成功后、ready 前和稳定 running 健康检查中读取该文件，为目标端口创建 Manager 本地 Incus proxy listener，并把 listener 保存为 Gateway 路由。内部容器端口、容器标识或转发描述由脚本保存在自己的实现状态中。</p>
-<p>脚本若把服务运行在 Runtime 内的另一层环境中，先在实例内把该服务暴露到一个可由 Incus proxy 访问的本地端口，再调用 helper 登记该端口。脚本负责恢复和删除自己创建的内部转发；stop 可以关闭脚本私有服务，delete 会删除包含这些状态的根存储。Endpoint manifest 仍只处理 <code>endpoint_id</code>、label、<code>http|https</code>、目标端口和必填 <code>public</code> 布尔值。</p>
-<p>shell、exec 和 SFTP 使用同一实例边界。Manager/Gateway 通过 Incus exec/file/SFTP API 进入 Runtime，执行身份使用 init 输出的非 root UID/GID，默认 cwd 使用 init/start 输出的 workspace。SFTP 使用 Incus 实例文件 SFTP endpoint，由 Gateway 提供用户认证和 workspace 根目录映射，不要求 Runtime 内运行 SSH 服务或 <code>sftp-server</code>。自定义脚本若创建内部开发环境，需要把用户希望进入的工作区和命令入口整理到实例可见的 workspace 或脚本私有状态中；Manager 不解析容器标识。</p>
-<p>**设计如此：Runtime 内部的进程具有同一个 Codespace 权限边界。**用户在实例内拥有 sudo，容器不是额外授权边界；manifest 文件归属于当前实例，Endpoint proxy 和 Incus exec/file 校验负责防止脚本发布不可达目标。因此 Manager 不需要理解内部容器标识。</p>
-<p>实现验收点：</p>
-<ul>
-<li><input disabled="" type="checkbox" checked=""/>
-Endpoint API 对所有脚本实现都只接收 Runtime 实例内目标端口；Endpoint 条目不能指定 host。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-内部环境的端口转发由脚本建立；Manager 只保存目标端口并创建 Incus proxy。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-shell、exec 和 SFTP 的身份来自 init 输出的 UID/GID，cwd 来自 init/start 输出的 workspace，并在 ready 前由 Manager 通过 Incus file/exec 实际校验；SFTP 使用 Incus 实例文件 SFTP endpoint，不依赖 Runtime 内 SSH 服务。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-自定义脚本无法通过 Endpoint manifest 指定其他 host。</li>
-</ul>
-<h2 id="内置脚本实现"><a class="header" href="#内置脚本实现">内置脚本实现</a></h2>
-<p>内置 <code>init.sh</code> 读取 <code>/etc/os-release</code>，只选择能够明确归入的 <code>apt-get</code>、<code>dnf</code> 或 <code>pacman</code>。安装包前，内置脚本会把常见 Debian/Ubuntu apt 源、Fedora dnf 源和 Arch pacman 源切到清华 TUNA 国内镜像，并为被修改的源文件保留 <code>.gitea-codespace.bak</code> 备份；无法明确识别的 dnf 系发行版保持原有源。这样设计是为了让默认 Debian/Ubuntu/Fedora/Arch 镜像在国内网络下能稳定安装基础工具，同时避免为每个发行版维护一套复杂源模板。生产环境需要企业内网源或离线源时，部署者应使用自定义脚本套件明确管理包源。</p>
-<p>内置 init 按 <code>CODESPACE_USER</code> 创建或确认运行用户，默认用户名为 <code>codespace</code>，不强制 UID/GID 为 <code>1000:1000</code>。用户已存在时必须不是 root；用户不存在时由系统分配 UID/GID。它锁定密码，写入经过 <code>visudo -cf</code> 校验的 <code>NOPASSWD</code> sudoers，准备 Git credential helper 和 Endpoint helper，并把 root seed 安装到最终固定路径。这样设计是因为镜像中 <code>1000</code> 可能已经被占用，Manager 在 init 前只指定用户名，最终数值身份由 Runtime 内真实系统状态决定。</p>
-<p>内置 <code>init.sh</code> 在 create 时以 <code>CODESPACE_USER</code> 用户使用 <code>/workspaces/.gitea-create-{codespace_uuid}</code> 克隆受控临时 workspace。首选协议的 clone/fetch 非零退出且另一种 URL 非空时，只清理该临时目录并在同一次 init 调用中重试一次；本地前置错误、没有备用 URL和 HEAD 校验失败写入 <code>unrecoverable_failed</code>。HEAD 等于锁定 SHA 后，脚本原子 rename 到默认 <code>/workspaces/{repo_name}</code>，并把最终绝对路径追加到 <code>CODESPACE_ENV</code>。同一 operation 恢复时，如果最终 workspace 已存在、包含 Git 仓库且 HEAD 等于锁定 SHA，脚本只恢复实际 remote 的本地凭据并重新提交同一个 workspace。</p>
-<p>内置 <code>start.sh</code> 每次启动都会把本轮 root seed 安装到最终固定路径，然后读取共享环境中的 workspace。HTTP(S) remote 使用读取当前 Gitea Token 文件的 credential helper；SSH remote 使用固定私钥和 known_hosts，并启用严格 Host Key 校验。start 不 clone、fetch、checkout，不改写 Git identity，不探测 repository 可达性。**设计如此：**用户改名、修改邮箱或在 workspace 内调整 Git identity 后不触发 Gitea 同步；create 的一次性初始化已经足够，后续启动和恢复不覆盖用户工作区选择。</p>
-<p>内置 <code>stop.sh</code> 只提交 stop 结果；直接运行模式没有额外守护进程需要收尾。使用内置套件时，repository 中的 <code>.devcontainer/devcontainer.json</code> 或 <code>.devcontainer.json</code> 按普通 workspace 文件保留；Docker、Node.js、devcontainer CLI 和容器端口转发工具由选择 devcontainer 案例的自定义脚本准备。</p>
-<p>实现验收点：</p>
-<ul>
-<li><input disabled="" type="checkbox" checked=""/>
-apt/dnf/pacman 探测、国内镜像源配置、运行用户、sudo、init 中基于非空 clone URL 的同次回退、helper 准备和直接运行恢复全部在内置脚本测试中覆盖。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-SSH URL 为空时内置脚本只配置 HTTP(S) remote 和 credential helper，不切换到 SSH remote；Git SSH key 仍由 Manager Go 侧统一生成、登记并作为 seed 安装。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-create 前 Manager 将 repository Codespace 配置正文写入 Runtime 固定文件，并设置 <code>GITEA_CODESPACE_CONFIG_*</code> 环境变量；本次环境选择通过 <code>GITEA_CODESPACE_ENVIRONMENT_TAG</code> 提供。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-create 写入 Git <code>user.name</code> 和 <code>user.email</code>；start 只恢复凭据，不覆盖 workspace 现有 Git identity。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-内置 start 保留 workspace HEAD，只恢复当前 remote 的凭据和 helper，不依赖 repository payload 或网络可达性。</li>
-</ul>
-<h2 id="devcontainer-自定义脚本案例"><a class="header" href="#devcontainer-自定义脚本案例">devcontainer 自定义脚本案例</a></h2>
-<p>项目随文档提供一套完整、可运行的 devcontainer 自定义脚本案例：</p>
-<pre><code class="language-text">examples/devcontainer/init.sh
-examples/devcontainer/start.sh
-examples/devcontainer/stop.sh
-examples/devcontainer/README.md
-</code></pre>
-<p>管理员把三个路径作为完整自定义套件配置后，Manager 按本章通用顺序调用它们，并继续只传递通用脚本输入。案例自行完成以下工作：</p>
-<ol>
-<li><code>init.sh</code> 安装或校验 Docker、Node.js、固定版本 devcontainer CLI 和实例内 helper；create 时完成首次 clone、锁定 commit，并提交 workspace。</li>
-<li><code>start.sh</code> 是统一启动入口。create 后首次启动和 stopped 后恢复都通过它恢复 Git 凭据、启动 Docker、复用已有 devcontainer 或执行 <code>devcontainer up</code>，并提交容器 ID。</li>
-<li><code>stop.sh</code> 在 Incus stop 前尽量停止已知 devcontainer，并保留容器 ID 供下一次 start 复用。</li>
-<li>案例 Endpoint helper 先把容器逻辑端口转发为实例内本地端口，再调用通用 Runtime Endpoint API。Manager 和 Gitea 只接收目标端口。</li>
-</ol>
-<p>案例私有变量使用 <code>DEVCONTAINER_EXAMPLE_*</code> 前缀，作为不透明键值保存在 <code>CODESPACE_ENV</code>，需要的较大状态保存在 Runtime 根存储内。配置无效、有效用户为 root、用户同步失败、workspace 损坏或容器归属冲突返回 <code>unrecoverable_failed</code>；临时容器引擎、构建、包安装或网络错误返回 <code>recoverable_failed</code>。缺失或损坏案例私有状态时由案例根据自己能够证明的事实分类，Manager 只消费通用 outcome。</p>
-<p>**设计如此：devcontainer 支持由脚本契约提供，Manager Go 代码保持通用资源编排。**案例证明自定义套件可以创建嵌套开发环境、执行 lifecycle commands，并把工作区和 Endpoint 服务接入 Incus 实例边界；相同契约也能承载其他容器工具或企业开发环境。Manager 只保存通用输出和不透明共享变量，因此 devcontainer CLI 版本、容器状态和恢复细节都归属于案例自身。</p>
-<p>实现验收点：</p>
-<ul>
-<li><input disabled="" type="checkbox" checked=""/>
-devcontainer 案例作为三个完整自定义脚本路径被显式配置后执行；内置配置把 repository 中的 devcontainer 文件作为普通 workspace 内容处理。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-Manager 的配置、Go 类型、RPC、本地结构化快照和状态机只表达 Incus 实例、通用脚本输入、通用结果、共享环境、Incus backend 和 Endpoint 目标端口；devcontainer 示例的容器 ID 使用私有共享变量保存。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-案例通过通用结果提交凭据 UID/GID、workspace 和 Endpoint 目标端口；Manager 使用与内置脚本相同的 Incus file/exec ready 校验。</li>
-<li><input disabled="" type="checkbox" checked=""/>
-stop 先运行案例收尾脚本，再停止 Incus 实例；resume 只运行同一 <code>start.sh</code> 恢复既有容器，delete 删除实例根存储及其中的案例状态。</li>
+lease 到期或 Manager 取消时终止整个脚本进程组，脚本不能在授权结束后继续修改实例。</li>
 </ul>
 
                     </main>
