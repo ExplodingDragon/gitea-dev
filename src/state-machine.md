@@ -225,11 +225,12 @@ Request：
 startup_capacity_available
 cleanup_capacity_available
 accepted_operation_types
-max_new_operations
 observed_operations:
   - codespace_uuid
     operation_rversion
 ```
+
+Gitea 以 `startup_capacity_available + cleanup_capacity_available` 推导本次 `operations` 上限，并将结果限制在 `1..256`。上限由服务端确定，是因为两个容量字段已经完整表达 Manager 当前能启动的 worker 数量，额外传一个总数只会产生相互矛盾的组合。
 
 Response：
 
@@ -250,7 +251,7 @@ delete -> stop -> resume -> create
 
 Fetch 在任何租约、超时或领取写入前，先批量校验 `observed_operations`。对于仍存在、绑定当前 Manager 的 Codespace，observed 正数版本高于 Gitea 保存的 `operation_rversion` 表示 Manager 已见过 Gitea 当前数据无法解释的更新历史；整个请求返回 Manager 级 `state_history_conflict`，不刷新租约、不执行 timeout、不领取 queued operation，也不改写 Token、cache 或主状态。UUID 无记录或 binding 不匹配时没有足够历史证明版本倒退，本次 Fetch 不续租该项，后续完整 inventory 按数据库当前关系返回 cleanup；这使正常删除仍走既有资源清理路径，而不会被误判为数据库恢复。
 
-预检通过后，Fetch 先处理当前 Manager 的 running operation，每条在刷新 observed lease 或返回当前 payload 前都先判定 deadline。`operation_deadline_unix` 已被总执行期限封顶，因此 lease 或总期限任一个到期都会进入同一 timeout State Finalization。deadline 未到期时，功能启用或站点排空下的 stop/delete 按以下规则处理：相同版本出现在 `observed_operations` 时只批量刷新 lease，并在 `renewed_leases` 返回 UUID、版本和相对有效时长；observed 版本较低时返回当前 payload 并刷新 lease；未提交该 UUID 表示本地上下文缺失，Gitea 保持 operation 等待原 deadline。deadline 已到期时不返回 payload、续租回执或 abort，该项不计入 `max_new_operations`。站点排空下的 running create/resume 在 deadline 未到期时返回 `abort_create|abort_resume`；这些 abort 都是不刷新 lease 的一次性清理命令，Manager 清理本轮工作并 final failed，Gitea 将 create 映射到 failed、resume 映射回 stopped。处理完 running operation 后再领取新的 queued operation。所有路径都不改变 `operation_rversion`。
+预检通过后，Fetch 先处理当前 Manager 的 running operation，每条在刷新 observed lease 或返回当前 payload 前都先判定 deadline。`operation_deadline_unix` 已被总执行期限封顶，因此 lease 或总期限任一个到期都会进入同一 timeout State Finalization。deadline 未到期时，功能启用或站点排空下的 stop/delete 按以下规则处理：相同版本出现在 `observed_operations` 时只批量刷新 lease，并在 `renewed_leases` 返回 UUID、版本和相对有效时长；observed 版本较低时返回当前 payload 并刷新 lease；未提交该 UUID 表示本地上下文缺失，Gitea 保持 operation 等待原 deadline。deadline 已到期时不返回 payload、续租回执或 abort，该项不计入服务端推导的 payload 上限。站点排空下的 running create/resume 在 deadline 未到期时返回 `abort_create|abort_resume`；这些 abort 都是不刷新 lease 的一次性清理命令，Manager 清理本轮工作并 final failed，Gitea 将 create 映射到 failed、resume 映射回 stopped。处理完 running operation 后再领取新的 queued operation。所有路径都不改变 `operation_rversion`。
 
 running operation 恢复条件：
 
@@ -260,7 +261,7 @@ running operation 恢复条件：
 - 功能启用时，或站点排空下的 stop/delete，`observed_operations` 包含相同 `codespace_uuid + operation_rversion` 时只刷新 lease 并返回轻量续租回执；包含较低版本时返回当前 payload；未包含该 UUID 时保持等待原 deadline。站点排空下的 create/resume 不使用 observed 抑制 abort。
 - 本次 response 已加入的 running operation 也从后续恢复候选中排除。
 - 返回普通执行 payload 时按本节统一租约计算刷新 `operation_deadline_unix`，并返回本次实际授予的正数相对有效时长；接近总执行期限时该值短于标准 lease，abort payload 不刷新且相对有效时长为 0。
-- running operation 恢复不占 create/resume 容量，但计入 `max_new_operations`。
+- running operation 恢复不占 create/resume 容量，但计入服务端推导的 payload 上限。
 - `repo_id=0` 的 running create 在 Manager 已声明相同版本且本地上下文完整时只续租；Manager 缺少上下文时等待原 deadline，超时后进入 failed。Gitea 不从旧 metadata 推断 create 成功。
 - 站点排空下的 running create/resume 在 deadline 未到期时返回对应 abort 指令；create 删除本轮新建的 Incus 实例并 final failed，Gitea 写入 failed；resume 停止本轮启动的实例、保留实例根存储并 final failed，Gitea 写回 stopped。
 
@@ -300,11 +301,10 @@ Fetch 不使用覆盖整批操作的大事务。running lease 刷新和每条 qu
 
 批量返回规则：
 
-- `max_new_operations` 必须在 `1..256`，`observed_operations` 最多 10000 条且 `codespace_uuid` 不重复；Manager 每次上报全部本地上下文完整的 running operation。
-- 单个 Manager 的 Runtime 总数和 Declare 声明的总容量均不超过 10000；完整 inventory 与 observed operation 分别以一个完整请求提交，其最大编码尺寸由 Gitea 启动校验覆盖。
+- 服务端以两类可用容量之和推导 payload 上限并限制在 `1..256`；`observed_operations` 最多 10000 条且 `codespace_uuid` 不重复，Manager 每次上报全部本地上下文完整的 running operation。
+- 单个 Manager 的 Runtime 总数由 Manager 本地配置限制为不超过 10000；完整 inventory 与 observed operation 分别以一个完整请求提交，其最大编码尺寸由 Gitea 启动校验覆盖。
 - DB 使用 `operation_created_unix, uuid` keyset 分页；1024 上限在稳定 scope/tag 筛选之后计算，避免其他 scope 或 tag 的旧 operation 长期遮挡可领取候选。
-- 总返回数量不超过 `max_new_operations`。
-- `max_new_operations` 只限制 `operations`；`renewed_leases` 最多等于 observed 数量，不占 payload 名额。
+- `operations` 总返回数量不超过服务端推导的 payload 上限；`renewed_leases` 最多等于 observed 数量，不占 payload 名额。
 - 本次新领取的 queued create/resume 数量不超过 `startup_capacity_available`；已有上下文的 running operation 和 abort 不占新容量。
 - 本次新领取的 queued stop/delete 数量不超过 `cleanup_capacity_available`；已有上下文的 running operation 不占新容量。
 - stop/delete 不占 create/resume 容量，create/resume 也不占清理容量；某一类容量为 0 时跳过该类候选并继续处理另一类。
@@ -314,7 +314,7 @@ Fetch 不使用覆盖整批操作的大事务。running lease 刷新和每条 qu
 - 功能启用时，以及站点排空下的 stop/delete，已上报相同 `observed_operations` 版本时返回相对有效时长的续租回执；observed 版本较低时返回当前 payload；排空中的 create/resume 在 deadline 未到期时下发相对有效时长为 0 的 abort。
 - Manager 只对本地执行上下文完整的 operation 声明 observed；缺少 payload 或 boot 结果时省略并等待原 deadline。
 - 刚领取 queued operation 时在本次 claim 响应中返回完整 payload；已是 running 的 operation 只有上报较低 observed 版本时才返回当前 payload。
-- running operation 在刷新 observed lease 或返回当前 payload 前先检查 deadline；过期项直接 timeout 且不计入 `max_new_operations`。
+- running operation 在刷新 observed lease 或返回当前 payload 前先检查 deadline；过期项直接 timeout 且不计入服务端推导的 payload 上限。
 - 每个 payload 携带当前 `log_offset`；Manager 从该 offset 继续追加单文件日志。
 - 单条候选 payload 构造失败不会丢弃本批已经成功组装或随后可执行的 operation。
 - `accepted_operation_types` 只表达本次是否接受 create/resume；stop/delete 是绑定 Manager 负责的资源回收动作，并由清理容量决定本轮领取数量。
@@ -333,8 +333,8 @@ flowchart TD
     runningAction{"有 observed 结果<br/>或排空 abort"}
     resend["刷新 observed lease 并加入回执<br/>或返回版本更新/abort payload"]
     runningTimeout["timeout State Finalization"]
-    limit{"达到 max_new_operations"}
-    prepare["容量快照和 queued DB 粗筛"]
+    limit{"达到服务端推导的<br/>payload 上限"}
+    prepare["本次可用槽位和 queued DB 粗筛"]
     filter{"有可领取候选"}
     sort["按优先级排序"]
     capacity{"候选类型有对应<br/>可用容量"}
@@ -381,7 +381,7 @@ flowchart TD
 - Fetch 不接收 tags；候选与 claim 都使用认证 Manager 最新声明的 tags。
 - create claim 重新确认 repository 当前存在，并按 Codespace 创建者匹配个人 Manager；repository transfer 不改变该范围。
 - 站点全局 Manager 与创建者的个人 Manager 同时匹配时允许任一合格 Manager 领取，但条件更新保证只有一个领取成功；binding 成立后不自动迁移。
-- 单次结果遵守 `max_new_operations`、create/resume 启动容量和 stop/delete 清理容量上限；任一执行池满载不阻塞另一执行池。
+- 单次结果遵守服务端推导的 payload 上限、create/resume 启动容量和 stop/delete 清理容量上限；任一执行池满载不阻塞另一执行池。
 - 同优先级 FIFO、候选扫描上限和 request 数量限制得到校验。
 - payload 构造失败的 claim 被条件释放；系统错误或响应丢失留下的 running claim 等待原 deadline 并按普通 timeout 收敛。
 
@@ -413,7 +413,7 @@ operation_status=running
 | stop | `status=stopped, stopped_unix=now`，物理删除 Token、保留 Git SSH Key 并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
 | delete | 物理删除 Codespace、Token、Git SSH Key、日志和绑定数据 | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
 
-resume worker 在 active operation 内先取得新 Token、读取或生成 Git SSH key、先写 key seed、确认公钥和 known_hosts、写入完整 root seed，再运行 `start.sh` 安装当前 seed、恢复已有 workspace 的本地凭据配置和脚本私有入口；workspace remote 为 SSH 时校验最终私钥、公钥和 known_hosts 可用，然后上报同版本 `ready` Runtime Metadata。start 阶段和 `running` 都可直接使用 Token 与 Git SSH Key；Manager 在 final 前只验证本地凭据配置，不探测 repository 可达性，面向用户的 open 和 Gateway SSH 仍等待 final done。Gitea 接受 final 时把主状态和用户交互能力一起切换为 running，并清空 active operation。Manager 重启后先终止遗留 launcher、停止 active resume 实例并恢复 `lease_paused`；本地 payload、boot 结果和 worker 阶段完整时才把该版本放入 Fetch，收到成功续租和新的相对有效时长后重新启动并继续到 ready。上下文缺失或服务端已超时的 operation 不会重新执行。final 幂等提交后不需要 operation 结束后的凭据刷新任务。
+resume worker 在 active operation 内先取得新 Token、读取或生成 Git SSH key、先写 key seed、确认公钥和 known_hosts、写入完整 root seed，再启动本地状态中的完整 Dev Container 环境、恢复已有 workspace 的本地凭据配置和交互入口；workspace remote 为 SSH 时校验最终私钥、公钥和 known_hosts 可用，然后上报同版本 `ready` Runtime Metadata。resume 阶段和 `running` 都可直接使用 Token 与 Git SSH Key；Manager 在 final 前只验证本地凭据配置，不探测 repository 可达性，面向用户的 open 和 Gateway SSH 仍等待 final done。Gitea 接受 final 时把主状态和用户交互能力一起切换为 running，并清空 active operation。Manager 重启后先终止遗留执行、停止 active resume 实例并恢复 `lease_paused`；本地 payload、boot 结果和 worker 阶段完整时才把该版本放入 Fetch，收到成功续租和新的相对有效时长后重新启动并继续到 ready。上下文缺失或服务端已超时的 operation 不会重新执行。final 幂等提交后不需要 operation 结束后的凭据刷新任务。
 
 resume failed 表示 Manager 已确认本轮启动进程已停止，因此 operation 事务先回到 `stopped`。Manager 把本次 boot 终态原子保存为 `done`、`recoverable_failed` 或 `unrecoverable_failed`；普通启动、网络、服务端和文件写入失败使用 `recoverable_failed`，final failed 后保持 stopped。实例根存储损坏、Git SSH 密钥材料相互矛盾或 Gitea 已绑定不同公钥等无法安全恢复的结果使用 `unrecoverable_failed`，final failed 被接受后继续通过 `ReportRuntimeTransition(failed)` 进入 failed。这样 final 只回答当前 operation 是否完成，主状态报告继续表达实例是否还可恢复。
 
@@ -462,18 +462,16 @@ State Finalization 在同一事务内执行：
 
 主事务提交后，如果 Codespace 记录仍然存在，final、timeout、missing 和 Runtime 状态报告会通过日志专用锁尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端告警，不回滚已经成立的生命周期结果。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，因此跳过内部摘要，不再创建日志。这样主状态写入不依赖诊断文本，也不会让高频日志路径绑定生命周期锁。
 
-active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后不再声称能够验证已经删除的原类型，而是按相同 `operation_rversion` 和请求目标主状态判断幂等：create/resume done 对应 running，resume failed 和 stop done 对应 stopped，create/stop/delete failed 对应 failed。当前主状态匹配时返回 `idempotent_done`，不匹配时返回 `stale_operation`。codespace 已物理删除时返回 `resource_absent`。Manager 按 outcome 处理当前上下文：
+active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后不再声称能够验证已经删除的原类型，而是按相同 `operation_rversion` 和请求目标主状态判断是否已经完成；create/resume done 对应 running，resume failed 和 stop done 对应 stopped，create/stop/delete failed 对应 failed。Codespace 已物理删除时响应 `resource_absent=true`，其余首次接受、重复提交或当前状态已经不再接受旧结果的情况都返回空成功响应。Manager 对空成功响应统一结束该版本本地 operation；资源不存在时结束上下文并立即触发完整 inventory。
 
-active operation 仍存在且 final 携带的 `operation_rversion` 与当前值相同，但有效 `operation_type` 与当前类型不同时，Gitea 返回现有 `stale_operation` outcome。这表示 Manager 的本地 worker 上下文已经不能继续；Manager 停止该 worker 的新 Incus 变更和 operation RPC，从 `observed_operations` 省略这份旧上下文并保留 Runtime。`UNSPECIFIED` 或未知枚举仍属于 `invalid_argument`。
+active operation 仍存在且 final 携带的 `operation_rversion` 与当前值相同，但有效 `operation_type` 与当前类型不同时，Gitea 不写入生命周期结果并返回空成功响应。这表示该 Manager worker 已经完成它能执行的本地动作，继续保留旧上下文或重试不会产生新信息。`UNSPECIFIED` 或未知枚举仍属于 `invalid_argument`。
 
-| outcome | Manager 行为 |
+| response | Manager 行为 |
 | --- | --- |
-| `final_accepted` | 清除该版本 operation payload 和 worker 阶段；最新 boot 终态结果继续保留用于重启恢复，resume 的 `unrecoverable_failed` 还会继续驱动 failed 状态报告。 |
-| `idempotent_done` | 按 `final_accepted` 完成同一版本的本地收尾，不重复执行 Runtime 动作。 |
-| `stale_operation` | 停止该 worker 的新 Incus 变更和 operation RPC，从 observed 集合省略其上下文并保留 Runtime；已经替换的更高版本上下文不受影响。 |
-| `resource_absent` | 清除该版本 operation 上下文并触发完整 inventory；delete worker 将其视为 Gitea 侧删除已经完成，Incus 实例只按 inventory 明确指令处理。 |
+| `resource_absent=false` | 清除该版本 operation payload 和 worker 阶段；最新 boot 终态结果继续保留用于重启恢复，resume 的 `unrecoverable_failed` 还会继续驱动 failed 状态报告。 |
+| `resource_absent=true` | 清除该版本 operation 上下文并触发完整 inventory；delete worker 将其视为 Gitea 侧删除已经完成，Incus 实例只按 inventory 明确指令处理。 |
 
-`stale_operation` 不是重新下发 operation 的入口。Gitea 保留当前 active operation 到原 `operation_deadline_unix`，届时按统一 timeout 表处理：create/stop/delete 进入 failed，resume 进入 stopped；之后完整 inventory 对残留 Runtime 执行现有 cleanup、停止或状态报告规则。若 stale 响应产生时 Gitea 已无 active operation，下一次完整 inventory 直接按当前主状态处理差异。该闭环不重放无法确认的旧动作，也不增加新的恢复状态。
+空成功响应不是重新下发 operation 的入口。若 Gitea 已经有更新的 active operation，它会保留到原 `operation_deadline_unix` 并由正常 Fetch/timeout 流程处理；Manager 结束旧版本 worker 后，下一次 Fetch 或完整 inventory 按当前关系继续收敛。该闭环不重放已经完成的旧动作，也不增加新的恢复状态。
 
 UUID 不复用，也不保存 operation 历史或 tombstone，因此 stale 和 resource absent 都只处理当前通信上下文。物理资源清理由下一次成功、当前 generation 的完整 inventory 根据数据库记录是否存在作出明确决定。
 
@@ -502,11 +500,11 @@ stateDiagram-v2
     HasToken --> [*]: 同事务删除 Token 行与 Codespace
 ```
 
-`creating -> running` 和 resume done 都保留已经写入的 Token；功能启用且调用条件仍成立时，重复 `RequestGiteaToken` 解密并校验当前行后返回同一明文。排空模式拒绝全部 `RequestGiteaToken`，但不改变图中的持久 Token 状态。
+`creating -> running` 和 resume done 都保留已经写入的 Token；功能启用且调用条件仍成立时，重复 `RequestRuntimeAccess` 解密并校验当前行后返回同一明文。排空模式拒绝全部 `RequestRuntimeAccess`，但不改变图中的持久 Token 状态。
 
 **图示范围：上图表达 `codespace_gitea_token` 行随生命周期变化的持久结果。**稳定 stopped 没有 Token；active resume 可以提前持有一行 Token，并在有效初始化期限内按源仓库和已确认附加仓库规则访问，resume done 后继续复用。面向用户的 open 与 Gateway SSH 仍只在 running 开放。站点排空以及 `is_active`、`prohibit_login`、`must_change_password`、站点强制 2FA 等登录限制在每次 Git/LFS/API 请求上判定。create abort、resume failed/timeout、stop final 和进入 failed/deleting 时物理删除 Token 行。
 
-| 当前阶段 | `RequestGiteaToken` | 已有 Token 的新请求 | 状态收敛 |
+| 当前阶段 | `RequestRuntimeAccess` | 已有 Token 的新请求 | 状态收敛 |
 | --- | --- | --- | --- |
 | 已领取且租约有效的 create | 返回当前行或创建新行 | 允许 | create done 直接复用到 running；失败或超时删除 |
 | 稳定 running | 返回当前行或创建新行 | 允许 | 保持当前行 |
@@ -517,7 +515,9 @@ stateDiagram-v2
 
 **设计如此：Token 的有效期由 Codespace 工作阶段界定。**允许阶段持续使用当前行，时间经过本身不产生轮换；每个新请求仍实时检查工作阶段、源仓库或附加仓库能力、创建用户登录限制和 Gitea 原有权限。Token 行被生命周期事务删除后，下一次合法 resume 才重新签发。
 
-`codespace_ssh_key` 属于 Codespace 整体生命周期：Manager 在每次 create/resume 初始化时生成或确认 Git SSH 公钥关系，不记录 operation 版本。有效 create/resume 初始化期与 running 都能使用；稳定 stopped 保留关系但拒绝 Git 命令，failed/deleting 和物理删除清理关系与 `PublicKey`。create 从 SSH 回退到 HTTP(S) 成功时允许保留已经登记的关系，最终使用 HTTP(S) 的 Codespace 也可以存在该关系。实际 remote 的差异只增加 Manager ready 前的本地凭据配置检查，不增加 Gitea final 分支、主状态或 active operation 类型。**设计如此：已登记公钥是限定到当前 Codespace 和仓库的生命周期凭据，协议选择不为它增加补偿删除流程。**
+同一 `RequestRuntimeAccess` 响应还携带创建用户为当前源仓库选择的 Codespace Secret。Secret 不属于 Codespace 主状态或凭据状态机：Gitea 保存的是用户级加密值和仓库选择，Manager 在 create/resume 时解析当前结果并写入运行中实例的易失文件，stop 时清理。**设计如此：**值的更新在下一次启动边界生效即可，不需要为每个 Codespace 复制密文、增加轮换 operation 或改写主状态。
+
+`codespace_ssh_key` 属于 Codespace 整体生命周期：Manager 在每次 create/resume 初始化和稳定 running 恢复时生成或确认 Git SSH 公钥关系，请求使用当前 `operation_rversion` 防止迟到任务修改材料，但关系表本身不重复保存 operation 版本。有效 create/resume 初始化期与 running 都能使用；稳定 stopped 保留关系但拒绝 Git 命令，failed/deleting 和物理删除清理关系与 `PublicKey`。create 从 SSH 回退到 HTTP(S) 成功时允许保留已经登记的关系，最终使用 HTTP(S) 的 Codespace 也可以存在该关系。实际 remote 的差异只增加 Manager ready 前的本地凭据配置检查，不增加 Gitea final 分支、主状态或 active operation 类型。**设计如此：已登记公钥是限定到当前 Codespace 和仓库的生命周期凭据，operation 版本只保护请求时序，协议选择不为它增加补偿删除流程。**
 
 实现验收点：
 
@@ -694,7 +694,9 @@ stateDiagram-v2
 
 `private -> public` 先关闭 `connecting/live`、使认证 allowed 失效，再开放公共 ready；`public -> private` 先取消 `validating/forwarding/streaming`、使公共 allowed 失效，再进入等待认证。普通 Endpoint 的 upstream、端口、协议变化，以及新 ready 快照改变 Web IDE 目标时，同样先关闭旧连接再替换目标。Host、Origin、Service Worker 或 code 格式在入口校验失败时直接结束请求，不进入以上状态，也不推进 `interaction_generation`。**设计如此：访问方式和跨域判定属于当前连接的本地生命周期，不增加 Gitea 主状态、operation 或历史记录。**
 
-Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready、普通 Endpoint existence 判定。SSH 的实际后端和 `workspace` 的 code-server 目标都由 Manager 本地快照决定；Gitea 只判断当前启动是否 ready 和用户是否允许连接。`workspace` 是固定 Web IDE 授权对象，不出现在 Runtime Metadata endpoints 中，也不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。
+Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready 和 Endpoint existence 判定。SSH 的实际后端、普通 Endpoint 端口目标和 `workspace` 的 code-server 目标都由 Manager 本地快照决定；Gitea 判断当前启动是否 ready、目标描述是否存在以及用户是否允许连接。`workspace` 是 Manager 固定加入完整 endpoints 集合的私有 Web IDE 授权对象，不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。
+
+**设计如此：**`workspace` 描述进入 metadata 是为了让 Gitea 与 Gateway 对“入口是否已经建立”使用同一事实；实例名、容器和端口留在 Manager 本地，是为了避免控制面缓存成为可连接后端的第二来源。
 
 `boot.stage` 使用以下适用顺序，`boot.operation_rversion` 标识产生快照的 Manager 启动上下文：
 
@@ -718,21 +720,21 @@ stateDiagram-v2
     ready --> [*]
 ```
 
-Manager 本地执行阶段固定为 `lease_paused -> prepare_runtime -> write_credentials -> run_init -> run_start -> validate_runtime -> publish_ready -> finalize -> completed`，只保存在 Manager 当前快照。create 的 `prepare-workspace` 由 init 提交 workspace 承担；resume 由本地共享环境确认已有 workspace 后进入同一 boot stage。它们与六个 boot stage 的对应关系如下：
+Manager 本地只持久化 `active` 与 `lease_paused` 两种 worker 状态，不保存另一套逐步阶段。create 和 resume 根据已提交的实例、workspace 与结构化环境幂等继续，并把实际进度映射为六个 boot stage：
 
-| Manager 本地阶段 | 对外 boot stage |
+| Manager 当前动作 | 对外 boot stage |
 | --- | --- |
 | `lease_paused` | 保持暂停前最后一个已持久化的 boot stage；尚未发布时保持 `prepare-runtime` |
-| `prepare_runtime` | `prepare-runtime` |
-| `write_credentials`、`run_init` | `initialize-system` |
-| create 的 init workspace 提交、resume 从共享环境确认 workspace | `prepare-workspace` |
-| `run_start` | `start-environment` |
-| `validate_runtime` | `publish-ready` |
-| 已持久化 ready 快照、正在等待 Gitea 回执的 `publish_ready`，以及后续 `finalize`、`completed` | `ready` |
+| 准备 Incus 实例和运行时二进制 | `prepare-runtime` |
+| 写入凭据并执行固定 bootstrap | `initialize-system` |
+| create 提交 workspace；resume 确认保存的 workspace | `prepare-workspace` |
+| 原生运行时 create/resume 完整环境 | `start-environment` |
+| 校验 Dev Container、Web IDE 和接入后端 | `publish-ready` |
+| ready 快照已持久化，等待 metadata 或 final 回执 | `ready` |
 
-init、start 和 stop 各自提交严格结果及本阶段 `CODESPACE_ENV` 变更；Manager 只验证凭据身份、workspace、Git 本地凭据、Incus exec/file、Dev Container、code-server 和普通 Endpoint proxy 等通用输出，脚本内部子步骤只写日志。进入 `write_credentials` 前先关闭用户入口；Gitea Token、Git SSH key 和 known_hosts seed 写入完成后，create 由 init 安装首次文件并提交 workspace，create 首启和 resume 都由 `start.sh` 安装当前 seed 并恢复启动入口。崩溃后本地仍为 `write_credentials`，同一 active create/resume 在凭据提交中断后持久化回到该阶段并重做凭据、当前 operation 需要的 init/start、后续启动和校验。`publish_ready` 先持久化 `boot.stage=ready` 的完整快照再发送；响应丢失时保留该快照并幂等重报。进入 `lease_paused` 会停止实例；同版本续租后仍可保留单调的 ready boot stage，但 Manager 必须重新完成当前 operation 所需的 init/start 和 Incus backend 校验，确认本次启动可用后才重报 ready 并推进到 `finalize`。**设计如此：Manager 本地阶段用于崩溃恢复并允许凭据步骤重新执行，boot stage 用于 Gitea 校验当前启动进度且保持单调；两者职责不同，因此不是一一对应关系。脚本内部实现不增加本地阶段或 Gitea stage。**
+bootstrap 和原生 runtime 各自提交严格结果；Manager 验证凭据身份、workspace、Git 本地凭据、Incus exec/file、完整 Dev Container、code-server 和普通 Endpoint。写凭据前先关闭用户入口；create 由 bootstrap 安装首次文件并提交 workspace，再由原生 runtime 创建环境；resume 直接使用保存环境启动全部容器。崩溃后同一 active operation 根据已经提交的事实重做幂等步骤。ready 快照先原子持久化再发送，响应丢失时幂等重报。进入 `lease_paused` 会停止实例；同版本续租后重新完成环境启动和接入校验。**设计如此：boot stage 供 Gitea 展示并保持单调，本地恢复依靠实际资源和结构化状态，不需要维护一套容易分叉的细粒度阶段。**
 
-create 和 resume 的 final done 都要求 boot 版本等于当前 operation 且 metadata 已为 `ready`。create 启动 Runtime 后，在 active operation 内先申请新 Token、读取或生成 Git SSH key、先写 key seed、确认公钥和 known_hosts、写入完整 root seed，再运行 init 安装首次 Runtime credential、首次 clone、锁定 commit、提交 workspace，并继续执行 `start.sh` 和 ready 上报；resume 启动 Runtime 后写入当前 root seed，随后运行同一个 `start.sh`，刷新实际 remote 的本地凭据配置并上报本次 resume 版本的 `ready`；旧版本的 `ready` 不能完成当前 resume。凭据或 ready 上报临时失败时，Manager 在 operation lease 内退避重试；确认无法写入 credential 时停止本轮启动的 Runtime，create 提交 final failed 并进入 failed，resume 提交 final failed 并保持可恢复的 stopped。普通 Endpoint、用户服务和 repository 可达性不参与 ready 判定。这样 `running` 始终表示本次启动所需的本地凭据配置和交互入口已经就绪，open/SSH 不存在等待另一个启动阶段的中间状态。
+create 和 resume 的 final done 都要求 boot 版本等于当前 operation 且 metadata 已为 `ready`。create 启动 Runtime 后，在 active operation 内写入当前 root seed，通过 bootstrap 完成首次 clone和 workspace提交，再由原生 runtime创建完整 Dev Container并上报 ready；resume 写入当前 seed后启动保存的容器集合，刷新实际 remote的本地凭据配置并上报本次版本 ready。旧版本 ready不能完成当前 resume。凭据或 ready上报临时失败时，Manager在 operation lease内退避重试；确认无法写入凭据时停止本轮 Runtime，create final failed进入 failed，resume final failed保持 stopped。普通 Endpoint、用户服务和 repository可达性不参与 ready判定。这样 `running` 始终表示本次启动所需的本地凭据配置和交互入口已经就绪。
 
 Gitea 按主状态和 active operation 校验 boot 上下文：
 
@@ -745,7 +747,7 @@ Gitea 按主状态和 active operation 校验 boot 上下文：
 
 同一 `boot.operation_rversion` 的 stage 只能按规定顺序前进；一旦接受 `ready`，后续同版本快照继续保持 `ready`。resume final failed、timeout 或 abort 会在主状态事务提交后尽力清除当前 Runtime Metadata，Manager 清除本轮 boot 发布上下文，不恢复或发布历史 `ready`。此后迟到的当前 resume 版本快照因已经没有 active resume 而返回 `stale_operation`；清理失败时数据库中的 `stopped` 主状态仍会阻止交互。`recoverable_failed`、timeout 和 abort 允许下次 resume 使用更高 operation 版本重建完整快照；`unrecoverable_failed` 按前述流程继续进入 failed。
 
-稳定 running 的 Gitea Token 文件缺失时，Manager 关闭新准入，通过 `RequestGiteaToken` 取得当前行的同一明文并原子写回，校验本地 helper 后继续沿用当前 `ready`。Git SSH 或 workspace 本地凭据损坏时不在 running 内跨存储修复：Manager 关闭会话并停止 Runtime，再通过 `ReportRuntimeTransition(stopped)` 收敛主状态并保留实例根存储，下一次 resume 在 active operation 内重新确认。根存储已损坏时改为报告 failed。**设计如此：active create/resume 使用可重放的 `write_credentials`，稳定 running 使用 stopped 边界恢复 Git 与 workspace 本地凭据，两种场景都有唯一结果且不增加新的 Gitea 主状态。**
+稳定 running 的运行访问材料缺失时，Manager 关闭新准入，以 Codespace 当前 operation 版本和固定公钥调用 `RequestRuntimeAccess`，原子写回 Token、Secret 与 known_hosts 并校验本地 helper 后继续沿用当前 `ready`。本地私钥无法恢复、workspace 损坏或写入后仍无法确认一致时，Manager 关闭会话并停止 Runtime，再通过 `ReportRuntimeTransition(stopped)` 收敛主状态并保留实例根存储，下一次 resume 在 active operation 内重新确认；根存储已损坏时改为报告 failed。**设计如此：稳定 running 可以重交付可验证的访问材料，但不会生成新的 Git 身份或重建 workspace。**
 
 写入条件：
 
@@ -761,11 +763,13 @@ Gitea 在接受请求时写入 `last_reported_unix=now`，该时间不属于 Man
 
 Manager 显式管理 Runtime Metadata 的发布资格。create/resume 在保存本次 boot 快照后激活发布任务；Manager 重启后先保持全部发布任务关闭，再由完整 inventory 确认某个本地实例与 Gitea 都处于稳定 running、且没有 active operation 时恢复该对象的发布。Endpoint 或资源用量变化只唤醒已经激活的任务，不能创建新任务。**设计如此：本地状态文件负责保存恢复材料，不能单凭文件中曾经存在 Runtime Metadata 就推断实例当前可接入；完整 inventory 同时观察 Incus 和 Gitea 当前状态，适合作为重启后的发布恢复边界。**
 
-stop、delete、租约中断的 create/resume、健康检查停止、稳定 running 凭据故障和 inventory 收敛动作统一结束发布生命周期：先关闭该 Codespace 的现有访问，清除本地 Endpoint 路由、Runtime Metadata 和相关 session，停用发布任务，再执行对应的 Incus stop/delete 或状态报告。清理只移除当前运行实例的可发布快照，保留 resume 所需的 startup input、共享脚本环境和 operation/transition 状态；状态文件同时记录发布已关闭，迟到的非空 Endpoint 更新会直接失败，下一次 create/resume 保存新 boot 快照时才重新开放。每个 Codespace 状态文件的读改写在 Manager 内串行执行，避免资源采样、Endpoint 更新和停止清理互相覆盖。**设计如此：Runtime Metadata 与 Endpoint 表达“当前可以连接到哪里”，而 startup input 和共享脚本环境表达“下一次如何启动”；两类数据生命周期不同，停止时分开处理可以保留恢复能力，同时让 stopped 立即失去接入条件。发布关闭记录用于解决已经进入执行队列的 Endpoint 更新晚于停止清理完成的问题，不承担新的生命周期状态。**
+stop、delete、租约中断的 create/resume、健康检查停止、稳定 running 凭据故障和 inventory 收敛动作统一结束发布生命周期：先关闭该 Codespace 的现有访问，清除本地 Endpoint 路由、Runtime Metadata 和相关 session，停用发布任务，再执行对应的 Incus stop/delete 或状态报告。stop 只移除可发布快照并保留 resume 所需的 startup input、完整 Dev Container 环境和 operation/transition 状态；delete 确认实例不存在后删除全部本地状态。迟到的非空 Endpoint 更新直接失败，下一次 create/resume 保存新 boot 快照时才重新开放。每个 Codespace 状态文件的读改写在 Manager 内串行执行，避免资源采样、Endpoint 更新和停止清理互相覆盖。**设计如此：Runtime Metadata 与 Endpoint 表达“当前可以连接到哪里”，startup input 和完整环境表达“下一次恢复什么”；两类数据生命周期不同，停止时分开处理可以保留恢复能力，同时让 stopped 立即失去接入条件。**
 
 每个 Codespace 的 metadata 由 Manager 的单一发布任务串行发送，同一时刻最多存在一个请求。boot、Endpoint、Web IDE 本地目标、Incus backend 和恢复流程先更新同一份本地当前快照，再唤醒发布任务；多次唤醒可以合并。发布任务收到成功响应时，先按该请求实际携带的 boot 判断 ready：只要其中包含当前 create/resume operation 的 `ready`，就记录本次启动的 ready 已被 Gitea 接受并唤醒 operation worker。随后再比较该请求 generation 与本地当前 generation；本地已经产生更高 Endpoint generation 时，任务继续发送最新完整快照，但已经成立的 ready 回执保持有效。`stale_operation` 表示该快照对应的启动上下文已经结束，发布任务清除快照并终止；它不是网络临时错误，因此不进入周期重试。这样 final 只等待启动所需内容确实进入 Gitea，不会因为之后独立发生的 Endpoint 变化被反复延后，也不会让已经结束的 operation 持续升代上报。
 
 实现验收点：
+
+- [x] `publish-ready|ready` 快照缺少固定私有 `workspace` 时，Gitea 拒绝该快照；本地 route store 缺少同一项时，Gateway 也不开放入口。
 
 - metadata cache 接受当前 Manager 的新版本快照和相同版本、相同内容的 TTL 刷新。
 - cache miss 不触发主状态变更，交互入口返回 metadata rebuilding 分类。
@@ -783,11 +787,11 @@ stop、delete、租约中断的 create/resume、健康检查停止、稳定 runn
 - metadata 发布任务串行发送当前完整快照；任一成功请求包含当前 operation 的 ready 时即可满足 final 的 metadata 前置条件，之后产生的更高 Endpoint generation 继续异步收敛。
 - create/resume 保存本次 boot 快照后显式激活发布；Manager 重启不扫描状态文件恢复发布任务，只有 inventory 确认的稳定 running 才恢复周期发布。
 - Endpoint 和资源用量变化只唤醒当前活跃发布任务；stopped 对象即使保留其他恢复状态，也不会因本地文件变化重新创建发布任务。
-- stop、delete、租约中断、健康停止、凭据故障停止和 inventory 收敛在修改 Incus 状态前关闭访问并清除 Runtime Metadata、Endpoint 和 session；startup input、共享脚本环境及必要的 operation/transition 状态继续保留。
+- stop、租约中断、健康停止、凭据故障停止和 inventory 收敛在修改 Incus 状态前关闭访问并清除 Runtime Metadata、Endpoint 和 session；startup input、完整 Dev Container 环境及必要的 operation/transition 状态继续保留。delete 在实例删除确认后清除全部状态。
 - 同一 Codespace 状态文件的资源采样、Endpoint 更新和停止清理按串行顺序提交；停止清理完成后，并发更新不能恢复已清除的 Runtime Metadata 或 Endpoint。
 - Runtime Metadata 上报收到 `stale_operation` 后清除当前可发布快照并结束该对象的发布任务，后续刷新周期不再重试该快照。
 - Manager 本地阶段按固定映射生成六个 boot stage；暂停保持最后已持久化的 stage，只有 Gitea 接受当前版本 ready 快照后才把本地阶段推进到 `finalize`。
-- `lease_paused` 后的同版本恢复复用持久初始化结果，但重新执行本次实例启动所需的 init/start 和校验；已达到 ready 的 boot stage 保持单调，旧 ready 回执不能跳过重新校验。
+- `lease_paused` 后的同版本恢复复用 bootstrap 结果和完整环境，但重新执行本次实例启动所需的环境恢复与校验；已达到 ready 的 boot stage 保持单调，旧 ready 回执不能跳过重新校验。
 
 ## 派生展示态
 
@@ -838,8 +842,8 @@ stop、delete、租约中断的 create/resume、健康检查停止、稳定 runn
 | Manager 主动报 stopped，但 Gitea 有 active operation | 返回 `current_operation_conflict`，以 active operation 为准 |
 | Manager 确认无 active operation 的 running/stopped Codespace 不可恢复 | 接受 failed 状态报告，写 `status=failed` 并物理删除 Token 与 Git SSH Key；提交后尽力清除交互 cache |
 | Runtime Metadata 丢失 | 主状态不变，open/SSH 返回 `metadata_rebuilding` |
-| 功能启用，已领取 create 的 `creating`、已领取 resume 的 `stopped` 或无 active operation 的 `running` Token 行缺失，且创建用户仍存在 | 允许绑定 Manager 通过 `RequestGiteaToken` 获取新 Token |
-| 功能启用，active create 即将尝试 SSH，或 active resume 的实际 remote 为 SSH，但缺少 Git SSH Key 关系 | Manager 先把本轮 Git SSH 私钥和公钥写入 root seed，再调用 `EnsureCodespaceGitSSHKey`；关系缺失时补建，相同公钥幂等确认，不同公钥返回 `key_conflict` 并保存不可恢复 boot 终态 |
+| 功能启用，已领取 create 的 `creating`、已领取 resume 的 `stopped` 或无 active operation 的 `running` Token 行缺失，且创建用户仍存在 | 允许绑定 Manager 通过 `RequestRuntimeAccess` 获取新 Token |
+| 功能启用，active create、active resume 或稳定 running 需要运行访问材料 | Manager 先生成或恢复固定 Git SSH key，再以当前 operation 版本调用 `RequestRuntimeAccess`；关系缺失时补建，相同公钥幂等确认，不同公钥返回 `key_conflict`，Token、Secret 和 known_hosts 由同一响应返回 |
 | 功能排空期间 Manager 请求 Gitea Token | 拒绝请求；稳定工作状态中的现有 Token 行保持不变 |
 | 功能排空期间 Manager 登记 Git SSH Key | 拒绝请求；已有公钥绑定保持不变并由访问守卫拒绝使用 |
 | owner 分阶段清理发现 Codespace 开发凭据 | 在任何 owner repository 删除前，随当前 Codespace 短事务物理删除 Token、Git SSH Key 关系及其 `PublicKey` |
@@ -861,7 +865,7 @@ stop、delete、租约中断的 create/resume、健康检查停止、稳定 runn
 
 ## 超时处理
 
-`operation_created_unix + QUEUE_TIMEOUT` 是 queued operation 等待 Manager 领取的硬截止时间。Fetch 读到过期候选时，在 Codespace lock 内按 `codespace_uuid + operation_rversion + operation_status=queued` 条件写入超时结果，然后继续处理本批其他候选；该项不计入 `max_new_operations`。Cron 处理未被 Fetch 扫到的过期记录。running operation 的总执行期限固定为 `operation_started_unix + OPERATION_MAX_DURATION`；`operation_deadline_unix` 保存当前 lease 与该总期限中的较早值，Manager 只通过 Fetch observed 批量续租，但续租不能越过总期限。
+`operation_created_unix + QUEUE_TIMEOUT` 是 queued operation 等待 Manager 领取的硬截止时间。Fetch 读到过期候选时，在 Codespace lock 内按 `codespace_uuid + operation_rversion + operation_status=queued` 条件写入超时结果，然后继续处理本批其他候选；该项不计入服务端推导的 payload 上限。Cron 处理未被 Fetch 扫到的过期记录。running operation 的总执行期限固定为 `operation_started_unix + OPERATION_MAX_DURATION`；`operation_deadline_unix` 保存当前 lease 与该总期限中的较早值，Manager 只通过 Fetch observed 批量续租，但续租不能越过总期限。
 
 timeout 根据 operation 是否已经执行及可确认的资源结果写入下表主状态，并清空 active operation。当前 lease 到期和总执行期限到期使用同一列结果：
 
@@ -882,15 +886,15 @@ active operation 的当前 deadline 到期时使用统一处理：
 
 Manager 可用性和 operation 执行期限分别表达不同事实：online/recovering/offline 决定当前是否可以交互、领取或提交请求，`operation_deadline_unix` 决定已领取动作还能否继续。Fetch、final 和 Cron 都直接校验同一 deadline；第一个成功的条件更新成立后，其他请求按当前状态返回幂等或 stale 结果。**设计如此：Manager 重启、recovering 声明和成功续租都不会改变 `operation_started_unix`，因此不会创建额外总执行时间。**
 
-Manager 调用当前版本 `FinalizeOperation` 时，如果 handler 发现 `now >= operation_deadline_unix` 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization。随后按请求 final 映射出的目标主状态判断：目标已与 timeout 结果一致时返回 `idempotent_done`，否则返回 `stale_operation`。例如 resume failed 与 timeout 后的 `stopped` 一致；stop done 因缺少 deadline 内证明而在 timeout 后返回 stale。该映射复用现有 outcome，不增加 expired 响应分支。
+Manager 调用当前版本 `FinalizeOperation` 时，如果 handler 发现 `now >= operation_deadline_unix` 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization。随后按请求 final 映射出的目标主状态判断：目标已与 timeout 结果一致时作为重复成功处理，其他目标保持 timeout 结果；两种情况都返回 `resource_absent=false`，Manager 结束本地旧 operation。这样不增加 expired 响应分支，也不要求 Manager 根据已经稳定的服务端状态继续重试。
 
-Manager 在发送 Fetch 前记录 `request_started_monotonic`，收到 operation payload 或续租回执后按 `local_worker_deadline = request_started_monotonic + lease_valid_for_milliseconds` 建立本地执行截止点。服务端授予 lease 晚于请求开始，因此把请求耗时计入已消耗时间会得到保守边界；两端墙上时钟不一致也不会延长本地授权。Manager 不接收或保存 Gitea 的绝对 Unix deadline。每个 init/start/stop launcher 通过实例内 pulse 文件取得当前 operation 版本、递增序号和 Manager 计算的剩余本地毫秒数，并用 Runtime 单调时钟限制对应进程组；pulse 不再更新时自行终止。
+Manager 在发送 Fetch 前记录 `request_started_monotonic`，收到 operation payload 或续租回执后按 `local_worker_deadline = request_started_monotonic + lease_valid_for_milliseconds` 建立本地执行截止点。服务端授予 lease 晚于请求开始，因此把请求耗时计入已消耗时间会得到保守边界；两端墙上时钟不一致也不会延长本地授权。Manager 不接收或保存 Gitea 的绝对 Unix deadline。bootstrap、原生运行时和 Incus operation 都绑定该 worker context；截止、abort、进程关闭或更高版本 operation 会取消在途工作。
 
-到达本地截止点且尚未收到新的成功 Fetch 续租或 final outcome 时，Manager 取消在途 Incus exec、终止 launcher 并确认进程组退出。create/resume 还要停止实例，把本地 worker 持久化为 `lease_paused` 并保留当前上下文，不提交 final；stop/delete 的实际资源结果由后续续租或 inventory 判断。同版本成功续租后，create/resume 才重新启动实例并从最后一个已提交阶段继续。**设计如此：pulse 和 `lease_paused` 只限制 Manager/Runtime 本地执行，不是新的 Gitea lease、主状态或 RPC 字段；最终结果继续由现有 deadline、final 和 inventory 决定。**
+到达本地截止点且尚未收到新的成功 Fetch 续租或 final outcome 时，Manager 取消在途 Incus exec 与原生运行时请求。create/resume 还要停止实例，把本地 worker 持久化为 `lease_paused` 并保留当前上下文，不提交 final；stop/delete 的实际资源结果由后续续租或 inventory 判断。同版本成功续租后，create/resume 才重新启动实例并从已提交事实继续。**设计如此：`lease_paused` 只限制 Manager/Runtime 本地执行，不是新的 Gitea lease、主状态或 RPC 字段；最终结果继续由现有 deadline、final 和 inventory 决定。**
 
 Gitea 每次授予 lease 时，用该次 `grant_time + OPERATION_LEASE_TIMEOUT` 向未来取整到整数 Unix 秒，再与固定总执行期限取较早值写入 `operation_deadline_unix`。未接近总期限时响应返回配置时长的精确整数毫秒值；最后一段授权返回到总期限为止向下取整的正整数毫秒数。向未来取整允许普通 lease 的 Gitea 侧边界最多多出不足一秒，但总期限不参与向未来取整。**设计如此：Manager 始终按实际返回时长和本地单调时钟停止 Incus 变更，最后一次续租不能把执行延长到总期限之后。**
 
-Manager 进程重启后已经失去原单调时钟基线，因此先终止遗留 launcher、停止 active create/resume 实例，并把所有恢复出的 worker 置为 `lease_paused`。只有上下文完整的 operation 才提交同版本 observed；Gitea 在原 deadline 未到期时返回新的相对有效时长，Manager 据此建立新本地截止点后恢复 worker。Gitea 已经超时、上下文缺失或 RPC 暂时不可用时均保持暂停，不使用磁盘中的绝对 deadline 猜测剩余授权。**设计如此：Gitea 重启不改写 operation，Manager 重启也不自动延长 lease；恢复执行必须经过一次服务端成功续租。**
+Manager 进程重启后已经失去原单调时钟基线，因此先取消遗留的实例内运行时操作、停止 active create/resume 实例，并把所有恢复出的 worker 置为 `lease_paused`。只有上下文完整的 operation 才提交同版本 observed；Gitea 在原 deadline 未到期时返回新的相对有效时长，Manager 据此建立新本地截止点后恢复 worker。Gitea 已经超时、上下文缺失或 RPC 暂时不可用时均保持暂停，不使用磁盘中的绝对 deadline 猜测剩余授权。**设计如此：Gitea 重启不改写 operation，Manager 重启也不自动延长 lease；恢复执行必须经过一次服务端成功续租。**
 
 站点排空下的 create/resume abort 不续租，`lease_valid_for_milliseconds=0`。abort 只授权立即执行幂等的缩减动作：create 删除本轮新建的 Incus 实例，resume 停止本轮 Incus 启动并保留根存储，随后提交 final failed；它不能继续普通初始化或启动步骤。缩减动作晚于服务端原 deadline 完成时，final 可能得到幂等或 stale 结果，后续仍由 timeout 与 inventory 规则收敛。
 
@@ -906,8 +910,8 @@ Cron、claim、Fetch 续租和 final 都以 `codespace_uuid + operation_rversion
 - 截止时间在业务写入中直接校验，不依赖 Cron 是否已经扫描到该记录。
 - deadline 已过时，FinalizeOperation 请求路径立即完成 timeout，并按请求目标与 timeout 目标是否一致返回 idempotent 或 stale。
 - Fetch 对 running operation 使用与 FinalizeOperation 相同的 deadline 规则；已经到期的 observed operation 不会被刷新 lease。
-- Manager 以请求开始时的本地单调时钟加服务端相对有效时长建立保守截止点，不用绝对 Unix deadline 授权 Incus 变更；实例内 pulse 只把同一截止边界落实到在途脚本进程组。
-- 本地截止点或 pulse 到期会终止 launcher；create/resume 实例停止并进入本地 `lease_paused`，同版本续租前不再修改 Runtime，也不提交 final。
+- Manager 以请求开始时的本地单调时钟加服务端相对有效时长建立保守截止点，不用绝对 Unix deadline 授权 Incus 变更；截止点到期会取消当前 Incus exec 与原生运行时请求。
+- 本地截止点到期会取消 Incus exec 与原生运行时请求；create/resume 实例停止并进入本地 `lease_paused`，同版本续租前不再修改 Runtime，也不提交 final。
 - Gitea 的普通 lease deadline 向未来取整到 Unix 秒但不能越过总期限；最后一段相对有效时长可以短于配置值，Manager 本地截止点不晚于 Gitea 侧截止边界。
 - Manager 持续在线并持续报告 `recoverable_failed` 或重试 Incus 操作时，续租仍在 `operation_started_unix + OPERATION_MAX_DURATION` 到期，按现有 running timeout 结果完成状态收敛。
 - Manager 重启后暂停全部恢复 worker，只有成功 Fetch 续租并取得新相对有效时长后才恢复；abort 的相对时长为 0，只执行缩减清理。
@@ -925,7 +929,7 @@ Cron、claim、Fetch 续租和 final 都以 `codespace_uuid + operation_rversion
 
 Runtime inventory 作为 `ReportInstances` 请求数据处理，extra/missing/mismatch 在该请求中计算；Runtime Metadata 缓存未命中时，交互入口返回 `metadata_rebuilding`。Manager 的 offline 状态由请求根据声明状态和最后在线时间实时派生。周期任务只处理数据库可以独立判断的 operation 超时和 failed 到期清理，不扫描 Manager 状态、inventory、Runtime Metadata、`last_active_unix` 或自动暂停设置。
 
-**设计理由：开发凭据由 operation 请求和生命周期事务维护。**`RequestGiteaToken` 为 active create、active resume 或稳定 running 创建或修复 Token；create 首次尝试 SSH 或 SSH remote 的 resume 初始化时，`EnsureCodespaceGitSSHKey` 确认 Codespace 生命周期内唯一的公钥关系。有效初始化期与 running 都按源仓库和附加仓库授权工作。stop final 和 resume 失败/超时删除 Token 并保留 Git SSH Key；failed、deleting 和物理删除删除两类凭据。每次变化都由明确的生命周期阶段约束，周期任务只在 operation 超时和 failed 物理删除事务中得到相应凭据结果。
+**设计理由：开发凭据由 operation 请求和生命周期事务维护。**`RequestRuntimeAccess` 为 active create、active resume 或稳定 running 创建或修复 Token，同时确认 Codespace 生命周期内唯一的 Git SSH 公钥关系，并返回 Secret 与 known_hosts。有效初始化期与 running 都按源仓库和附加仓库授权工作。stop final 和 resume 失败/超时删除 Token 并保留 Git SSH Key；failed、deleting 和物理删除删除两类凭据。每次变化都由明确的 lifecycle version 约束，周期任务只在 operation 超时和 failed 物理删除事务中得到相应凭据结果。
 
 恢复依据：
 

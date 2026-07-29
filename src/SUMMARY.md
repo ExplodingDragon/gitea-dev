@@ -5,7 +5,7 @@
 - [数据模型](data-model.md)
 - [状态与生命周期](state-machine.md)
 - [生命周期流程](lifecycle-flows.md)
-- [脚本契约与内置 Dev Container 实现](builtin-scripts.md)
+- [Manager 原生 Dev Container 运行时](devcontainer-runtime.md)
 - [维护与重启恢复](maintenance-recovery.md)
 - [Gitea 服务端](gitea-server.md)
 - [Manager 与 Gateway](manager-gateway.md)

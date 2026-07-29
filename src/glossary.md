@@ -42,11 +42,11 @@ Gitea 按 Codespace 创建者和固定的 `default` 环境匹配可以领取 cre
 
 <span id="manager-capacity"></span>
 ### Manager Capacity
-Manager 通过 Declare 的 `startup_capacity_total` 上报 Runtime 总容量，Gitea 规范化写入 `meta_json`，用于管理页面展示、诊断和校验后续启动可用容量。`FetchOperations` 分别提交本次 `startup_capacity_available` 和 `cleanup_capacity_available`，真实 Runtime、启动 worker 和清理 worker 占用仍由 Manager 计算。Manager 普通配置中的 `capacity_total` 是部署者可编辑的本地实例上限，协议字段使用 `startup_` 前缀是为了说明它只约束 create/resume，不约束 stop/delete 清理池。
+Manager 本地的 `capacity_total` 限制运行实例数量，`startup_workers` 和 `cleanup_workers` 分别限制启动与清理并发。`FetchOperations` 只提交当次可用的 `startup_capacity_available` 和 `cleanup_capacity_available`，由 Gitea 据此限制返回数量。**设计如此：**总容量属于 Manager 本地调度实现，Gitea 只需要知道当前能立即执行多少工作，避免持久化一个很快过期的容量快照。
 
 <span id="endpoint"></span>
 ### Endpoint
-使用 `endpoint_id` 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime Metadata，并以必填 `public` 布尔值明确选择 Gateway session 认证或公共访问；每个 running Codespace 另有稳定且固定需要认证的 `workspace` 逻辑入口，由 Manager 代理到当前 Dev Container 的 code-server Web IDE。`workspace` 是平台保留入口，Runtime Endpoint 使用其他 ID。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。
+使用 `endpoint_id` 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime manifest，并以必填 `public` 布尔值明确选择 Gateway session 认证或公共访问；Manager 固定补入需要认证的 `workspace`，再把完整集合写入本地路由和 Runtime Metadata。`workspace` 由 Manager 代理到当前 Dev Container 的 code-server Web IDE，是平台保留入口，Runtime manifest 使用其他 ID。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。
 
 <span id="gateway-open-token"></span>
 ### Gateway Open Token
@@ -56,9 +56,13 @@ Gitea 为打开需要认证的 Endpoint 签发的一次性短期 opaque token。
 ### Gitea Token
 Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs_` 前缀并存储在 `codespace_gitea_token`。它代表 Codespace 创建用户，在有效 create/resume 初始化期和 `running` 都能授权新请求，用于开发协作 API、LFS，以及 HTTP 协议 Codespace 的 Git smart HTTP；创建用户登录限制、源仓库权限、用户确认的附加仓库权限和现有业务规则仍在每次请求中检查。稳定 `stopped` 没有 Token，它不是普通 PAT。
 
+<span id="codespace-secret"></span>
+### Codespace Secret
+个人用户保存并为精确仓库选择的私密环境变量。Gitea 在独立表中加密保存值；create/resume 只把当前源仓库匹配项交给绑定 Manager。Manager 把它写入运行中实例的 `/run/gitea-codespace/secrets.json`，供 Dev Container、shell 和 exec 使用，并在 stop 时清理。仓库 Dev Container 顶层 `secrets` 只提供名称和说明建议，不包含值或使用授权。
+
 <span id="codespace-git-ssh-key"></span>
 ### Codespace Git SSH Key
-Runtime 尝试通过 SSH 访问 Gitea 仓库时使用的运行环境凭据。Manager 在 create/resume 的 active operation 内优先复用 Runtime 最终路径或 root seed 中已有的密钥对，缺失时用 Go 生成密钥对；Manager 先把私钥和公钥写入 root seed，再通过 `EnsureCodespaceGitSSHKey` 把同一公钥确认到 Gitea 的 `codespace_ssh_key`，随后把 known_hosts 和本轮 Token 写入 seed；init 再把 seed 安装到最终用户凭据路径。密钥类型是 Manager 本地配置项，默认 `ed25519`，可选 `rsa-4096`，不进入 RPC、Gitea 数据库或 Codespace 记录。私钥只短暂存在于 Manager 内存和 Runtime 凭据文件中，不进入 Manager 持久状态、Gitea 数据库或日志。`GIT_SSH_KNOWN_HOSTS` 提供 Runtime 严格校验 Gitea SSH clone 入口所需的服务器 Host Key 信任材料；它不是用户 SSH Key，也不是 Gateway SSH 配置。SSH 尝试失败而 HTTP(S) 回退成功时，已经登记的关系按 Codespace 生命周期保留，但不参与 HTTP(S) remote 的 ready 校验。有效 create/resume 初始化期和 `running` 可以使用，稳定 `stopped` 保留关系但拒绝命令。私钥、公钥或 Gitea 绑定相互矛盾时，Manager 将该 Runtime 收敛到 failed，因为原 workspace 的 Git 身份已经无法安全确认。Gitea 在每个 Git SSH 命令上按 Codespace 当前仓库、阶段、创建用户登录限制和权限鉴权。它与用户连接工作区的 Gateway SSH Key 彼此独立；Gateway 进入 Runtime 通过 Incus API，不使用这把 Git SSH key。
+Runtime 访问 Gitea Git SSH 入口时使用的运行环境凭据。Manager 在 create/resume 内优先复用 Runtime 最终路径或 root seed 中已有的密钥对，缺失时用 Go 生成；先把密钥对写入 root seed，再通过 `RequestRuntimeAccess` 一次提交当前 operation 版本和公钥，并取得 Gitea Token、Codespace Secret 与 known_hosts，最后把响应材料写入 seed，由 bootstrap 安装到最终用户路径。**设计如此：**公钥绑定和本轮运行凭据由同一个版本化请求确认，避免两个 RPC 之间生命周期已经变化；RPC 前先持久化密钥，可保证进程中断后的重试继续使用同一公钥。密钥类型是 Manager 本地配置项，默认 `ed25519`，可选 `rsa-4096`；私钥只存在于 Manager 内存和 Runtime 凭据文件中。`GIT_SSH_KNOWN_HOSTS` 是 Gitea SSH 服务端 Host Key 信任材料，与用户 SSH Key、Gateway SSH Host Key 相互独立。
 
 <span id="registration-token"></span>
 ### Registration Token
