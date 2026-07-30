@@ -1379,7 +1379,7 @@ SSH 暴力破解通常同时体现为来源 IP、目标 codespace 和公钥维�
 - Manager 把每条日志上报为 `LogLine(timestamp_unix_nano, message)`；message 是去除 CR/LF 后的 UTF-8 单行，嵌入换行先拆成多条，下一次 offset 只使用 Gitea `UpdateLogResponse.next_offset`。
 - Gitea 可为完整 failed 对象和 operation 最终状态通过内部日志入口写入摘要；Manager 领取 operation 时从 payload 的 `log_offset` 继续追加。
 - create/resume/stop/delete lifecycle operation 执行期间的 boot、init、git、Endpoint 初始化、stop、resume、delete 阶段日志写入 codespace 日志。
-- bootstrap、镜像拉取与构建、Feature 安装和 lifecycle 通过 Incus exec 或 Docker API运行时，Manager 实时读取 stdout 和 stderr，把完整正文行写入当前 operation 日志；命令结束时再刷新剩余半行。两条流汇入同一按到达顺序上报的诊断流，正文不添加通道名称前缀。
+- bootstrap、镜像构建、Feature 安装和 lifecycle 通过 Incus exec 或 Docker API运行时，Manager 实时读取 stdout 和 stderr，把完整正文行写入当前 operation 日志；命令结束时再刷新剩余半行。两条流汇入同一按到达顺序上报的诊断流，正文不添加通道名称前缀。Docker 镜像拉取单独记录开始、完成和最多每 5 秒一次的变化后聚合进度，进度包含已完成层数和已知下载字节数。
 - active operation 清空后，日志文件进入封闭状态，由 Gitea 页面读取已保存的生命周期诊断输出。
 - running 期间 Endpoint 后续变化和用户可见运行异常记录在 Manager/Gateway 本地日志；成功连接和正常关闭不写独立访问事件。
 - running 期间成功 open code、SSH 认证和继续运行由 Gitea 推进 `interaction_generation`；`last_active_unix` 仍尽力更新用于展示，时间戳写入失败不拒绝访问，也不保存详细成功连接流水。
@@ -1391,6 +1391,7 @@ codespace 日志是生命周期操作的诊断输出，单文件连续追加。�
 
 - Manager 是精确脱敏第一责任方。
 - Manager 在 `UpdateLog` 前脱敏 `GITEA_TOKEN`、本轮用户 Codespace Secret、Manager Secret、URL userinfo、URL query token、Authorization header、git credential helper 输出和常见 bearer/basic token 形式。
+- Manager 在脱敏后把生命周期输出按最多 64 行或约 250 毫秒组成有界批次，并继续按控制面消息大小拆分；命令结束和 operation handler 返回前刷新剩余行。批量上传减少长时间包安装和构建过程的 RPC 与数据库事务，同时保持用户可感知的实时输出。
 - Manager 维护 operation-local mask set。
 - operation-local mask set 包含注入给 bootstrap、原生运行时、lifecycle、交互命令和 Runtime Secret 文件的所有敏感值。
 - `::add-mask::value` 消费后，`value` 加入 operation-local mask set，后续日志中出现的 `value` 替换为 `***`。
@@ -1404,7 +1405,10 @@ codespace 日志是生命周期操作的诊断输出，单文件连续追加。�
 - active operation 清空后，Gitea 日志进入封闭状态。
 - stop/resume/delete 创建新的 operation 版本后，日志继续追加到同一文件。
 - Manager 以 `FetchOperations` 返回的 `log_offset` 初始化当前 operation 的上传 offset；成功追加使用 response `next_offset`，遇到 offset conflict/gap 时使用 `LogOffsetDetail.current_offset` 恢复，不从 0 覆盖已有内容。
+- Gitea 返回 `log_size_exceeded` 后，当前生命周期日志 sink 停止普通日志上传并继续读取命令输出，避免实例进程因管道阻塞；少量 operation 摘要也把该结果视为日志已经明确截断，不阻止 stop、resume、delete 或最终状态提交。Gitea 使用预留空间写入最终状态摘要，因此达到日志上限不会丢失 operation 结果。
 - 只有当前 `operation_status=running` 且 `operation_rversion` 匹配时才能追加 Gitea 日志。
+
+**设计如此：Docker 镜像拉取进度保存聚合状态，而不是保存 Docker 终端进度条的每次刷新。**拉取帧表达同一镜像层不断变化的当前值，把每帧变成永久日志会放大日志、RPC、数据库写入和页面节点，却不会增加诊断信息；镜像构建和 Feature 脚本的正文代表实际执行步骤，仍按完整行保存。追加式日志协议已经能够表达低频进度，不需要增加单独的进度服务或可变日志记录。
 
 脱敏责任放在 Manager——Manager 创建 Runtime、注入 token，并最早看到 init 输出。Gitea 的防御性清理用于降低展示风险，但不能替代 Manager 对已知敏感值的精确 mask；边界清晰，日志泄漏时也能定位责任组件。
 
@@ -1426,9 +1430,11 @@ Manager/Gateway 不建立连接访问审计或成功会话流水。Endpoint/SSH 
 
 实现验收点：
 
-- Manager 从 operation payload 的 `log_offset` 继续追加，Gitea 内部摘要和后续 operation 日志保持单文件连续。
+- Manager 从 operation payload 的 `log_offset` 继续追加，遇到 offset conflict/gap 时按服务端当前 offset 恢复，Gitea 内部摘要和后续 operation 日志保持单文件连续。
 - Manager 只使用服务端返回的 next/current offset 推进日志，不自行计算脱敏后字节数。
-- bootstrap、构建、Feature 和 lifecycle 运行期间的 stdout/stderr 完整正文行会实时追加到 Gitea 日志，剩余半行在命令结束时追加；正文不带人工通道前缀，页面无需等待整个环境创建结束。
+- bootstrap、构建、Feature 和 lifecycle 运行期间的 stdout/stderr 完整正文行按有界批次实时追加到 Gitea 日志，剩余半行和未满批次在命令结束时追加；正文不带人工通道前缀，页面无需等待整个环境创建结束。
+- 镜像拉取日志包含开始、完成和低频聚合进度；同一层的大量 Docker 进度刷新不会形成等量持久化日志，拉取错误仍进入 operation 失败日志。
+- Gitea 返回日志大小已达上限后，Manager 不再为当前 sink 发送普通日志，仍持续排空命令输出并完成生命周期和最终状态提交。
 - Manager 在 final 前上传最终摘要；Gitea 只为仍保留 Codespace 记录的结果在主事务提交后尝试写内部摘要，失败或预留空间不足不回滚生命周期结果，物理删除路径不重新创建日志。
 - token、Authorization header、cookie、query string 和完整 user agent 不进入 codespace 日志或 Manager/Gateway 本地诊断日志。
 - active stop 恢复不调用 `RequestRuntimeAccess`；Manager 只能从 Runtime 的固定 Gitea Token 文件重建 mask，读取或格式校验失败时丢弃无法确认安全的缓冲日志。

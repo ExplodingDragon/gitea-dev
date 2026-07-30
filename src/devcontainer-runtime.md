@@ -37,6 +37,8 @@ Dev Container 是仓库开发环境的唯一配置格式。Gitea 从规范位置
 
 原生运行时支持单镜像、Dockerfile build 和多文件 Docker Compose。Dockerfile 路径相对配置文件解析，再确认位于 build context 内。Compose 文件按声明顺序交给 `compose-go` 合并，主服务由 `service` 指定，`runServices` 决定一同启动的服务；主服务和相关容器都进入本地环境状态。Compose 使用主机环境与创建请求的 local environment 做插值，使用 service user 作为用户默认值，并由 Compose 自身执行依赖、健康等待、启动和停止。
 
+配置处理分为三个阶段。读取阶段保留字段是否声明、`remoteEnv` 的 `null`、JSON 数字和字符串或数组形式的端口语义，只检查仓库配置恰好选择 image、build 或 Compose 之一；合并阶段依次应用镜像元数据、Feature 元数据和仓库配置；定型阶段解析容器变量、补充 `waitFor`、`userEnvProbe` 与 `shutdownAction` 默认值，再校验最终配置和主机资源。**设计如此：**默认值如果在元数据合并前写入，会被误认为仓库明确选择并遮盖镜像声明；可选字段如果先转成 `null` 或空字符串，还会把单镜像配置误判成 Compose。三阶段让“没有声明”和“明确声明”在完成合并前保持区别，同时只对真正运行的最终配置做一次权威校验。
+
 单镜像和 Dockerfile 配置默认把 workspace 挂载到 `/workspaces/<目录名>`。Compose 配置默认工作目录为 `/`，workspace 位置由 service volumes 和 `workspaceFolder` 决定，不额外注入一份 bind mount。**设计如此：**Compose 文件已经是多服务卷关系的权威来源，运行时再次挂载 workspace 会覆盖项目声明并让主服务和侧车看到不同文件系统；这一行为与 Dev Container 的 Compose 语义保持一致。
 
 变量替换覆盖 `${localWorkspaceFolder}`、`${localWorkspaceFolderBasename}`、`${localEnv:NAME}`、`${localEnv:NAME:default}` 和 `${devcontainerId}`。镜像与 Feature 元数据合并后，再解析 `${containerWorkspaceFolder}`、`${containerWorkspaceFolderBasename}`、`${containerEnv:NAME}` 和默认值。`remoteEnv`、`containerEnv`、mount、用户、capability、安全选项、init、端口和 lifecycle 使用类型化字段进入 Docker API；mount 按 target 后者覆盖，并支持常用只读、bind propagation 和 volume nocopy 语义。`build.options` 和 `runArgs` 是未类型化命令行字符串，原生运行时无法在不调用 Docker CLI 解析器的情况下证明其含义与安全边界，因此配置应使用对应的类型化 build、mount、capability、security 和 container 字段；出现这两个字段时返回包含替代方式的配置错误。**设计如此：**明确拒绝无法可靠解释的输入，比静默忽略或只支持部分参数更容易定位，也不会制造看似成功但运行结果不同的环境。
@@ -49,12 +51,15 @@ Dev Container 是仓库开发环境的唯一配置格式。Gitea 从规范位置
 - [x] Codespace 的配置、Compose 文件、Dockerfile 和本地 build context 在符号链接解析后仍位于锁定 workspace。
 - [x] 单容器自动挂载 workspace；Compose 使用 service volumes，不覆盖仓库声明的卷关系。
 - [x] 本地与容器阶段变量、环境、mount、用户和容器属性进入 Docker API；未类型化参数返回说明原因和替代字段的错误。
+- [x] image、build 和 Compose 配置经过变量替换后仍保持唯一来源，未声明的字符串或数组字段不会生成空值来源。
+- [x] 默认值只在镜像、Feature 和仓库配置合并后写入，最终主机资源要求包含全部来源。
+- [x] `remoteEnv` 的 `null` 删除继承变量，标量或数组 `appPort` 在创建容器前完成类型校验。
 
 ## Feature 与 Web IDE
 
-Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Docker 凭据访问私有镜像和私有 Feature。每个 Feature 校验媒体类型、单一 layer、`devcontainer-feature.json`、`install.sh`、选项类型和依赖；`dependsOn` 是硬依赖，`installsAfter` 是不产生失败环的顺序提示，`overrideFeatureInstallOrder` 在满足硬依赖后决定优先顺序。Feature 使用独立的 container user、remote user 与 home 环境安装，entrypoint 在每次容器启动时执行。
+Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Docker 凭据访问私有镜像和私有 Feature。每个 Feature 校验媒体类型、单一 layer、`devcontainer-feature.json`、`install.sh`、选项类型、字符串枚举和依赖；`dependsOn` 是硬依赖，`installsAfter` 是不产生失败环的顺序提示，`overrideFeatureInstallOrder` 在满足硬依赖后决定优先顺序。Feature 安装器取得最终 container user、remote user 与 home 环境，entrypoint 在每次容器启动时执行。
 
-运行时读取基础镜像的 `devcontainer.metadata`，按“镜像元数据、Feature 元数据、仓库配置”合并。仓库配置在标量和同名环境变量上具有最终选择权，mount 按 target 合并，数组去重，customizations 深度合并，主机资源要求取能够满足全部来源的较大值。最终 OCI digest 写入环境状态，使恢复和诊断可以确认首次创建实际使用的内容。
+运行时读取基础镜像的 `devcontainer.metadata`，按“镜像元数据、Feature 元数据、仓库配置”合并。镜像元数据只提供用户、环境、mount、端口、生命周期、entrypoint 和资源要求等运行属性，不选择 image、build、Compose 或 Feature；Feature 元数据只提供 Feature 规范允许的容器属性。仓库配置在标量和同名环境变量上具有最终选择权，mount 按 target 合并，数组去重，customizations 深度合并，主机资源要求取能够满足全部来源的较大值。**设计如此：**配置来源属于用户选择的仓库文件，镜像和 Feature 只能补充自身拥有的运行信息；明确字段所有权可以防止依赖内容改变创建来源或在宿主机执行仓库之外的初始化命令。最终 OCI digest 写入环境状态，使恢复和诊断可以确认首次创建实际使用的内容。
 
 仓库 Feature 固定到与配置文件同目录的 `devcontainer-lock.json` 或 `.devcontainer-lock.json`，内容记录 version、resolved digest、integrity 和依赖。普通创建在解析完成后原子更新锁文件，frozen 模式要求现有文件完全匹配；用户个人工具和平台 Web IDE 由创建请求注入，不写入仓库锁。这样仓库锁只描述仓库声明，个人偏好和平台能力不会改写工作区文件；三类 Feature 的最终 OCI digest 仍共同写入 Manager 环境状态，恢复和诊断使用的是实际创建结果。
 
@@ -69,6 +74,8 @@ Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Doc
 - [x] Feature 锁文件使用官方路径和字段并校验 digest，只记录仓库声明的 Feature，不记录用户或平台注入 Feature。
 - [x] 用户个人工具与平台 Web IDE 作为带来源的 Feature 注入；相同配置去重，不同配置返回明确冲突。
 - [x] `installsAfter` 只影响顺序，Feature entrypoint 在每次启动时执行。
+- [x] 预构建镜像 entrypoint 按标签顺序与本次安装的 Feature entrypoint 一同执行，镜像元数据不能改变配置来源。
+- [x] Feature 字符串选项符合声明的枚举，Feature 元数据不能声明规范外的用户或主机资源属性。
 - [x] 多个 Feature 的 lifecycle 命令合并为可执行的同级命令集合，不产生嵌套命令对象。
 - [x] Web IDE 使用固定 Feature 安装器、配置指定的 code-server 语义版本、固定端口和认证模式，并打开环境状态中的实际 workspace。
 - [x] code-server 配置变化只影响新建环境；已有环境 resume 使用已保存状态，通过重建完成升级。
@@ -76,7 +83,7 @@ Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Doc
 
 ## 生命周期与状态
 
-create 顺序为：创建并启动 Incus 实例、写入 root seed、执行 bootstrap、写入当前 Secret、解析固定配置、合并创建请求中的个人工具与平台 Web IDE Feature、准备镜像和 Feature、创建单容器或 Compose 环境、执行 `onCreateCommand`、`updateContentCommand`、`postCreateCommand`、`postStartCommand`，配置 Git，启动 Web IDE 并发布 ready。workspace clone 只属于 bootstrap；Dev Container create 重试会按 Codespace 标签清理本次未完成的 Docker 对象后重新创建，不接管其他对象。个人工具只在 create payload 中使用一次，code-server 版本只在创建环境时使用；resume 读取 Manager 保存的环境状态，不重新读取 Gitea 用户设置或部署配置。
+create 顺序为：创建并启动 Incus 实例、写入 root seed、执行 bootstrap、写入当前 Secret、解析固定配置、合并创建请求中的个人工具与平台 Web IDE Feature、准备镜像和 Feature、创建单容器或 Compose 环境、执行 `onCreateCommand`、`updateContentCommand`、`postCreateCommand`、`postStartCommand`，配置 Git，启动 Web IDE 并发布 ready。workspace clone 只属于 bootstrap；Dev Container create 重试会按 Codespace 标签清理本次未完成的 Docker 对象后重新创建，不接管其他对象。运行时只为实际选择 Compose 的配置计算项目名，并在确认存在同项目标签的容器、网络或卷后执行 Compose 清理；单镜像和 Dockerfile 路径只清理所有者标签对应的容器。Compose 先回收项目资源，所有者标签再兜底清理残留容器，因此首次 image 创建、重复 delete 和已经清空的项目都不会产生虚假的 Compose 警告。个人工具只在 create payload 中使用一次，code-server 版本只在创建环境时使用；resume 读取 Manager 保存的环境状态，不重新读取 Gitea 用户设置或部署配置。
 
 stop 先停止环境状态中的主容器和相关容器，再清理易失 Secret，最后停止 Incus 实例。resume 启动同一组容器，执行 `postStartCommand`，重新写入本次 Secret，恢复 Web IDE并完成 ready 检查；它不重新解析仓库配置、不 clone、不 checkout，也不根据后来变化的分支重建环境。delete 以 Incus 实例为资源边界直接删除实例，Docker 资源随实例一同删除。
 
@@ -92,6 +99,7 @@ stop 先停止环境状态中的主容器和相关容器，再清理易失 Secre
 - [x] 环境状态包含恢复和 Gateway 所需的全部目标，且不包含 Secret 明文。
 - [x] 通用环境使用 owner ID；Codespace UUID 和固定 Web IDE 端口由内部适配层解释。
 - [x] 请求和结果控制文件在每次调用后删除，格式或环境身份不一致时拒绝继续。
+- [x] image/build 创建与删除不调用 Compose；Compose 清理先确认项目资源存在，并覆盖容器、网络和卷。
 
 ## 凭据与 Secret
 
@@ -126,7 +134,7 @@ Web IDE、普通 HTTP Endpoint 和 SSH `direct-tcpip` 都通过 Incus exec 启�
 
 Incus 系统容器和虚拟机都需要可用 agent、受支持的 Linux 用户管理工具、Git、证书和 Docker Engine。Manager 可执行文件必须能在实例架构和 libc 环境中运行；推荐发布同架构的静态 Go 二进制。虚拟机强制以 agent 可用作为启动前提，不提供无 agent 的降级路径。
 
-真实 E2E 分为两层。`test-devcontainer-e2e-required` 直接连接 Docker Engine，使用 Dev Containers 官方基础镜像和官方 `common-utils` Feature，验证 Compose 多服务、image metadata 合并、Feature 安装、remote user 的 UID/GID、生命周期命令和同一容器的 stop/resume；这层用于快速定位通用 Engine 的行为。`test-e2e-runtime-required` 在真实 Incus 实例内安装并使用 Docker Engine，写入同一份标准夹具，再经过 Manager 构建出的真实可执行文件完成 workspace、create、stop 和 resume；这层用于验证部署链路。该入口在测试实例内放置临时本地 Git 仓库，clone、checkout 和摘要校验仍按生产流程执行，官方镜像和 Feature 仍从真实仓库拉取。**设计如此：**自包含 Git 仓库避免示例仓库网络波动掩盖运行时结果；两层使用相同输入和断言，可以区分 Dev Container 实现错误与 Incus 部署错误，同时避免把官方 CLI 当作生产依赖。
+真实 E2E 分为两层。`test-devcontainer-e2e-required` 直接连接 Docker Engine：Compose 用例使用 Dev Containers 官方基础镜像和官方 `common-utils` Feature，验证多服务、image metadata 合并、Feature 安装、remote user 的 UID/GID、生命周期命令和同一容器的 stop/resume；单镜像用例验证 image 来源、标量端口、`remoteEnv` 删除语义和无 Compose 清理警告。这层用于快速定位通用 Engine 的行为。`test-e2e-runtime-required` 在真实 Incus 实例内安装并使用 Docker Engine，写入同一份标准夹具，再经过 Manager 构建出的真实可执行文件完成 workspace、create、stop 和 resume；这层用于验证部署链路。该入口在测试实例内放置临时本地 Git 仓库，clone、checkout 和摘要校验仍按生产流程执行，官方镜像和 Feature 仍从真实仓库拉取。**设计如此：**自包含 Git 仓库避免示例仓库网络波动掩盖运行时结果；两层使用相同输入和断言，可以区分 Dev Container 实现错误与 Incus 部署错误，同时避免把官方 CLI 当作生产依赖。
 
 完整 Manager E2E 继续分别覆盖 system container 和 VM，并验证 Web IDE、SSH/PTY、TCP 和 SFTP。单个实例 CPU 为 1、内存上限不超过 1 GiB。需要测试外部仓库时，`CODESPACE_E2E_REPO_CLONE_HTTP_URL` 指向实例可访问的测试仓库，并由 `CODESPACE_E2E_REPO_COMMIT_SHA` 固定实际提交。普通测试在未检测到 Incus 或未显式启用镜像拉取型 E2E 时跳过；required 入口把缺少 Incus、Docker、仓库或镜像条件作为失败返回。这样日常单元测试保持稳定，发布验收仍会真实拉取官方资产并执行容器行为。
 
@@ -136,6 +144,7 @@ Incus 系统容器和虚拟机都需要可用 agent、受支持的 Linux 用户�
 - [x] E2E 使用真实 `gitea-codespace` 可执行文件，覆盖完整环境生命周期。
 - [x] Docker 直测与 Incus 运行时 E2E 使用同一份标准夹具，并真实拉取官方基础镜像和官方 Feature。
 - [x] 标准夹具验证 Compose、image metadata、Feature、UID/GID、lifecycle 和 stop/resume 后容器身份不变。
+- [x] Docker 直测包含真实单镜像创建，验证端口、远程环境和按来源清理行为。
 - [x] Incus 运行时 E2E 使用自包含 Git 仓库完成真实 clone、checkout 和摘要校验，仓库网络不影响容器运行时判定。
 - [x] 测试实例内存上限不超过 1 GiB，并按部署能力区分可选和 required 入口。
 - [x] 完整 Manager E2E 使用调用方明确提供的可达仓库和锁定提交，不使用示例域名或伪提交。
