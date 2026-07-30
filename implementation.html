@@ -158,7 +158,7 @@
                         <h1 id="实施"><a class="header" href="#实施">实施</a></h1>
 <h2 id="代码边界"><a class="header" href="#代码边界">代码边界</a></h2>
 <p>Gitea 负责用户页面、权限、数据库状态、ManagerService 和审计日志。相关代码按现有 Gitea 分层放在 <code>routers</code>、<code>services/codespace</code>、<code>models/codespace</code> 与 <code>modules/codespace</code>，Web handler 和 ManagerService handler 分别位于 Web 与 API/Connect 入口。路由层处理输入、认证和响应，服务层推进事务，模型层保存数据结构与查询。</p>
-<p><code>codespace</code> Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。<code>internal/provisioner</code> 只处理 Incus 实例与文件/exec API；<code>internal/devcontainer</code> 处理配置、Feature 与结构化环境；<code>internal/devcontainer/docker</code> 使用 Docker API 创建和恢复环境；<code>internal/runtimecmd</code> 提供实例内隐藏子命令；<code>internal/app</code> 组织控制面 worker、Gateway 与状态持久化。</p>
+<p><code>codespace</code> Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。公开的 <code>devcontainer</code> 包处理配置、合并、锁文件与结构化环境，<code>devcontainer/docker</code> 使用 Docker、Compose 和 OCI API 创建并恢复环境；<code>internal/devcontainerruntime</code> 注入 Codespace 的 Git、Web IDE、运行时挂载和 Endpoint 策略；<code>internal/provisioner</code> 只处理 Incus 实例与文件/exec API；<code>internal/runtimecmd</code> 提供实例内隐藏子命令；<code>internal/app</code> 组织控制面 worker、Gateway 与状态持久化。</p>
 <p>Runtime Endpoint manifest 是实例内文件协议。Manager 读取并更新本地路由，Runtime 不向 Manager 端口发请求，Gitea 也不解析该文件。这样控制面、运行后端和用户接入各自只有一个数据来源。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
@@ -167,21 +167,26 @@ Gitea 的 Web、RPC、服务和模型依赖方向与现有项目一致。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Incus 与 Docker 实现只位于 Manager，Gitea 不包含运行后端驱动。</li>
 <li><input disabled="" type="checkbox" checked=""/>
+Dev Container 公开包只处理通用配置与运行环境；Codespace 请求、Git、Web IDE 和 Gateway 策略集中在内部适配层。</li>
+<li><input disabled="" type="checkbox" checked=""/>
 Runtime manifest 不注册到 Gitea router，也不要求 Runtime 访问 Manager 端口。</li>
 </ul>
 <h2 id="共享协议"><a class="header" href="#共享协议">共享协议</a></h2>
 <p>Gitea 与 Manager 共同依赖 <code>codespace-proto-go</code> 中的 <code>codespace.v1.ManagerService</code> 生成代码。协议仓只保存 <code>.proto</code> 和生成的 Go binding，不保存任一侧业务逻辑。协议仓提交并推送后，两个实现模块在各自 <code>go.mod</code> 中引用同一个远程版本，使它们在没有根 <code>go.work</code> 时也能独立构建。</p>
 <p>ManagerService 使用 Connect。<code>RegisterManager</code> 只使用 request body 中的 registration token；其他 RPC 使用 Manager ID 与 Secret header。每个 request 的 <code>protocol_version</code> 都在认证后的统一入口、业务读写前校验。路由层只负责 Connect 接入、认证、版本与错误映射，状态事务在服务层完成。</p>
-<p>Manager 普通配置与注册状态分开。普通配置只包含部署参数；<code>register</code> 把 Gitea URL、Manager ID、Manager Secret 和根恢复状态写入 <code>node.state_dir</code>，registration token 不落盘。<code>serve</code> 在发送 RPC 前取得状态目录独占锁并读取身份。</p>
+<p>Manager 普通配置与注册状态分开。普通配置只包含部署参数；<code>register</code> 严格读取显式 YAML，取得状态目录独占锁并确认尚未注册后，把 Gitea URL、Manager ID、Manager Secret 和 inventory generation 一次原子写入 <code>node.state_dir/manager-state.json</code>，registration token 不落盘。<code>serve</code> 在发送 RPC 前取得同一把锁并读取完整的 Manager 状态。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
-<li>Gitea 与 Manager 使用同一个已推送协议版本，并可分别在无 <code>go.work</code> 环境编译。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Gitea 与 Manager 使用同一个已推送协议版本，并可分别在无 <code>go.work</code> 环境编译。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 除注册外的 RPC 先认证 Manager，再校验 <code>protocol_version=1</code>，业务层不会收到不匹配请求。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 注册身份、Secret、inventory generation 和 Gateway SSH Host Key 不属于普通配置。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 同一状态目录的第二个 Manager 进程在发送 RPC 前因独占锁失败。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+显式注册配置错误、已有或损坏 Manager 状态都在发送 RPC 前失败；注册成功以一个 <code>0600</code> 的 <code>manager-state.json</code> 作为本地提交点。</li>
 </ul>
 <h2 id="实施基线"><a class="header" href="#实施基线">实施基线</a></h2>
 <p>本文档集描述整体目标设计，当前功能按一套最终模型实施：</p>
@@ -189,6 +194,7 @@ Runtime manifest 不注册到 Gitea router，也不要求 Runtime 访问 Manager
 <li>用户生命周期为 create、open、resume、stop 和 delete；异步动作统一使用 operation。</li>
 <li>主状态为 creating、running、stopped、deleting 和 failed；排队、启动、停止、恢复与重建是由 operation 和 Manager 运行态派生的展示状态。</li>
 <li>Gitea 固定仓库、提交、Dev Container 配置、权限和 Secret 授权；Manager 固定外层 Incus 环境并原生实现内部 Dev Container。</li>
+<li>Gitea 在 Manager 领取 create 时把当前用户 Personal tools 加入类型化 payload；Manager 将其与仓库 Feature 和平台 Web IDE Feature 一次合并，创建后由环境状态负责恢复。</li>
 <li>create 执行一次固定 bootstrap，然后创建完整 Dev Container 环境；stop 停止完整环境与实例；resume 恢复已经保存的环境；delete 删除 Incus 实例。</li>
 <li>Gateway SSH、Web IDE 与 Endpoint 都读取同一份 Manager 本地环境状态。shell/exec 与 TCP bridge 通过 Incus exec 进入隐藏运行时，SFTP 使用 Incus 文件 API。</li>
 <li>容量由 Manager 按本地实例、Incus project、worker 和待清理状态计算后上报，Gitea 不推测后端剩余资源。</li>
@@ -204,6 +210,10 @@ create、stop、resume、delete 在 Gitea operation、Manager state、Incus 与 
 单容器与 Compose 使用同一结构化环境模型，Compose 侧车参与 stop/resume。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 SSH、Web IDE 与 Endpoint 不各自解析配置或猜测容器目标。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Personal tools 只保存在 Gitea 用户设置中，领取后的 create payload 和 Manager 环境状态分别承担本次执行与之后恢复。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+code-server Feature 安装器随 Manager 固定，程序版本由 YAML 配置选择，新建后不自动改变。</li>
 </ul>
 <h2 id="gitea-测试"><a class="header" href="#gitea-测试">Gitea 测试</a></h2>
 <p>Gitea 测试严格使用 <code>gitea/docs/testing.md</code> 规定的 Make 入口，不直接执行 <code>go test</code>。按变更范围选择：</p>
@@ -211,7 +221,7 @@ SSH、Web IDE 与 Endpoint 不各自解析配置或猜测容器目标。</li>
 make test-backend#&lt;service-or-router-test&gt;
 make test-integration#&lt;integration-test&gt;
 make fmt
-make lint-backend
+make lint-go
 make lint-frontend
 </code></pre>
 <p>模型测试覆盖迁移、索引、状态与凭据关系；服务测试覆盖权限、operation 事务、Token、Git SSH、Secret 和删除收敛；RPC 测试覆盖认证、领取、lease、inventory、metadata 与幂等 final；Web 测试覆盖创建、列表、详情、设置和动作；集成测试覆盖 create 到 delete 的跨层闭环。测试写法、fixture、SQLite 初始化和断言风格复用同目录现有代码。</p>
@@ -224,7 +234,7 @@ make lint-frontend
 </ul>
 <h2 id="manager-测试"><a class="header" href="#manager-测试">Manager 测试</a></h2>
 <p>Manager 普通 Go 测试覆盖 JSONC、配置选择与摘要、Compose 合并、Feature 顺序、lifecycle、环境校验、state 原子持久化、Gateway 认证与路由、operation lease 和恢复。Docker 集成测试覆盖 image、Dockerfile、Feature、Compose 多服务以及 stop/resume；需要镜像下载的测试使用显式入口，普通单元测试不隐式拉取镜像。</p>
-<p>Incus 真实 E2E 使用专门入口并串行执行。启动时识别本地 unix socket 或远程 Incus endpoint、信任、project、storage、managed bridge、image、profile 和 agent。可选入口在环境未准备时说明缺失条件并跳过；required 入口把缺失条件作为失败。container 与 VM 都使用真实 <code>gitea-codespace</code> 可执行文件和同一原生运行时，按 create、stop、resume、delete 验证实例事实、完整环境、workspace、SSH/PTY、Web IDE、TCP 与 SFTP。</p>
+<p>Incus 真实 E2E 使用专门入口并串行执行。启动时识别本地 unix socket 或远程 Incus endpoint、信任、project、storage、managed bridge、image、profile 和 agent。可选入口在环境未准备时说明缺失条件并跳过；required 入口把缺失条件作为失败。container 与 VM 都使用真实 <code>gitea-codespace</code> 可执行文件和同一原生运行时，按 create、stop、resume、delete 验证实例事实、完整环境、workspace、SSH/PTY、Web IDE、TCP 与 SFTP。Dev Container 运行时另以官方基础镜像、官方 Feature 和 Compose 标准夹具验证 image metadata、UID/GID、lifecycle 与恢复行为；同一夹具同时用于 Docker 直测和 Incus 整链路测试，便于判断问题属于通用 Engine 还是部署集成。</p>
 <p>真实测试一次只创建一个实例，CPU 为 1，内存上限为 <code>1GiB</code>。镜像包管理、外部仓库和 OCI Feature 可能依赖出网，因此与不拉取镜像的基础 Incus 生命周期入口分开。这样本地快速验证不会受镜像源影响，部署验收仍能覆盖真实网络与安装链路。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
@@ -232,6 +242,8 @@ make lint-frontend
 普通 Go 测试覆盖原生运行时的纯逻辑和 Manager 状态边界。</li>
 <li>Docker 集成入口验证单容器、Compose、Feature 与 stop/resume，不由普通测试隐式拉取镜像。</li>
 <li>container 与 VM 的 Incus E2E 使用真实二进制、同一网络模型和完整生命周期。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Dev Container 标准夹具由 Docker 与 Incus 两个显式入口共享，并使用官方镜像和官方 Feature。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 真实 E2E 串行执行并把单实例内存限制为 <code>1GiB</code>。</li>
 </ul>
