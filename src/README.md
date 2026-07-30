@@ -38,7 +38,7 @@ Gitea 与 Manager 只通过 ManagerService 通信。Manager 主动发起 Registe
 
 每个 Codespace 对应一个确定性命名的 Incus 实例。实例可以是系统容器或虚拟机，虚拟机强制要求 agent。Manager project隔离实例、profile和项目卷；managed bridge位于 default project，由 Codespace project共享。Manager托管 bridge时开启 IPv4 NAT和 DHCPv4，实例资源限制由所选本地 environment定义，仓库不能改变调度 tag或 Incus规格。
 
-实例内只保留一个固定 bootstrap和同一 `gitea-codespace` 可执行文件。bootstrap准备外层用户、Git、Docker和 workspace；隐藏的原生 runtime负责 Dev Container create/resume/stop/inspect/exec/TCP。完整环境状态保存主容器、Compose相关容器、用户、workspace、合并配置、Feature digest、lifecycle和 Web IDE目标，不保存 Secret。
+实例内只保留一个固定 bootstrap 和同一 `gitea-codespace` 可执行文件。bootstrap 准备外层用户、Git、Docker 和 workspace；隐藏的原生 runtime 负责 Dev Container create/resume/stop/inspect/exec/TCP。完整环境状态保存主容器、Compose 相关容器、用户、workspace、合并配置、Feature digest 和 lifecycle；固定 Web IDE 端口由产品适配层提供，Secret 不进入环境状态。
 
 ### 实现验收点
 

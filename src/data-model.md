@@ -168,6 +168,18 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 - 创建或恢复时只返回当前用户为当前源仓库选择的 Secret，并按名称稳定排序。
 - 用户或仓库删除后，对应选择关系被清理；用户删除后密文行也被清理。
 
+### Personal tools 用户设置
+
+个人 Dev Container Feature 使用 Gitea 现有 `user_setting` 表保存，键为 `codespace.devcontainer_features`，值是经过服务层规范化的 Feature 引用和 string/boolean 类型选项。该设置不增加 Codespace 模型字段：Manager 领取 create 时读取当前设置并放入本次 operation payload，Manager 创建成功后以环境状态中的实际 Feature digest 恢复。
+
+**设计如此：Personal tools 是可复用的用户偏好。**把它保存到 Codespace 行会复制同一偏好，并使设置更新、queued create 和已有环境之间出现多份含义相近的数据。以领取为边界后，未领取任务使用最新偏好，已领取任务使用不可变 payload，已有环境使用已经创建的实际状态，三种阶段都有明确数据来源。
+
+实现验收点：
+
+- 用户设置是 Personal tools 在 Gitea 数据库中的唯一持久化位置，同一用户只使用固定设置键。
+- queued create 被 Manager 领取时在同一事务中读取当前设置；领取成功后的执行不再依赖设置变化。
+- Codespace 表和迁移不增加 Personal tools 字段；resume 使用 Manager 环境状态中的实际 Feature 结果。
+
 ### codespace_permission_authorization
 
 | 字段 | 类型说明 | 备注 |

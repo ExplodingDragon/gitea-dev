@@ -242,6 +242,21 @@ message DevContainerConfiguration {
   string repository_content_sha256 = 2;
   // Image used only to generate the platform default configuration.
   string default_image = 3;
+  // User's current personal tools when this create is claimed.
+  repeated DevContainerFeature user_features = 4;
+}
+
+message DevContainerFeature {
+  string reference = 1;
+  repeated DevContainerFeatureOption options = 2;
+}
+
+message DevContainerFeatureOption {
+  string name = 1;
+  oneof value {
+    string string_value = 2;
+    bool bool_value = 3;
+  }
 }
 
 // --- FinalizeOperation ---
@@ -681,6 +696,7 @@ x-codespace-manager-secret: <manager secret>
 - `CreateOperationPayload` 携带 `GitProtocol`；`ResumeOperationPayload` 不携带协议。Manager 无论实际 remote 使用何种协议都通过一次 `RequestRuntimeAccess` 上报固定公钥并取得完整访问材料。
 - `CreateOperationPayload.username` 携带创建时的 Gitea 用户名，`git_user_email` 携带隐私保护后的 Git email。Manager 用用户名派生 Runtime Linux 用户名和 Git `user.name`，并只在 create 初始化时写入 Git identity；resume 使用本地 state，不覆盖 workspace 中用户后续修改过的 Git identity。
 - `CreateOperationPayload.dev_container` 按来源使用互斥字段：平台默认需要非空 `default_image`；仓库来源需要相对 `repository_path` 和 64 位小写十六进制 `repository_content_sha256`，对应提交复用 create 顶层锁定的 `commit_sha`。Manager 将该结构保存到本地 state，resume 从本地恢复，不要求 Gitea 重发 create payload。
+- `CreateOperationPayload.dev_container.user_features` 携带 Manager 领取 create 时的用户个人工具；引用和选项使用类型化字段，不传 JSON 文本，类型化编码后的总大小不超过 64 KiB。该字段属于本次 create 输入，resume 使用 Manager 已保存的环境和 Feature digest，不重新读取用户设置；`FetchOperationsResponse` 的控制面最小消息大小按每个 create 都达到该上限计算。
 - 多份仓库 Dev Container 文件只在 Gitea 创建页作为候选选择一份，RPC 始终只传一个 `dev_container`。基础镜像、Feature、Compose 与 lifecycle 组合由 Manager 原生运行时处理，不扩展控制面字段。
 - `CreateOperationPayload.dev_container` 必须携带创建确认时固定的 Dev Container 选择。仓库来源使用路径、完整提交和原始 JSONC SHA256；平台默认来源只使用当时的默认镜像。RPC 不传配置正文，Manager clone 后从 workspace 复检摘要，再由原生运行时解释。附加仓库权限只由 Gitea 从用户选中的仓库文件解析和授权，Manager 不接收 authorization ID 或规则副本。
 - observed-only 续租通过 `renewed_leases` 返回 UUID、版本和相对有效时长；普通 payload 使用相同的相对时长语义。Manager 据此建立不受两端墙上时钟差异影响的本地执行截止点。

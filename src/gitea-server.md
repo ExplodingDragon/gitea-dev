@@ -165,9 +165,12 @@ POST     /-/admin/codespaces/{uuid}/force-delete
 GET/POST /-/admin/codespaces/managers
 GET/POST /user/settings/codespaces
 GET/POST /user/settings/codespaces/secrets
+GET/POST /user/settings/codespaces/features
 ```
 
-站点管理页列出全部 Codespace，并在同一管理导航中提供全局 Manager 和 global registration token 管理。用户设置中的 Codespaces 首页管理当前用户的 registration token 与个人 Manager，Secrets 子页管理该用户的 Codespace Secret；用户自己的 Codespace 仍使用 `/-/codespaces`。
+站点管理页列出全部 Codespace，并在同一管理导航中提供全局 Manager 和 global registration token 管理。用户设置中的 Codespaces 首页管理当前用户的 registration token 与个人 Manager，Secrets 子页管理该用户的 Codespace Secret，Personal tools 子页管理创建新环境时注入的个人 Dev Container Feature；用户自己的 Codespace 仍使用 `/-/codespaces`。
+
+Personal tools 使用 Gitea 现有 `user_setting` 保存 Feature 引用及 string/boolean 类型选项。服务层规范化顺序并校验重复引用、重复选项、数量、长度、明确版本和类型化 protobuf 编码后的 64 KiB 总大小；页面只编辑这一份用户偏好。Manager 领取 queued create 并在同一事务中构造 payload 时读取当前值，因此领取前的修改作用于该次创建，领取完成后的修改作用于后续新建环境。64 KiB 总大小仍足以容纳正常的工具选项，并让一次最多 256 个 operation 的批量响应可以预先计算到控制面消息上限内。**设计如此：**个人工具是用户的创建偏好，不是 Codespace 身份或生命周期状态；Gitea 负责当前偏好，active create payload 负责本次执行，Manager 环境状态负责之后的 resume。三者各自只有一份事实，不需要在 Codespace 表复制个人设置，也不需要因偏好更新修改已有环境。
 
 Secrets 子页支持创建名称和值、替换已有值、为 Secret 增删精确仓库以及删除 Secret。仓库搜索沿用 Gitea 的用户可访问仓库选择控件，服务层在每次写入时重新确认当前用户对目标仓库具有代码写权限。页面只展示名称、已选择仓库和更新时间，值在创建或替换成功后不再返回浏览器。
 
@@ -208,6 +211,9 @@ Codespace、个人 Manager 和 registration token 写入统一进入 Codespace u
 - 组织设置没有 Codespace、Manager 或 registration token 入口；组织管理员不能查看或操作成员的 Codespace。
 - 非创建者管理列表没有对象详情链接，也不返回日志、repository/ref/commit、Endpoint、SSH、自动暂停设置或任何 Token；站点管理员不能通过治理权限修改自动暂停。
 - 用户只能管理自己的 registration token 与个人 Manager；站点管理员管理全局入口和全部 Manager。
+- 用户只能管理自己的 Personal tools；设置以稳定顺序保存，并在 Manager 领取下一次 create 时进入结构化 payload。
+- Personal tools 类型化编码后的总大小不超过 64 KiB；控制面最小消息上限按满批 256 个 create 的该上限计算。
+- Personal tools 只使用 `user_setting` 持久化；Codespace 主表保存配置选择，active create payload 和 Manager 环境状态分别承担执行与恢复。
 - 用户只能管理自己的 Codespace Secret，列表和更新响应不返回已有值；选择仓库时服务端重新确认代码写权限。
 - Dev Container 建议的 Secret 在创建确认页显示名称和说明；用户明确提供或选择后才为当前仓库建立关系。
 - 创建者对象页与设置管理页的 stop/delete 复用相同生命周期服务、状态校验和事务逻辑。
@@ -1696,7 +1702,9 @@ runtime:
           - company-dev-vm
 ```
 
-`node.state_dir` 是 Manager 身份、注册 Gitea URL 和运行状态的唯一目录。`gitea-codespace register` 成功后在该目录写入 `identity.json`、`credentials.json` 和 `root-state.json`；`gitea-codespace serve` 读取普通配置后必须从该目录取得 Gitea URL、Manager ID 和 Manager Secret，缺少任一文件时在发送 RPC 前失败。registration token 只用于本次注册请求，不保存到本地文件。已经注册的 `node.state_dir` 默认不能被再次 register 覆盖；更换 Gitea 或 Manager 身份时使用新的状态目录，或者在确认旧资源已经清理后人工清空目录。
+`node.state_dir` 是 Manager 身份、注册 Gitea URL 和运行状态的唯一目录。`gitea-codespace register` 严格读取显式 YAML 配置，取得状态目录独占锁并确认尚未注册后，才调用 Gitea；成功响应中的 Gitea URL、Manager ID、Manager Secret、协议版本、注册时间和初始 inventory generation 通过一次原子替换写入 `manager-state.json`。`gitea-codespace serve` 读取普通配置后取得同一把锁，并从该文件取得完整身份和 inventory generation；文件缺失、损坏或版本不匹配时在发送 RPC 前失败。registration token 只用于本次注册请求，不保存到本地文件。这样重复注册和配置错误不会创建新的 Manager 记录，注册成功也不会留下可见的半套本地身份。
+
+**设计如此：Gitea 数据库与 Manager 本地文件系统分别使用各自的原子提交。**网络响应丢失或 Gitea 成功后宿主存储突然不可用时，CLI 报告结果未知，并在已经收到响应时展示 Manager ID；管理员从设置页删除从未 Declare 的记录后重新注册。该低频运维边界不扩展注册协议、Secret 恢复接口或自动删除流程，日常可避免的配置、并发和多文件部分写入问题则全部在 RPC 前置检查和单文件提交中解决。
 
 Manager 当前配置是 `node.name`、`runtime.environments[].tag`、`gateway.http.public_url` 和 `gateway.ssh.public_addr` 的唯一声明来源，修改后通过完整 Declare 快照覆盖 Gitea 中的当前值。Declare 的 tags 直接从 `runtime.environments[].tag` 生成。`node.capacity_total` 只限制 Manager 本地 Runtime 总数，不进入 Declare。**设计如此：**tag 是 Gitea 侧选择基础设施环境的稳定标识，不是 Incus image、profile、project 或实例名称；镜像和 profile 调整不应改变 Gitea 数据库中的 tag 含义。虚拟机或系统容器类型不向 Gitea 上报，因为 Gitea 只按 tag 匹配。普通配置不包含 `startup_capacity_available`、`cleanup_capacity_available`、Gateway SSH Host Key 指纹或 Host Key 更新时间：两类可用容量由 Manager 在 Fetch 前按本地 Runtime 和 worker 状态计算，Host Key 指纹由 `node.state_dir` 中的 Gateway SSH Host Key 派生后 Declare。
 
@@ -1784,6 +1792,7 @@ Manager 本地部署配置仍使用 `codespace.yaml`；它与仓库中的 `devco
 - 公共连接的 per-Endpoint 与 per-IP 上限使用文中默认值和范围，任何匿名请求必须同时取得两个本地名额；公共计数不进入认证 session 上限。
 - `gateway.validation_max_inflight` 使用文中默认值和范围；公共与认证 HTTP 的相同授权键并发 miss 合并后共同受该上限约束，满载返回 503。
 - 一个 Manager 身份与其 `node.state_dir` 共同组成单一部署；同一状态目录的第二个进程在发送 RPC 前因独占锁失败。并行 Manager 使用各自注册身份和状态目录。
+- 显式注册配置必须存在并通过严格 YAML 解析；未指定配置且默认文件不存在时才使用内置默认值。`manager-state.json` 是本地注册完成的唯一提交点，重复注册、损坏状态和并发 register/serve 都在发送 RPC 前失败。
 - Endpoint 请求只能选择 `http|https` scheme，不能关闭 HTTPS 证书校验或指定任意 host。
 - [x] Declare tags 与 `runtime.environments[].tag` 完全一致；虚拟机与系统容器环境都不会把实例类型写入 Gitea。Manager 配置以 `node`、`gateway` 和 `runtime` 为唯一顶层结构，tag、Incus 连接和运行环境都能从这三个结构中唯一确定。
 - Manager 使用固定 bootstrap 与内置原生 Dev Container 运行时，配置中没有生命周期脚本入口；仓库配置由 create 时锁定的路径、提交和摘要唯一确定，resume 使用已经保存的完整环境状态。
