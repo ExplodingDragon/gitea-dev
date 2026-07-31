@@ -185,10 +185,10 @@
 <p>Manager/Gateway 在 Codespace 为 running/ready、设置启用、没有生命周期 worker 且没有已认证 live session 时开始单调计时，连续达到有效超时后发起空闲停止。公共 Endpoint 连接不代表创建者交互，不进入该计数。Gitea 使用当前启用值、有效超时、交互版本和生命周期状态授权并创建来源为 idle 的普通 stop；完成后主状态为 stopped，用户使用普通 resume 恢复。对象设置 <code>default/custom/never</code> 分别表示站点默认、自定义时长和关闭空闲触发；延迟设置快照不能绕过 Gitea 的当前值复检。</p>
 <p><span id="manager-matching"></span></p>
 <h3 id="manager-matching"><a class="header" href="#manager-matching">Manager Matching</a></h3>
-<p>Gitea 按 Codespace 创建者和固定的 <code>default</code> 环境匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。仓库 Dev Container 配置不参与 Manager 匹配。</p>
+<p>Gitea 按 Codespace 创建者和用户在确认页显式选择的环境 tag 匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。Manager 每次 Fetch 再提交本轮可创建的已声明 tag 子集。仓库 Dev Container 配置不参与 Manager 匹配，create 绑定后 resume、stop 和 delete 只使用原 Manager。</p>
 <p><span id="manager-capacity"></span></p>
 <h3 id="manager-capacity"><a class="header" href="#manager-capacity">Manager Capacity</a></h3>
-<p>Manager 本地的 <code>capacity_total</code> 限制运行实例数量，<code>startup_workers</code> 和 <code>cleanup_workers</code> 分别限制启动与清理并发。<code>FetchOperations</code> 只提交当次可用的 <code>startup_capacity_available</code> 和 <code>cleanup_capacity_available</code>，由 Gitea 据此限制返回数量。**设计如此：**总容量属于 Manager 本地调度实现，Gitea 只需要知道当前能立即执行多少工作，避免持久化一个很快过期的容量快照。</p>
+<p>Manager 本地的 <code>capacity_total</code> 限制运行实例数量，<code>startup_workers</code> 和 <code>cleanup_workers</code> 分别限制启动与清理并发。<code>FetchOperations</code> 提交当次可用的 <code>startup_capacity_available</code>、<code>cleanup_capacity_available</code> 和 <code>accepted_create_tags</code>，由 Gitea 据此限制返回数量及可领取的 create 环境。**设计如此：**总容量和环境配额属于 Manager 本地调度实现，Gitea 只需要知道当前能立即执行多少工作，避免持久化很快过期的容量快照。</p>
 <p><span id="endpoint"></span></p>
 <h3 id="endpoint"><a class="header" href="#endpoint">Endpoint</a></h3>
 <p>使用 <code>endpoint_id</code> 标识的 HTTP/WebSocket 入口。普通 Endpoint 来自 Runtime manifest，并以必填 <code>public</code> 布尔值明确选择 Gateway session 认证或公共访问；Manager 固定补入需要认证的 <code>workspace</code>，再把完整集合写入本地路由和 Runtime Metadata。<code>workspace</code> 由 Manager 代理到当前 Dev Container 的 code-server Web IDE，是平台保留入口，Runtime manifest 使用其他 ID。公共访问仍由 Gitea 实时检查当前 Codespace、Manager 和 metadata，不从 repository 可见性推导。</p>
