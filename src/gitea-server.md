@@ -112,7 +112,7 @@ POST   /-/codespaces/{uuid}/delete
 | `recovering`，主状态为 running | stop、delete、configure auto-stop | 暂时禁用 Workspace、普通 Endpoint、SSH 和继续运行 |
 | Manager offline，主状态为 stopped | delete、configure auto-stop | 恢复按钮禁用并说明 Manager 暂时不可用 |
 
-自动暂停是创建者对自己 Codespace 的运行策略。设置只写入 Gitea，因此在 stop/resume 进行中或 Manager 暂时不可用时仍可保存；Manager 恢复并取得当前设置后应用。创建者列表的更多菜单和详情页的设置按钮打开同一个 Auto-stop 弹窗，保存后分别返回发起操作的列表页或详情页；该来源只使用固定的 `list|detail` 值，不接受浏览器提交任意返回地址。弹窗位于实时状态片段之外，状态轮询只在弹窗打开期间同步当前是否可提交，不覆盖用户正在编辑的模式、数值和单位。其他用户的治理列表不显示设置值，也不提供修改入口。
+自动暂停是创建者对自己 Codespace 的运行策略。设置只写入 Gitea，因此在 stop/resume 进行中或 Manager 暂时不可用时仍可保存；Manager 恢复并取得当前设置后应用。创建者列表的更多菜单和详情页的设置按钮打开同一个 Auto-stop 弹窗，保存后分别返回发起操作的列表页或详情页；该来源只使用固定的 `list|detail` 值，不接受浏览器提交任意返回地址。弹窗位于实时状态片段之外，状态轮询只在弹窗打开期间同步当前是否可提交，不覆盖用户正在编辑的模式、数值和单位。非创建者治理摘要不显示设置值，也不提供修改入口。
 
 页面按以下规则处理操作按钮：
 
@@ -144,7 +144,7 @@ Manager 在状态切换期间离线时，Gitea 保持已登记 operation 和原�
 - 站点和用户设置中的 Codespace 管理入口统一使用复数 `codespaces`；组织设置不提供 Codespace 管理入口。
 - `manager_id=0` 的 delete 不创建无法领取的 operation。
 - 未绑定 delete 与 Fetch create claim 并发时由数据库条件写入确定先后；删除事务的主记录、Token、Git SSH Key 和日志共同提交或共同回滚，claim 成功后 delete 转入绑定删除，delete 成功后 claim 影响 0 行。
-- 创建者对象路由不接受 force delete；站点管理员只通过管理列表中的独立强制删除路由执行本地清理。
+- 创建者对象路由不接受 force delete；站点管理员只通过 Manager 管理页或异常区域中的独立强制删除路由执行本地清理。
 - running 且存在 queued user stop、已经领取的 stop 或 delete operation 时，页面禁用 Endpoint 和 SSH；queued idle stop 保持可交互并由成功交互事务取消。
 - 只有创建者可以为自己的 Codespace 设置站点默认、自定义超时或永不自动暂停；`never` 只关闭空闲自动暂停，不改变手动 stop/delete、排空、failed 和账户管理动作。
 - 自定义自动暂停表单提交正整数数值和秒、分钟、小时或天，Router 精确换算成秒并由服务校验站点范围；站点默认和永不自动暂停不提交无效的从属时间。
@@ -158,25 +158,38 @@ Manager 在状态切换期间离线时，Gitea 保持已登记 operation 和原�
 设置管理入口：
 
 ```text
-GET/POST /-/admin/codespaces
-POST     /-/admin/codespaces/{uuid}/stop
-POST     /-/admin/codespaces/{uuid}/delete
-POST     /-/admin/codespaces/{uuid}/force-delete
-GET/POST /-/admin/codespaces/managers
-GET/POST /user/settings/codespaces
+GET      /-/admin/codespaces/managers
+POST     /-/admin/codespaces/managers/reset_registration_token
+GET      /-/admin/codespaces/managers/{manager_id}
+POST     /-/admin/codespaces/managers/{manager_id}/delete
+POST     /-/admin/codespaces/managers/{manager_id}/codespaces/{uuid}/stop
+POST     /-/admin/codespaces/managers/{manager_id}/codespaces/{uuid}/delete
+POST     /-/admin/codespaces/managers/{manager_id}/codespaces/{uuid}/force-delete
+POST     /-/admin/codespaces/managers/unassigned/{uuid}/stop
+POST     /-/admin/codespaces/managers/unassigned/{uuid}/delete
+POST     /-/admin/codespaces/managers/unassigned/{uuid}/force-delete
+GET      /user/settings/codespaces/managers
+POST     /user/settings/codespaces/managers/reset_registration_token
+GET      /user/settings/codespaces/managers/{manager_id}
+POST     /user/settings/codespaces/managers/{manager_id}/delete
 GET/POST /user/settings/codespaces/secrets
-GET/POST /user/settings/codespaces/features
+GET      /user/settings/codespaces/secrets/repositories
+POST     /user/settings/codespaces/secrets/{secret_id}/value
+POST     /user/settings/codespaces/secrets/{secret_id}/access
+POST     /user/settings/codespaces/secrets/{secret_id}/delete
 ```
 
-站点管理页列出全部 Codespace，并在同一管理导航中提供全局 Manager 和 global registration token 管理。用户设置中的 Codespaces 首页管理当前用户的 registration token 与个人 Manager，Secrets 子页管理该用户的 Codespace Secret，Personal tools 子页管理创建新环境时注入的个人 Dev Container Feature；用户自己的 Codespace 仍使用 `/-/codespaces`。
+站点管理只提供 Codespace Managers 入口：列表管理 global registration token 并概览全部全局和个人 Manager，单项管理页展示当前声明和绑定 Codespace。已绑定 Codespace 按 Manager 分页治理，尚未分配 Manager 或引用已不存在 Manager 的记录在 Manager 列表页的异常区域治理。用户设置中的 Managers 子页管理当前用户的 registration token 与个人 Manager，Secrets 子页管理该用户的 Codespace Secret；用户自己的 Codespace 仍使用顶部 `/-/codespaces` 工作区入口。
 
-Personal tools 使用 Gitea 现有 `user_setting` 保存 Feature 引用及 string/boolean 类型选项。服务层规范化顺序并校验重复引用、重复选项、数量、长度、明确版本和类型化 protobuf 编码后的 64 KiB 总大小；页面只编辑这一份用户偏好。Manager 领取 queued create 并在同一事务中构造 payload 时读取当前值，因此领取前的修改作用于该次创建，领取完成后的修改作用于后续新建环境。64 KiB 总大小仍足以容纳正常的工具选项，并让一次最多 256 个 operation 的批量响应可以预先计算到控制面消息上限内。**设计如此：**个人工具是用户的创建偏好，不是 Codespace 身份或生命周期状态；Gitea 负责当前偏好，active create payload 负责本次执行，Manager 环境状态负责之后的 resume。三者各自只有一份事实，不需要在 Codespace 表复制个人设置，也不需要因偏好更新修改已有环境。
+Codespace 的开发工具由仓库选中的 `devcontainer.json` 声明，Gitea 固定配置路径、提交和原始文件摘要，Manager 从锁定 workspace 解析标准 Feature。平台 Web IDE 由 Manager 使用固定的 code-server Feature 提供，不形成用户设置项。**设计如此：**仓库 Feature 随提交接受审阅并可通过锁文件固定，平台 Feature 随 Manager 发布和部署配置管理；两类输入都有明确所有者，同一仓库提交不会再因 Gitea 用户偏好产生隐式差异。
 
-Secrets 子页支持创建名称和值、替换已有值、为 Secret 增删精确仓库以及删除 Secret。仓库搜索沿用 Gitea 的用户可访问仓库选择控件，服务层在每次写入时重新确认当前用户对目标仓库具有代码写权限。页面只展示名称、已选择仓库和更新时间，值在创建或替换成功后不再返回浏览器。
+Secrets 子页使用一个列表展示名称、范围摘要和更新时间。新增弹窗一次保存名称、值和初始访问范围；值替换和访问范围分别使用独立弹窗，删除使用标准确认。访问范围可以选择“所有仓库”，也可以选择零个或多个指定仓库。所有仓库表示该用户当前和以后仍有代码写权限的仓库；指定仓库为空表示先保存 Secret，暂不提供给任何仓库。仓库搜索只返回当前个人用户具有代码写权限的结果，表单提交仓库 ID，服务层在每次写入和运行时解析时再次确认权限。值在创建或替换成功后不再返回浏览器。
 
-Dev Container 顶层 `secrets` 只表达该环境建议使用的名称和说明。创建确认页把建议项与用户已有 Secret、当前仓库选择关系合并展示；用户可以为缺失项填写一次值，也可以明确选择把已有 Secret 用于当前仓库。该操作更新用户 Secret 设置，随后创建流程按相同仓库选择规则取得值。**设计如此：**仓库配置负责说明环境需要什么，用户设置负责保存私密值和决定哪些仓库可以使用；仓库提交内容因而不会携带 Secret 明文，也不能自行扩大使用范围。
+**设计如此：Secret 值和访问范围是两个独立设置。**创建不要求仓库可以避免用户为了保存值而授权无关项目；所有仓库模式适合明确希望跨项目复用的值，并通过每次权限复核自动包含以后取得写权限的仓库、排除已经失去写权限的仓库。指定仓库模式保留最小范围选择。范围变化使用完整集合替换，服务端可以在一个事务中完成权限、去重和 512 KiB 实际注入总量校验。
 
-站点 Codespace 管理列表只返回并展示治理所需字段：展示态、UUID 缩写、创建用户、绑定 Manager 或“等待分配”、更新时间和当前可提交操作。列表行不链接 `/-/codespaces/{uuid}`，也不返回 repository/ref/commit、日志、Endpoint、SSH、自动暂停设置、Token 或运行侧内部信息。
+Dev Container 顶层 `secrets` 只表达该环境建议使用的名称和说明。创建确认页把建议项与用户已有 Secret、所有仓库范围和当前仓库指定关系合并展示；所有仓库范围或已经指定当前仓库的项直接显示可用。用户可以为缺失项填写一次值，也可以明确选择把已有但尚未授权的 Secret 用于当前仓库。该操作更新用户 Secret 设置，随后创建流程按相同范围规则取得值。**设计如此：**仓库配置负责说明环境需要什么，用户设置负责保存私密值和决定哪些仓库可以使用；仓库提交内容因而不会携带 Secret 明文，也不能自行扩大使用范围。
+
+Manager 单项管理页的 Codespace 表格只返回并展示治理所需字段：展示态、UUID 缩写、repository/ref、创建用户、更新时间和当前可提交操作。站点管理员的表格行不链接创建者详情，也不返回 commit、日志、Endpoint、SSH、自动暂停设置、Token、资源指标或运行侧内部信息。Manager 列表页的异常区域使用相同数据结构和操作，只覆盖尚未分配 Manager 或绑定 Manager 已不存在的记录。
 
 | 展示态 | 站点管理员操作 |
 | --- | --- |
@@ -185,11 +198,11 @@ Dev Container 顶层 `secrets` 只表达该环境建议使用的名称和说明�
 | `stopping` / `resuming` / `stopped` / `failed` | delete、force delete |
 | `deleting` | force delete |
 
-管理列表中的 stop 和 delete 使用普通生命周期服务，与创建者操作具有相同的状态、抢占、超时和 Manager 恢复语义。Manager offline 时仍允许对 `running` 提交 stop 和对可删除状态提交 delete；页面显示“等待 Manager”，超时后刷新为状态机确定的稳定结果。站点管理员 force delete 使用独立路由和明确确认，同步删除 Gitea 记录、Codespace Token、Git SSH Key 和日志，不等待 Manager；原 Manager 身份仍有效时，后续完整 inventory 会清理无记录 Runtime。全部操作路由使用 Gitea 现有登录校验和 CSRF 保护，成功或冲突后都回到原管理列表并刷新目标行。
+Manager 管理页和异常区域中的 stop、delete 使用普通生命周期服务，与创建者操作具有相同的状态、抢占、超时和 Manager 恢复语义。Manager offline 时仍允许对 `running` 提交 stop 和对可删除状态提交 delete；超时后刷新为状态机确定的稳定结果。站点管理员 force delete 使用独立路由和明确确认，同步删除 Gitea 记录、Codespace Token、Git SSH Key 和日志，不等待 Manager；原 Manager 身份仍有效时，后续完整 inventory 会清理无记录 Runtime。全部操作路由使用 Gitea 现有登录校验和 CSRF 保护，路由同时校验页面中的 Manager 归属或异常归类，成功或冲突后回到原 Manager 页面。
 
-非创建者只有站点管理员可以使用上述列表和直接操作，列表不提供对象详情、日志、连接、resume、continue 或自动暂停设置。组织管理员仍按普通用户身份管理自己创建的 Codespace，不因组织角色获得成员工作区权限。
+非创建者只有站点管理员可以使用上述治理表格和直接操作，表格不提供对象详情、日志、连接、resume、continue 或自动暂停设置。个人用户的 Manager 页面同时按 `manager_id` 和当前 `user_id` 查询，只链接该用户自己的 Codespace 详情。组织管理员仍按普通用户身份管理自己创建的 Codespace，不因组织角色获得成员工作区权限。
 
-**设计理由：管理动作直接位于治理列表。**管理员判断是否停止或删除资源只需要身份、状态和 Manager 归属。为此开放完整对象页会额外暴露源码上下文、日志和连接信息，却不会改善治理结果；独立 POST 路由也使 force delete 不会与创建者普通删除混用。
+**设计如此：治理按 Manager 归属进入单项管理页。**Manager 是运行资源的实际归属边界，分页列出绑定 Codespace 可以同时确认节点状态、声明 tags 和受影响实例；异常区域让尚无有效 Manager 的记录仍可清理。管理员只取得治理摘要和独立 POST 操作，不进入其他用户的完整对象页，因此不会因节点管理扩大到日志、连接或凭据访问。
 
 **设计理由：Manager 管理页分别展示身份、运行状态和调度意愿。**记录存在表示身份有效；计划排空由 Manager 在 Fetch 中上报 `startup_capacity_available=0` 且不接受 create/resume；维护中断使用 recovering/offline；永久撤销身份使用删除操作。职责分开后，管理操作不会隐式改变 active operation、Token、Gateway session 或 Runtime transition。
 
@@ -207,20 +220,22 @@ Codespace、个人 Manager 和 registration token 写入统一进入 Codespace u
 
 实现验收点：
 
-- 站点管理员可以在 `/-/admin/codespaces` 直接 stop、delete 或 force delete 全部 Codespace，并管理全部 Manager 与 global registration token。
+- 站点管理员可以在 `/-/admin/codespaces/managers/{id}` 对该 Manager 绑定的 Codespace 执行 stop、delete 或 force delete，并在 Manager 列表页处理尚未分配或 Manager 已不存在的记录；同一入口管理全部 Manager 与 global registration token。
 - 组织设置没有 Codespace、Manager 或 registration token 入口；组织管理员不能查看或操作成员的 Codespace。
-- 非创建者管理列表没有对象详情链接，也不返回日志、repository/ref/commit、Endpoint、SSH、自动暂停设置或任何 Token；站点管理员不能通过治理权限修改自动暂停。
+- 非创建者治理表格没有对象详情链接，可显示定位记录所需的 repository/ref，但不返回 commit、日志、Endpoint、SSH、自动暂停设置、资源指标或任何 Token；站点管理员不能通过治理权限修改自动暂停。
 - 用户只能管理自己的 registration token 与个人 Manager；站点管理员管理全局入口和全部 Manager。
-- 用户只能管理自己的 Personal tools；设置以稳定顺序保存，并在 Manager 领取下一次 create 时进入结构化 payload。
-- Personal tools 类型化编码后的总大小不超过 64 KiB；控制面最小消息上限按满批 256 个 create 的该上限计算。
-- Personal tools 只使用 `user_setting` 持久化；Codespace 主表保存配置选择，active create payload 和 Manager 环境状态分别承担执行与恢复。
-- 用户只能管理自己的 Codespace Secret，列表和更新响应不返回已有值；选择仓库时服务端重新确认代码写权限。
-- Dev Container 建议的 Secret 在创建确认页显示名称和说明；用户明确提供或选择后才为当前仓库建立关系。
+- Manager 列表只保留进入单项管理页的编辑入口并独立展示 tags；声明字段在管理页只读，删除位于单项页底部并显示绑定数量。
+- 用户设置只包含 Managers、Repository permissions 和 Secrets；开发工具由锁定提交中的 Dev Container 配置声明，平台 code-server 由 Manager 配置提供。
+- 用户只能管理自己的 Codespace Secret，列表和更新响应不返回已有值；仓库搜索和保存只接受当前有代码写权限的仓库，运行时再次复核。
+- Secret 可以使用所有仓库范围或可为空的指定仓库集合；所有仓库不展开关系行，指定范围更新一次替换完整集合。
+- 512 KiB 限制按当前用户实际注入目标仓库的 Secret 总量计算，不统计其他用户的值。
+- Dev Container 建议的 Secret 在创建确认页显示名称和说明；所有仓库或已指定当前仓库的项直接可用，用户明确提供缺失值或授权已有值时只建立当前仓库关系。
 - 创建者对象页与设置管理页的 stop/delete 复用相同生命周期服务、状态校验和事务逻辑。
 - Manager offline 时，适用状态下的 stop/delete 仍可登记；页面显示等待 Manager，operation 使用原截止时间收敛。只有站点管理员可在任意未物理删除状态使用独立 force delete。
 - Manager 管理页没有 enable、disable、pause 或 quarantine 动作；零容量、recovering/offline 和直接删除分别覆盖排空、维护和撤销身份。
 - 每个个人用户和站点全局入口最多存在一行 registration token；settings 页面读取自动确保当前行存在，重置原地替换后旧 token 立即失效。
 - 删除任意状态的 Manager 都只执行 Gitea 本地事务，不创建 operation、不发送 ManagerService 请求。
+- 个人删除 Manager 在清理前复检全部绑定 Codespace 均属于当前用户；发现跨用户异常绑定时整次返回错误且不产生部分删除，站点管理员仍可按全站权限处理。
 - 删除完成后，Manager、地址行、关联 Codespace、开发凭据和日志均不存在，并发旧 RPC 不能重新写入这些记录或 cache。
 - 用户自助、管理员 Web/API、`gitea admin user delete`、inactive-user Cron 和 purge 使用同一个用户服务删除入口，并只清理该用户的 Codespace 资源。
 - 用户删除同时清理其 Secret 和选择关系；仓库删除只清理指向该仓库的选择关系，不删除仍用于其他仓库的 Secret。
@@ -304,13 +319,13 @@ create operation 完成后，repository 的后续状态不再参与 open、SSH�
 | 角色 | 权限范围 |
 | --- | --- |
 | 创建用户本人 | 通过 Gitea 现有登录限制后，可以查看自己的详情和日志、修改自动暂停设置并执行 stop/delete |
-| 非创建者的站点管理员 | 对全部 Codespace 只可查看治理列表并执行 stop/delete/force delete |
+| 非创建者的站点管理员 | 在 Manager 管理页和异常区域查看治理摘要并执行 stop/delete/force delete |
 
 创建者权限独立于 repo code-read 权限，失去 repo 访问后仍可管理自己的 Codespace。这里的创建者是 `codespace.user_id`，通过身份认证和 Gitea 现有登录限制后不再检查 repository；账户已被限制或删除时，不能通过 Codespace 路由建立第二套登录入口。
 
 组织角色不形成 Codespace 治理范围。用户从组织 repository 创建的 Codespace 仍归该用户本人，组织管理员只能按普通用户身份管理自己创建的对象。repository 转移、组织成员变化和组织管理权限变化都不改变现有 Codespace 的创建者或 Manager binding。
 
-同一调用者同时是 Codespace 创建者和组织所有者或站点管理员时，创建者可以通过 `/-/codespaces/{uuid}` 管理自己的对象；治理列表仍只返回治理页面数据结构。这样管理员管理自己的 Codespace 时保留普通用户体验，同时管理其他用户对象时保持最小信息边界。
+同一调用者同时是 Codespace 创建者和组织所有者或站点管理员时，创建者可以通过 `/-/codespaces/{uuid}` 管理自己的对象；Manager 管理页仍只返回治理页面数据结构。这样管理员管理自己的 Codespace 时保留普通用户体验，同时管理其他用户对象时保持最小信息边界。
 
 站点管理员可在明确确认后强制删除 Gitea 记录、Codespace Token、Git SSH Key 和日志，不以 Manager 失联或特定状态为前提。该动作的完成条件是 Gitea 本地事务提交，不等待 Incus 实例回收，也不保存墓碑。若原 Manager 身份仍有效，后续成功的完整 inventory 查询不到该 UUID 时返回 `cleanup_local_runtime`；Manager 身份已删除或永久失联时，残留实例和本地状态文件由部署运维处理。
 
@@ -344,13 +359,13 @@ Web 页面使用明确的服务端页面数据结构，不直接序列化 `codes
 
 - `uuid`
 - `status` 和 `display_status`
-- `created_unix / updated_unix / stopped_unix / last_active_unix`
+- `created_unix / updated_unix / last_active_unix`
 - `repo_id / ref_type / ref_name / commit_sha`
 - `manager_id / manager_display_name / manager_runtime_state`
 - `status_summary`
 - `allowed_actions`
 
-创建者详情使用 `CodespaceOwnerDetail`，在上述字段基础上增加当前 Codespace Token 是否存在及其创建时间和末八位、Codespace Git SSH Key 是否存在及登记时间、`log_line_count / log_size`、自动暂停持久选择和有效超时，以及后述规范化 `workspace/endpoints/ssh/resource_usage`。自动暂停页面数据包含持久 `mode`、自定义表单使用的精确 `timeout value/unit`、站点默认值与允许范围、当前有效启用状态和有效超时，以及已有自定义值是否超出当前范围；时间展示选择能够精确表达秒数的最大单位，数据库和 Manager 协议仍统一使用秒。`interaction_generation` 只用于 Manager 协议，不返回 Web 页面。凭据展示字段只说明当前绑定是否存在，不返回 Token verifier、salt、密文、明文、公钥正文或指纹。Git clone 首选协议不是详情属性，因为它只在 create payload 构造时按站点当前配置计算。
+创建者详情使用 `CodespaceOwnerDetail`，在上述字段基础上增加当前 Codespace Token 和 Git SSH Key 是否存在、`log_size`、自动暂停持久选择和有效超时，以及后述规范化 `workspace/endpoints/ssh/resource_usage`。自动暂停页面数据包含持久 `mode`、自定义表单使用的精确 `timeout value/unit`、站点默认值与允许范围、当前有效启用状态和有效超时，以及已有自定义值是否超出当前范围；时间展示选择能够精确表达秒数的最大单位，数据库和 Manager 协议仍统一使用秒。`interaction_generation` 只用于 Manager 协议，不返回 Web 页面。凭据展示字段只说明当前绑定是否存在，不返回 Token verifier、salt、密文、明文、公钥正文或指纹。Git clone 首选协议不是详情属性，因为它只在 create payload 构造时按站点当前配置计算。
 
 站点管理列表使用 `CodespaceGovernanceListItem`，只包含 `uuid / display_status / updated_unix / user_id / user_display_name / manager_id / manager_display_name / manager_runtime_state / status_summary / allowed_actions`。该结构没有详情变体，因此非创建者不能通过修改 URL 或请求格式取得 repository、ref、commit、日志、自动暂停、Endpoint 或 SSH 数据。
 
@@ -392,13 +407,13 @@ Web 页面使用明确的服务端页面数据结构，不直接序列化 `codes
 
 `ssh` 只由绑定 Manager 对外声明的 `gateway_ssh_addr` 和 Gateway host key 展示字段构造。服务端拆分规范化的 host 与 port，用户名固定为 39 字节 ASCII 的 `cs-{小写规范 UUID}`，command 固定由这些字段生成。该用户名只供 Gateway 定位 Codespace，不映射为操作系统账户；Runtime 执行用户由 Manager 本地保存的非 root UID/GID 决定。该结构只提供用户实际连接所需的公开地址和 host key 核对信息，Runtime 内部目标、upstream 和任何 token 都不会进入详情响应。
 
-只有创建者详情在具有 Interactive Access 且当前 metadata ready 时返回普通 `endpoints`。页面把 `public=true` 显示为公共入口：无 active operation 时通过弹窗 POST 打开，queued idle stop 时保留展示但设置 `can_open=false` 并提供既有“继续运行”动作；需要认证的入口通过同一弹窗 POST 建立 session，并可取消 queued idle stop。workspace 固定使用认证动作。`ssh` 还要求绑定 Manager online，并且 Manager 的公开 SSH 地址、host key algorithm、SHA256 fingerprint 和更新时间全部有效；任一条件缺失时省略该对象。治理列表数据结构从类型上没有 `workspace/endpoints/ssh` 字段。
+只有创建者详情在具有 Interactive Access 且当前 metadata ready 时返回普通 `endpoints`。页面把 `public=true` 显示为公共入口：无 active operation 时通过弹窗 POST 打开，queued idle stop 时保留展示但设置 `can_open=false` 并提供既有“继续运行”动作；需要认证的入口通过同一弹窗 POST 建立 session，并可取消 queued idle stop。workspace 固定使用认证动作。`ssh` 还要求绑定 Manager online，并且 Manager 的公开 SSH 地址、host key algorithm、SHA256 fingerprint 和更新时间全部有效；任一条件缺失时省略该对象。治理摘要数据结构从类型上没有 `workspace/endpoints/ssh` 字段。
 
-只有创建者详情在当前 Runtime Metadata 存在时返回 `resource_usage`。该对象只包含 CPU、内存和磁盘当前用量、对应 limit 和采样时间；limit 为 0 时页面显示限制未知。指标缺失不影响 workspace、Endpoint、SSH 或 allowed actions 的返回，页面显示暂不可用。治理列表不包含资源指标，也不按这些指标排序。**设计如此：**创建者需要快速判断自己的工作区是否接近资源上限，管理员治理只依赖状态、归属和允许动作；把瞬时指标放进治理数据会引入容易误判的运维含义。
+只有创建者详情在当前 Runtime Metadata 存在时返回 `resource_usage`。该对象只包含 CPU、内存和磁盘当前用量、对应 limit 和采样时间；limit 为 0 时页面显示限制未知。指标缺失不影响 workspace、Endpoint、SSH 或 allowed actions 的返回，页面显示暂不可用。治理摘要不包含资源指标，也不按这些指标排序。**设计如此：**创建者需要快速判断自己的工作区是否接近资源上限，管理员治理只依赖状态、归属和允许动作；把瞬时指标放进治理数据会引入容易误判的运维含义。
 
 创建者详情使用 Gitea 原生进度条展示 CPU、内存和磁盘的 `used/limit`，并在旁边保留格式化后的真实数值。limit 大于 0 时进度条表达当前占比，used 超过 limit 时进度条显示为满格而文字继续显示真实数值；limit 等于 0 时只显示当前用量和“限制未知”。**设计如此：**limit 等于 0 表示 Manager 没有取得有效上限，并不表示资源无限或使用率为零；省略进度条可以避免向用户展示无法成立的比例。页面不自行增加告警阈值和告警颜色，因为不同 Incus 配置下瞬时用量与可执行动作没有统一告警语义。
 
-创建者列表、站点治理列表和 Manager 设置列表使用 Gitea 的响应式分隔列表。每个条目的主区域展示身份、状态和可换行的元数据，操作区域只展示服务端 `allowed_actions` 对应的按钮；创建者列表把进入详情放在条目标题，把当前主要动作直接显示，把较少使用的 Stop、Continue 和 Delete 收入操作菜单。条目正文、状态摘要和操作控件使用同一列表基线，主要按钮与更多菜单使用相同尺寸。Gateway URL、SSH 地址、主机密钥指纹、仓库名、引用名和 SSH 命令都允许在各自内容区内换行。**设计如此：**这些字段长度不可预设，生命周期状态还会改变按钮数量，固定列宽表格无法同时满足桌面和移动页面；统一使用 Gitea 分隔列表可以保留管理页面的信息密度，也不需要用单独的按钮内边距修正某一种页面宽度。
+创建者列表继续使用 Gitea 的响应式分隔列表。Manager 列表和单项页的绑定 Codespace 使用与 Actions Runner 相同的基础表格：Manager 列表只展示名称与版本、状态、可选所属用户、tags、最后在线、绑定数量和编辑图标；单项页在基础信息区展示可换行的 Gateway、SSH 和 Host Key，再用分页表格展示绑定 Codespace。窄屏时表格只在 attached segment 内横向滚动，不扩大整个设置页面。**设计如此：**Manager 是低频管理对象，列结构稳定且需要快速纵向比较；单项页承载长连接信息和实例管理，可以避免列表弹窗为每行重复生成详情内容。
 
 创建者详情采用与 Gitea Actions 详情相同的信息层级：全宽页面顶部显示返回入口、标题和 repository/ref 摘要，主体在桌面端分为左右两列。左侧使用剩余宽度展示操作日志，右侧保持 300 到 340 像素，依次展示实时状态与当前操作、访问方式、资源用量和 UUID/commit/创建时间/最后活跃时间；repository 和 ref 已经在页头表达，因此右侧不重复展示。页面占用 Gitea 导航栏与页脚之间的剩余高度，日志与右侧信息分别滚动，文档本身不产生纵向滚动。页面宽度低于 992 像素时恢复自然文档滚动，状态信息按 DOM 顺序先于日志显示，避免固定高度在触屏设备上形成嵌套滚动。右侧信息按章节和分隔线组织，不堆叠卡片。**设计如此：**创建和恢复期间用户主要阅读连续日志，日志应获得主要宽度；状态与控制需要持续可见但内容宽度有限。桌面端使用独立滚动保持两者同时可用，移动端改用自然滚动则更符合触屏浏览方式。
 
@@ -416,7 +431,7 @@ Codespace 删除、站点强制删除和 Manager 删除使用 Gitea 公共确认
 - queued idle stop 使用相同交互条件，并加入 `continue`；queued user stop 或 running stop 只返回 `configure_auto_stop/delete`。
 - 创建者的 `stopped` 且无 active operation 时返回 `configure_auto_stop/delete`，功能启用且 Manager online 时加入 `resume`；active resume 期间只返回 `configure_auto_stop/delete`。
 - 创建者的 queued create 或 booting 返回 `delete`，failed 返回 `delete`，deleting 返回空集合。
-- 站点治理列表按状态返回 `stop/delete` 的适用子集，并在任意未物理删除状态加入 `force_delete`。
+- 站点管理员的 Manager Codespace 表格按状态返回 `stop/delete` 的适用子集，并在任意未物理删除状态加入 `force_delete`。
 - `configure_auto_stop` 只向创建者返回。组织所有者和非创建者站点管理员的治理页面数据永远不返回该值。
 
 `allowed_actions` 只表示当前请求可以提交的动作。`stopping/resuming/deleting/booting` 对应的禁用进度按钮由 `display_status` 渲染，不把正在执行的动作重新放入可提交集合。Runtime Metadata cache 未命中、Manager offline/recovering 或站点排空时移除当时不可执行的交互动作和 resume，但保留创建者的 `configure_auto_stop` 以及当前状态可登记的 stop/delete。页面完全依赖服务端页面数据，不从 Manager metadata、内部地址或字段缺失推测其他操作。
@@ -428,29 +443,29 @@ Codespace 删除、站点强制删除和 Manager 删除使用 Gitea 公共确认
 - Gateway Open Token
 - `token hash / salt`
 - Endpoint upstream
-- 完整 `meta_json`
+- 完整 Manager 声明字段
 - 日志正文
 - Runtime Instance 内部 host / port / user
 
-创建者页面数据和治理页面数据分开定义，是为了让数据权限由服务端类型保证，而不是依赖模板隐藏字段。治理列表只提供识别对象、判断状态和发起允许动作所需的信息，使管理员能够治理资源而不进入其他用户 workspace。这些结构的稳定使用方是服务端模板和状态片段；本设计需要版本标识的协议范围是 ManagerService 和 Runtime 本地 manifest，服务端 Web 页面及其状态片段按 Gitea 路由契约维护。
+创建者页面数据和治理页面数据分开定义，是为了让数据权限由服务端类型保证，而不是依赖模板隐藏字段。治理摘要只提供识别对象、判断状态和发起允许动作所需的信息，使管理员能够治理资源而不进入其他用户 workspace。这些结构的稳定使用方是服务端模板和状态片段；本设计需要版本标识的协议范围是 ManagerService 和 Runtime 本地 manifest，服务端 Web 页面及其状态片段按 Gitea 路由契约维护。
 
 实现验收点：
 
 - create 使用 repository 权限；既有 codespace 的交互和管理权限不依赖 repository row。
-- 创建用户只能交互、查看日志和配置自己的 codespace；组织所有者只能 stop/delete 治理范围内的对象；站点管理员只能 stop/delete/force delete 非本人对象。
+- 创建用户只能交互、查看日志和配置自己的 Codespace；组织所有者不因组织角色取得成员工作区权限；站点管理员对非本人对象只使用治理摘要执行 stop/delete/force delete。
 - stopped 状态的 resume 在 Runtime Metadata cache 为空时仍可提交；workspace、普通 Endpoint 和 SSH 在 cache miss 时返回 `metadata_rebuilding`，running 状态下缓存中的 boot 快照保持 `ready`。
 - 普通 Endpoint 只有在 metadata ready 且目标存在时可打开；SSH 只有在 ready 且公钥归创建用户时可认证，实际 Incus backend 由 Manager 本地准入复检。
-- `CodespaceOwnerListItem`、`CodespaceOwnerDetail` 和 `CodespaceGovernanceListItem` 使用互不混用的明确字段；治理页面数据不包含 repository/ref/commit、日志、自动暂停、Endpoint、SSH、token、resource usage、upstream 或完整 Manager metadata。
+- `CodespaceOwnerListItem`、`CodespaceOwnerDetail` 和 `CodespaceGovernanceListItem` 使用互不混用的明确字段；治理页面数据只增加定位所需的 repository/ref，不包含 commit、日志、自动暂停、Endpoint、SSH、token、resource usage、upstream 或完整 Manager metadata。
 - 对象详情能无歧义展示 default/custom/never 的持久选择和当前有效超时，但不暴露 Manager 使用的交互版本。
 - 对象详情的 `workspace` 使用固定的本地化 Web IDE 文案；普通 `endpoints` 按 ID 排序，页面无需解析 Runtime Metadata。
 - 对象详情的 `resource_usage` 来自 Runtime Metadata typed fields，只展示 CPU、内存、磁盘和采样时间；字段缺失时页面显示暂不可用，不隐藏其他操作。
 - CPU、内存和磁盘在 limit 大于 0 时显示原生进度条及真实 `used/limit`；limit 等于 0 时显示当前用量和“限制未知”，页面不生成虚假的使用比例。
 - SSH 展示只使用 Manager 公开地址和公开 host key 信息，command、host、port 与 `cs-{完整 UUID}` 用户名一致；响应不包含 Incus backend、upstream 或 token。
-- 非创建者没有对象详情响应；治理列表只返回当前状态可提交的 stop/delete，站点管理员额外获得 force delete，任何非创建者都没有 configure auto-stop、open、SSH、continue 或 resume。
+- 非创建者没有对象详情响应；治理摘要只返回当前状态可提交的 stop/delete，站点管理员额外获得 force delete，任何非创建者都没有 configure auto-stop、open、SSH、continue 或 resume。
 - 完整详情页和状态片段对相同身份与对象使用相同 `allowed_actions`；普通 Endpoint 在 metadata ready、目标存在且当前没有 active operation 时设置 `can_open=true`，私有入口加入 `open_endpoint`，公共入口由同一弹窗提交后直接重定向。queued idle stop 时只有私有入口仍可打开并加入 continue，公共入口设置 `can_open=false`；只有 SSH 展示字段和内部就绪条件都完整时才有 `ssh`，领取后的 stop 只保留创建者设置和 delete。
 - 创建者详情中的 workspace 和普通 Endpoint 都带站内 `open_path` 和当前 `can_open`；workspace 固定需要认证，普通 Endpoint 的 `public` 标记与 Runtime Metadata 一致。页面只通过弹窗 POST 打开，Gateway URL 不进入页面数据。
 - `display_status` 与 `allowed_actions` 分工明确：前者产生正在创建、停止、恢复或删除的禁用进度按钮，后者只产生可以提交的操作。
-- 创建者列表、治理列表和 Manager 设置列表在 1440、1024、768 和 375 像素宽度下不产生页面级横向滚动；长仓库名、引用名、Gateway URL、SSH 地址、SSH 命令和主机密钥指纹在各自内容区内换行。
+- 创建者列表、Manager 列表和 Manager 单项页在 1440、1024、768 和 375 像素宽度下不产生页面级横向滚动；Manager 表格在 attached segment 内滚动，长仓库名、引用名、Gateway URL、SSH 地址、SSH 命令和主机密钥指纹在各自内容区内换行。
 - 详情页在桌面端使用可伸缩的左侧日志栏和 300 到 340 像素的右侧上下文栏，占用主内容剩余高度；日志与右栏分别滚动，文档本身不纵向滚动。低于 992 像素时恢复自然文档流并按状态、日志顺序排列，两种布局都不产生页面级横向滚动。
 - 状态与操作、Access、Runtime usage 和 Details 在右侧按章节展示；页头已经展示 repository/ref，右侧 Details 只展示 UUID、commit 和时间。Auto-stop 使用状态片段之外的公共弹窗，状态轮询不会覆盖正在编辑的模式和时间。
 - 列表页更多菜单和详情页设置按钮打开同一个 Auto-stop 弹窗。三种模式使用原生单选组；站点默认展示当前默认时长，自定义只在选中且当前状态可配置时启用正整数数值和秒、分钟、小时、天标准下拉框，永不自动暂停说明由用户手动停止。保存只根据固定 `list|detail` 来源返回发起页。
@@ -567,7 +582,7 @@ create 的 repository archived/empty/unavailable、ref not found 和 repo permis
 
 - `DeclareManager` 提交 Manager 客户端当前稳定配置和运行状态的完整快照，不是注册后不可修改的配置。客户端可修改并重新声明名称、版本、Gateway/SSH 地址、tags、SSH host key 信息和 `manager_runtime_state`；容量由 Manager 本地配置与每次 Fetch 的当前可用槽位表达。
 - Declare 与所有其他 request 一样必须提交 `protocol_version=1`。统一入口先认证 Manager，再在更新 heartbeat、取得声明写锁或校验其余快照字段前完成协议版本检查；不匹配时返回 `protocol_mismatch`，现有 Manager 记录、地址和在线时间全部保持原值。
-- 每次请求都携带完整字段；Gitea 校验成功后在同一事务整体覆盖 `name`、`tags_json`、`runtime_state`、规范化 `meta_json` 和两条 `codespace_manager_address`。字段缺失或空值只按该字段自身规则校验，不表示“保持旧值”，因此不需要 PATCH、字段掩码或 declaration version。
+- 每次请求都携带完整字段；Gitea 校验成功后在同一事务整体覆盖 `name`、`tags_json`、`runtime_state`、版本、Gateway SSH host key 类型化列和两条 `codespace_manager_address`。字段缺失或空值只按该字段自身规则校验，不表示“保持旧值”，因此不需要 PATCH、字段掩码或 declaration version。
 - `manager_id`、`user_id`、secret verifier、inventory generation 和已有 Codespace binding 不由 Declare 修改。Manager secret 从注册成功起保持有效，删除 Manager 记录时失效。
 - 更新 `last_online_unix`。
 - `DeclareManager` 同时作为 heartbeat。
@@ -595,7 +610,7 @@ Declare 校验：
 - `gateway_ssh_host_key_fingerprint_sha256` 使用 OpenSSH SHA256 fingerprint 格式，例如 `SHA256:...`。
 - `gateway_ssh_host_key_updated_unix` 是 Unix 时间戳。
 - `name` trim 后长度为 1-255，`version` trim 后长度为 1-64；二者用于展示和诊断，不参与生命周期推进。
-- [x] `protocol_version` 固定等于当前 ManagerService 主版本 1，不保存到 `meta_json`、Manager 行，也不参与 Manager matching。软件 `version` 和最近一次 Declare 都不能替代当前 request 的检查。
+- [x] `protocol_version` 固定等于当前 ManagerService 主版本 1，不保存到 Manager 行，也不参与 Manager matching。软件 `version` 和最近一次 Declare 都不能替代当前 request 的检查。
 - tags 最多 64 个，每项 lower-case 后使用 `[a-z0-9_-]+`、长度为 1-64，并在规范化后去重。
 - Declare 只提交 Manager 的身份、Gateway 地址、tag、软件版本和当前运行状态，不提交容量。Manager 本地 `capacity_total` 继续限制 Runtime 总数，当前可用槽位在每次 Fetch 时提交。**设计如此：**声明字段是需要持久化和展示的稳定快照，而容量会随实例与 worker 状态持续变化，把两者分开可以避免 Gitea 使用过期容量。
 
@@ -741,8 +756,8 @@ create/resume final done 都要求当前 operation 版本的 Runtime Metadata �
 | operation | done | failed |
 | --- | --- | --- |
 | `create` | `status=running`，保留当前开发凭据并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
-| `resume` | `status=running, last_active_unix=now`，保留 Token 与 Git SSH Key 并清空 active operation，`stopped_unix` 不清零 | `status=stopped`，物理删除 Token、保留 Git SSH Key 并清空 active operation |
-| `stop` | `status=stopped, stopped_unix=now`，物理删除 Token、保留 Git SSH Key 并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
+| `resume` | `status=running, last_active_unix=now`，保留 Token 与 Git SSH Key 并清空 active operation | `status=stopped`，物理删除 Token、保留 Git SSH Key 并清空 active operation |
+| `stop` | `status=stopped`，物理删除 Token、保留 Git SSH Key 并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
 | `delete` | 物理删除 Codespace、Token、Git SSH Key、日志和绑定数据 | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
 
 resume failed 只在 Manager 已确认本轮启动的 Incus 实例停止后上报，因此 operation 事务先保留实例根存储并写回 stopped。主状态事务提交后，Gitea 尽力清除本次 resume 的 Runtime Metadata；Manager 清除本轮 boot 发布上下文，不恢复历史 ready。普通可恢复失败允许下一次 resume 使用更高 operation 版本重建；实例根存储损坏、Git SSH 密钥材料矛盾或 Gitea 公钥绑定冲突时，Manager 已持久化的 `unrecoverable_failed` boot 终态会在 final failed 后驱动现有 `ReportRuntimeTransition(failed)`。进程重启继续该报告；如果新 resume 已先创建，Manager 领取后直接 final failed，再次上报 failed。详细原因仍留在 Manager 日志，final 协议保持现有 done/failed 两值。
@@ -819,7 +834,7 @@ State Finalization 主事务提交后，仍保留 Codespace 记录的结果通�
 - `stopped` 状态下只接受 active resume 的当前启动进度；没有 active operation 时不周期发布 Runtime Metadata，也不提供面向用户的 open 或 Gateway SSH。active resume 在原生运行时恢复保存的环境并写入当前凭据后、final done 前即可配置实际 remote 和恢复用户服务。
 - metadata 使用 proto 中的 `RuntimeMetadata` typed message；`boot.operation_rversion` 必填，`publish-ready|ready` 的 `endpoints` 必须包含 Manager 生成的固定私有 `workspace`，其余项是 Runtime 声明的普通 Endpoint。Gitea 只校验 proto 声明的 typed 字段，不从字符串 JSON、自由 map 或扩展字段取得业务含义。SSH、SFTP、Web IDE 和普通 Endpoint 的实际 proxy 后端不进入 metadata，ready 证明本次启动已经完成 Manager 的本地后端和完整路由校验。
 - Gitea 对每个 Endpoint label 独立执行 Runtime Metadata 统一校验：合法 UTF-8、去除首尾 Unicode 空白后保存、按 Unicode 字符数为 1 到 64，并且不包含控制字符、`<` 或 `>`。Gitea 不依赖 Manager 的校验结果，也不执行 Unicode 归一化、替换或自动清洗；内容 hash 使用校验后的规范值。
-- Gitea 接受 CPU、内存和磁盘三类 `resource_usage`。used/limit 必须大于或等于 0，limit 为 0 表示限制未知；`observed_unix` 为正数时作为页面采样时间。资源指标只写入 Runtime Metadata cache 并进入创建者详情展示，不参与 final、open、SSH、公共 Endpoint、自动暂停、容量领取或治理列表。采样缺失或暂不可用不影响 ready 判定。
+- Gitea 接受 CPU、内存和磁盘三类 `resource_usage`。used/limit 必须大于或等于 0，limit 为 0 表示限制未知；`observed_unix` 为正数时作为页面采样时间。资源指标只写入 Runtime Metadata cache 并进入创建者详情展示，不参与 final、open、SSH、公共 Endpoint、自动暂停、容量领取或治理摘要。采样缺失或暂不可用不影响 ready 判定。
 - create/resume operation 只有在当前 metadata 的 boot 版本等于当前 operation 且 `stage=ready` 时可 final done。resume 还要求当前 Token 行完整；旧 operation 版本的 `ready` 不能完成本次恢复。stopped 状态下即使 active resume 已上报 ready，面向用户的 open/Gateway SSH 仍按主状态拒绝，直到 final done 原子写入 running；该限制不阻断初始化阶段的仓库开发凭据。
 - Manager 启动后先保持 Runtime Metadata 发布关闭。active create/resume 在 Fetch 成功续租并继续启动流程后激活发布任务；稳定 running 在完整 inventory 同时确认 Gitea 与 Incus 状态后激活并重建 Runtime Metadata cache。稳定 stopped 不发布 metadata；Manager 本地保留 resume 输入和收敛状态，下一次合法 resume 从保留的 Incus 实例重建更高 generation 的完整快照。
 - Manager 运行期间周期刷新 active create/resume 和 running Codespace 的 Runtime Metadata cache，避免 cache miss 后长期失去交互能力。
@@ -842,7 +857,7 @@ Runtime Metadata 是运行时信息，变化频繁，也可以由 Manager 重建
 - 错误 Manager、旧 operation、站点排空、offline、低 generation 和同 generation 不同内容分别稳定返回 `manager_mismatch`、`stale_operation`、`state_unavailable`、`manager_offline`、`stale_generation` 和 `generation_conflict`。
 - Manager 收到 `stale_operation` 后清除该对象当前 Runtime Metadata 与 Endpoint 并结束发布任务，不按周期刷新继续重试旧快照。
 - ready 快照缺失固定 boot 字段时被拒绝，且 create/resume 都不能提前 final done。
-- CPU、内存和磁盘指标合法时写入 cache 并在创建者详情展示；指标缺失或采样失败不阻断 ready、final 或交互入口，治理列表不返回指标字段。
+- CPU、内存和磁盘指标合法时写入 cache 并在创建者详情展示；指标缺失或采样失败不阻断 ready、final 或交互入口，治理摘要不返回指标字段。
 - label 非法 UTF-8、去除首尾 Unicode 空白后为空、超过 64 个 Unicode 字符或包含控制字符、`<`、`>` 时被拒绝且不写 cache；合法中文和其他普通展示文本在 Manager 与 Gitea 得到相同规范值。
 - resume 在 active operation 内依次完成 Token 写入、保存环境恢复、实际 remote 的本地 Git 凭据配置和当前版本 ready 上报；任一前置缺失时不提交 final done，主状态保持 stopped。repository 可达性不参与 ready 判定。
 - active create/resume 和 running 执行固定 boot 版本与阶段矩阵；无 active operation 的 stopped 拒绝 metadata，同版本 ready 不回退，已结束 resume 的迟到快照返回 stale。
@@ -865,7 +880,7 @@ request 字段：
 
 | 当前状态 | Manager 状态报告 | 行为 |
 | --- | --- | --- |
-| `running` 且无 active operation | `stopped` | 写 `status=stopped`、写 `stopped_unix=now`、物理删除 Token 并保留 Git SSH Key |
+| `running` 且无 active operation | `stopped` | 写 `status=stopped` 和 `updated_unix=now`、物理删除 Token 并保留 Git SSH Key |
 | `running/stopped` 且无 active operation | `failed` | 写 `status=failed` 并物理删除 Token 与 Git SSH Key，提交后尽力清除交互 cache；不伪造停止时间 |
 | `running/stopped` 且有 active operation | 任意 | 返回 `current_operation_conflict` |
 | `failed` 且相同 generation 的 `failed` 重试 | `failed` | 目标主状态已经成立，幂等成功，不刷新 `updated_unix` |
@@ -883,7 +898,7 @@ stopped 状态报告在同一事务提交主状态、runtime generation，删除
 
 **设计如此：健康检查不会向 Gitea 增加 degraded 或 unhealthy 状态。**检查中的暂时失败只影响 Manager 本地准入；确认需要恢复时，Manager 先把实例实际停止，再使用本接口写入既有 stopped。该状态会在同一事务删除 Gitea Token 并保留 Git SSH Key 和实例根存储，用户随后通过普通 resume 重新建立 ready。资源明确不可恢复时仍使用 failed。
 
-Manager 主动 transition 不更新 `last_active_unix`；该字段只尽力记录用户 resume final、成功签发或消费 Open Code、成功 SSH 认证和继续运行。failed 状态报告不表示 Runtime 已停止，因此从 running 进入 failed 时不写 `stopped_unix`。
+Manager 主动 transition 不更新 `last_active_unix`；该字段只尽力记录用户 resume final、成功签发或消费 Open Code、成功 SSH 认证和继续运行。停止和失败结果都通过主状态与 `updated_unix` 表达，不增加第二个结果时间字段。
 
 Manager 在 failed 状态报告前关闭 session，并停止该对象尚未完成的 metadata 上报和生命周期 worker。请求被首次接受或按目标状态幂等成功后，Manager 先持久化本地 cleanup，再删除归属 Incus 实例和本地快照；清理失败或进程重启时由 pending 快照续做，尚存实例继续在 inventory 中上报 failed。记录仍为 failed 或已经物理删除时，成功的完整 inventory 都返回 `cleanup_local_runtime`；`resource_absent` 单独响应只触发 inventory，不直接授权无记录实例删除。
 
@@ -905,7 +920,7 @@ Manager 按 transition Connect error 选择下一步：`current_operation_confli
 
 ### RequestRuntimeAccess
 
-`RequestRuntimeAccess` 是 active create、active resume 和稳定 running 恢复运行访问材料的统一入口。Manager 先生成或从本地 state 恢复固定 Git SSH key，再提交 `codespace_uuid + operation_rversion + git_ssh_public_key`。Gitea 用同一个 Codespace 生命周期版本验证本次请求，成功响应一次返回当前 Token、规范化 Gitea `ROOT_URL`、当前源仓库选择的 Secret 和 Git SSH known_hosts。
+`RequestRuntimeAccess` 是 active create、active resume 和稳定 running 恢复运行访问材料的统一入口。Manager 先生成或从本地 state 恢复固定 Git SSH key，再提交 `codespace_uuid + operation_rversion + git_ssh_public_key`。Gitea 用同一个 Codespace 生命周期版本验证本次请求，成功响应一次返回当前 Token、规范化 Gitea `ROOT_URL`、当前源仓库可用的所有仓库或指定仓库 Secret，以及 Git SSH known_hosts。
 
 允许条件如下：
 
@@ -1302,7 +1317,7 @@ Token 固定派生 `write:issue,write:repository,read:user` category scope，只
 - Basic、Bearer 和站点启用的 Query Token 都能识别 `gcs_` 前缀；被选中的无效 `gcs_` 直接返回未认证，不回退到 PAT、Session 或其他认证方式。
 - resolver 一次读取 Token、Codespace、创建用户、登录限制和附加权限，后续检查复用请求快照。
 - active create/resume 和稳定 `running` 可以使用当前 Token；稳定 `stopped`、`failed`、`deleting` 和已删除对象不能建立新请求。
-- 普通 PAT 页面和 API 不显示或管理 Codespace Token；创建者详情只显示存在性、创建时间和末八位，不返回 verifier、salt、密文或明文。
+- 普通 PAT 页面和 API 不显示或管理 Codespace Token；创建者详情只显示当前绑定是否存在，不返回 verifier、salt、密文或明文。
 
 #### 仓库权限
 

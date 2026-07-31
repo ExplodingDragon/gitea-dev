@@ -19,7 +19,7 @@ Manager 将当前 `gitea-codespace` 可执行文件复制到实例的 root-owned
 
 Dev Container 实现位于可独立导入的 `gitea.dev/codespace/devcontainer` 和 `gitea.dev/codespace/devcontainer/docker`。前者提供配置类型、JSONC 读取、变量替换、元数据合并、锁文件、错误分类和可恢复状态；后者提供直接使用 Docker、Compose 和 OCI Feature 的具体 `Engine`。当前只有一个运行后端，因此公开 API 保留具体实现，不增加只有一个实现者的接口层。
 
-Codespace 业务位于 `internal/devcontainerruntime`。该适配层把 Codespace UUID、Git 用户信息、运行时只读挂载、个人工具与平台 Web IDE Feature、Endpoint manifest 和请求结果文件映射到公开 API。`internal/runtimecmd` 只负责实例内命令入口。公开 Engine 在确定 remote user 和 remote environment 后提供一次 lifecycle 前准备回调，Codespace 用它写入 Git 用户信息、凭据助手和运行时可执行文件；这些产品内容统一由内部适配层解释。**设计如此：**Dev Container 解析和 Docker 生命周期本身可以被其他 Go 程序复用，而 Git、个人工具、Web IDE、Gateway 和 Codespace operation 是本产品的策略；lifecycle 前回调保留必要的执行顺序，同时让公开状态只表达通用环境。
+Codespace 业务位于 `internal/devcontainerruntime`。该适配层把 Codespace UUID、Git 用户信息、运行时只读挂载、平台 Web IDE Feature、Endpoint manifest 和请求结果文件映射到公开 API。`internal/runtimecmd` 只负责实例内命令入口。公开 Engine 在确定 remote user 和 remote environment 后提供一次 lifecycle 前准备回调，Codespace 用它写入 Git 用户信息、凭据助手和运行时可执行文件；这些产品内容统一由内部适配层解释。**设计如此：**Dev Container 解析和 Docker 生命周期本身可以被其他 Go 程序复用，而 Git、Web IDE、Gateway 和 Codespace operation 是本产品的策略；lifecycle 前回调保留必要的执行顺序，同时让公开状态只表达通用环境。
 
 公开加载 API 可以读取调用方指定的绝对或相对配置路径，并通过可选的 `AllowedPathRoot` 施加路径范围。Codespace 创建时始终把当前锁定 workspace 作为该范围，所以配置文件、Compose 文件、Dockerfile 和 build context 解析符号链接后都必须留在本次仓库内；独立调用者可以根据自己的信任模型选择其他根目录。这里由调用方传入范围，是为了让通用库保持可复用，同时让 Codespace 的仓库固定和摘要校验继续形成完整边界。
 
@@ -61,9 +61,9 @@ Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Doc
 
 运行时读取基础镜像的 `devcontainer.metadata`，按“镜像元数据、Feature 元数据、仓库配置”合并。镜像元数据只提供用户、环境、mount、端口、生命周期、entrypoint 和资源要求等运行属性，不选择 image、build、Compose 或 Feature；Feature 元数据只提供 Feature 规范允许的容器属性。仓库配置在标量和同名环境变量上具有最终选择权，mount 按 target 合并，数组去重，customizations 深度合并，主机资源要求取能够满足全部来源的较大值。**设计如此：**配置来源属于用户选择的仓库文件，镜像和 Feature 只能补充自身拥有的运行信息；明确字段所有权可以防止依赖内容改变创建来源或在宿主机执行仓库之外的初始化命令。最终 OCI digest 写入环境状态，使恢复和诊断可以确认首次创建实际使用的内容。
 
-仓库 Feature 固定到与配置文件同目录的 `devcontainer-lock.json` 或 `.devcontainer-lock.json`，内容记录 version、resolved digest、integrity 和依赖。普通创建在解析完成后原子更新锁文件，frozen 模式要求现有文件完全匹配；用户个人工具和平台 Web IDE 由创建请求注入，不写入仓库锁。这样仓库锁只描述仓库声明，个人偏好和平台能力不会改写工作区文件；三类 Feature 的最终 OCI digest 仍共同写入 Manager 环境状态，恢复和诊断使用的是实际创建结果。
+仓库 Feature 固定到与配置文件同目录的 `devcontainer-lock.json` 或 `.devcontainer-lock.json`，内容记录 version、resolved digest、integrity 和依赖。普通创建在解析完成后原子更新锁文件，frozen 模式要求现有文件完全匹配；平台 Web IDE 由 Codespace 适配层注入，不写入仓库锁。这样仓库锁只描述仓库声明，平台能力不会改写工作区文件；仓库和平台 Feature 的最终 OCI digest 共同写入 Manager 环境状态，恢复和诊断使用的是实际创建结果。
 
-仓库、用户和平台 Feature 进入同一解析、依赖排序和安装流程。相同标准 Feature ID 只有在完整引用和规范化选项一致时去重；引用版本、来源或选项不同表示两份配置对同一工具提出了不同结果，创建会返回指出双方来源和引用的配置错误。**设计如此：**个人工具不具有覆盖仓库配置的隐式优先级，仓库也不能静默改写平台能力；明确冲突让用户修改其中一处即可得到唯一、可复现的环境。
+仓库和平台 Feature 进入同一解析、依赖排序和安装流程。相同标准 Feature ID 只有在完整引用和规范化选项一致时去重；引用版本、来源或选项不同表示仓库环境和平台能力对同一工具提出了不同结果，创建会返回指出双方来源和引用的配置错误。**设计如此：**仓库不能静默改写平台 Web IDE，平台也不覆盖仓库配置；明确冲突让仓库维护者调整声明即可得到唯一、可复现的环境。
 
 平台始终加入固定引用的 Coder code-server Feature。Feature 安装器引用随 Manager 发布固定，code-server 程序版本由 `runtime.devcontainer.code_server_version` 选择明确语义版本；固定端口为 `13337`，`auth=none`、监听 `0.0.0.0`，并关闭遥测和自身更新检查。配置变化只作用于之后创建的环境，已有环境 resume 使用创建时保存的容器和 Feature digest，用户通过重建 Codespace 完成升级。`customizations.vscode.settings` 写入 code-server 用户目录，扩展按配置安装；单个扩展安装失败记录警告，不阻止 shell 和已有 Web IDE 启动。code-server 不建立第二层登录，因为 Gateway 已负责 Open Code、Cookie、会话和持续权限复检。**设计如此：**安装器版本和程序版本分别由发布与部署配置管理，既能让管理员选择已验证的 code-server 版本，也不会让运行中的环境因自动更新变得不可恢复。
 
@@ -71,8 +71,8 @@ Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Doc
 
 - [x] Feature 通过 OCI API 拉取，依赖顺序、用户选项和摘要进入同一创建结果。
 - [x] 基础镜像元数据、Feature 元数据和仓库配置按固定顺序合并，私有镜像使用 Docker 凭据。
-- [x] Feature 锁文件使用官方路径和字段并校验 digest，只记录仓库声明的 Feature，不记录用户或平台注入 Feature。
-- [x] 用户个人工具与平台 Web IDE 作为带来源的 Feature 注入；相同配置去重，不同配置返回明确冲突。
+- [x] Feature 锁文件使用官方路径和字段并校验 digest，只记录仓库声明的 Feature，不记录平台 Web IDE Feature。
+- [x] 平台 Web IDE 作为带来源的 Feature 注入；与仓库相同配置时去重，不同配置返回明确冲突。
 - [x] `installsAfter` 只影响顺序，Feature entrypoint 在每次启动时执行。
 - [x] 预构建镜像 entrypoint 按标签顺序与本次安装的 Feature entrypoint 一同执行，镜像元数据不能改变配置来源。
 - [x] Feature 字符串选项符合声明的枚举，Feature 元数据不能声明规范外的用户或主机资源属性。
@@ -83,7 +83,7 @@ Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Doc
 
 ## 生命周期与状态
 
-create 顺序为：创建并启动 Incus 实例、写入 root seed、执行 bootstrap、写入当前 Secret、解析固定配置、合并创建请求中的个人工具与平台 Web IDE Feature、准备镜像和 Feature、创建单容器或 Compose 环境、执行 `onCreateCommand`、`updateContentCommand`、`postCreateCommand`、`postStartCommand`，配置 Git，启动 Web IDE 并发布 ready。workspace clone 只属于 bootstrap；Dev Container create 重试会按 Codespace 标签清理本次未完成的 Docker 对象后重新创建，不接管其他对象。运行时只为实际选择 Compose 的配置计算项目名，并在确认存在同项目标签的容器、网络或卷后执行 Compose 清理；单镜像和 Dockerfile 路径只清理所有者标签对应的容器。Compose 先回收项目资源，所有者标签再兜底清理残留容器，因此首次 image 创建、重复 delete 和已经清空的项目都不会产生虚假的 Compose 警告。个人工具只在 create payload 中使用一次，code-server 版本只在创建环境时使用；resume 读取 Manager 保存的环境状态，不重新读取 Gitea 用户设置或部署配置。
+create 顺序为：创建并启动 Incus 实例、写入 root seed、执行 bootstrap、写入当前 Secret、解析固定配置、加入平台 Web IDE Feature、准备镜像和 Feature、创建单容器或 Compose 环境、执行 `onCreateCommand`、`updateContentCommand`、`postCreateCommand`、`postStartCommand`，配置 Git，启动 Web IDE 并发布 ready。workspace clone 只属于 bootstrap；Dev Container create 重试会按 Codespace 标签清理本次未完成的 Docker 对象后重新创建，不接管其他对象。运行时只为实际选择 Compose 的配置计算项目名，并在确认存在同项目标签的容器、网络或卷后执行 Compose 清理；单镜像和 Dockerfile 路径只清理所有者标签对应的容器。Compose 先回收项目资源，所有者标签再兜底清理残留容器，因此首次 image 创建、重复 delete 和已经清空的项目都不会产生虚假的 Compose 警告。code-server 版本只在创建环境时使用；resume 读取 Manager 保存的环境状态，不重新读取部署配置。
 
 stop 先停止环境状态中的主容器和相关容器，再清理易失 Secret，最后停止 Incus 实例。resume 启动同一组容器，执行 `postStartCommand`，重新写入本次 Secret，恢复 Web IDE并完成 ready 检查；它不重新解析仓库配置、不 clone、不 checkout，也不根据后来变化的分支重建环境。delete 以 Incus 实例为资源边界直接删除实例，Docker 资源随实例一同删除。
 

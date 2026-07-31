@@ -242,21 +242,6 @@ message DevContainerConfiguration {
   string repository_content_sha256 = 2;
   // Image used only to generate the platform default configuration.
   string default_image = 3;
-  // User's current personal tools when this create is claimed.
-  repeated DevContainerFeature user_features = 4;
-}
-
-message DevContainerFeature {
-  string reference = 1;
-  repeated DevContainerFeatureOption options = 2;
-}
-
-message DevContainerFeatureOption {
-  string name = 1;
-  oneof value {
-    string string_value = 2;
-    bool bool_value = 3;
-  }
 }
 
 // --- FinalizeOperation ---
@@ -370,7 +355,7 @@ message RequestRuntimeAccessResponse {
   string token = 1;
   // Gitea's externally reachable ROOT_URL, including AppSubURL.
   string server_url = 2;
-  // User secrets explicitly selected for the source repository.
+  // User secrets currently applicable to the source repository.
   repeated RuntimeSecretEnvironmentVariable secrets = 3;
   // Canonical lines for the Git SSH host and effective port.
   repeated string git_ssh_known_hosts_lines = 4;
@@ -628,7 +613,7 @@ x-codespace-manager-secret: <manager secret>
 - `ValidatePublicEndpoint` 只接受非 `workspace` 的普通 Endpoint。调用方 Manager 必须仍与 Codespace binding 匹配且在线，Codespace 必须为稳定 running 且没有 active operation（包括 queued idle stop），Runtime Metadata 必须 ready，目标 Endpoint 必须存在且 `public=true`。成功不创建 Gateway session、不推进 `interaction_generation`、不更新 `last_active_unix`；denied 或 RPC 无法确认时 Gateway 不转发请求。
 - `ValidateOpenToken` 和 `VerifySSHPublicKey` 的 allowed 只表示 Gitea 控制面授权。Open 流程在 RPC 后复检准入、当前路由和 session 上限并完成 session 登记。SSH 在配置的握手期限内确认本地 workspace、Incus API 和 Dev Container 后登记 live session，再复查本地目标；生命周期清理先成立时复查失败，后成立时取消已登记连接。
 - SSH 公钥只用于 `VerifySSHPublicKey` 的本次新连接认证。`RevalidateGatewaySession` 的 SSH binding 固定为 `user_id + codespace_uuid`；公钥删除拒绝后续新连接，已有 transport 继续按用户登录状态、功能开关、生命周期、Manager/metadata、TTL、空闲超时和周期复检收敛。
-- `RequestRuntimeAccess` 在功能启用、Manager 声明为 online 或 recovering 且 heartbeat 有效时，只接受三种阶段：与请求 `operation_rversion` 完全一致、已领取且租约未到期的 create 或 resume，以及请求版本等于 Codespace 当前版本且没有 active operation 的 running。Manager 每次都提交已经生成或恢复的 Runtime Git SSH 公钥；成功响应一次返回 Token、规范化 `server_url`、当前源仓库选择的 Codespace Secret 和 Git SSH known_hosts。Secret 使用类型化重复字段表达并按名称排序；协议不通过 JSON 字符串传递第二套结构。active stop、active delete 和站点排空下的请求返回 `state_unavailable`。
+- `RequestRuntimeAccess` 在功能启用、Manager 声明为 online 或 recovering 且 heartbeat 有效时，只接受三种阶段：与请求 `operation_rversion` 完全一致、已领取且租约未到期的 create 或 resume，以及请求版本等于 Codespace 当前版本且没有 active operation 的 running。Manager 每次都提交已经生成或恢复的 Runtime Git SSH 公钥；成功响应一次返回 Token、规范化 `server_url`、当前源仓库可用的 Codespace Secret 和 Git SSH known_hosts。Secret 使用类型化重复字段表达并按名称排序；协议不通过 JSON 字符串传递第二套结构。active stop、active delete 和站点排空下的请求返回 `state_unavailable`。
 - create payload 的 `git_protocol` 由 Gitea 在构造 payload 时按当前站点 Git 传输配置计算，并且必须属于本次可用 clone 能力。create 下发当前可用协议的规范 clone URL；不可用协议对应字段为空。resume payload 不携带协议，Manager 以 workspace 实际 remote 恢复凭据配置。`RequestRuntimeAccess` 对公钥为空、无法解析或超过 Gitea SSH key 大小限制的请求返回 `invalid_argument`；密钥算法由 Manager 本地配置选择，默认 `ed25519`，可选 `rsa-4096`。绑定不存在时创建，绑定为相同公钥时幂等返回，已有不同公钥或全局指纹冲突时返回 `key_conflict`，不替换当前绑定。
 - [x] `RequestRuntimeAccess` 用同一份版本校验保护 Token、Secret 和 Git SSH 公钥关系，并在成功响应中返回严格 SSH Host Key 校验所需的规范化行。**设计如此：**这些材料在每次 create/resume 启动前必然一起取得，合并 RPC 可以消除两次相同生命周期校验；Token/Secret 数据事务、公钥指纹锁和授权文件重写仍保持各自现有边界，避免为了表面上的单事务把文件系统操作纳入数据库事务。
 - [x] User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一规范指纹锁并在事务内复查。Codespace 路径先取得 Codespace lock 再取得指纹锁；不同 Codespace 或不同 Key 类型并发提交相同公钥时只允许一个符合类型规则的创建结果，历史重复指纹返回数据完整性硬错误。
@@ -674,7 +659,7 @@ x-codespace-manager-secret: <manager secret>
 - 默认 workspace 使用 `endpoint_id=workspace` 表达固定 Web IDE 授权对象；该保留值不出现在 Runtime Endpoint manifest，由 Manager 补入现有 `RuntimeMetadata.endpoints`，不为 code-server 增加专用 RPC 路由字段。**设计如此：**现有 Endpoint message 已能表达 Gitea 所需的授权和展示信息，实际实例目标仍由 Manager 本地 route store 保存。
 - RequestRuntimeAccess 请求携带 `codespace_uuid`、`operation_rversion` 和固定上报的 Git SSH 公钥；服务端根据当前 Codespace、active operation、Manager 和功能状态决定返回运行访问材料或 `state_unavailable`。请求不携带自报用途，调用方无法用额外模式字段改变授权结果。
 - RequestRuntimeAccess 成功响应的 `token/server_url` 均非空；Manager 不从 clone URL 或内部控制面地址推导 Runtime 使用的 Gitea 根地址。
-- response 中的 Secret 只来自创建用户为当前源仓库明确选择的记录，名称唯一且按名称稳定排序；Manager 收到后仅用于本轮 create/resume 或 running 恢复，不写入持久状态。
+- response 中的 Secret 只来自创建用户的所有仓库范围或指定当前源仓库的记录，Gitea 在返回前复核当前代码写权限和拉取请求来源；名称唯一且按名称稳定排序。Manager 收到后仅用于本轮 create/resume 或 running 恢复，不写入持久状态。
 - Manager 把 Secret 写入 Runtime 的 root 管理临时文件，并在运行命令的日志脱敏集合中加入全部非空值。stop 清理该临时文件；Secret 值的变更在下一次 create 或 resume 中取得。
 - active create、active resume 和无 active operation 的 running 可以请求访问材料，但请求版本必须等于当前 Codespace operation 版本；active stop 返回 `state_unavailable`，但创建 stop 前已有的 Token 继续按 running 阶段授权到 stop final。
 - create/resume 初始化阶段可以取得并使用 Token；本次 operation 的 ready metadata 和 Token 行缺一时，final done 被拒绝。
@@ -696,7 +681,6 @@ x-codespace-manager-secret: <manager secret>
 - `CreateOperationPayload` 携带 `GitProtocol`；`ResumeOperationPayload` 不携带协议。Manager 无论实际 remote 使用何种协议都通过一次 `RequestRuntimeAccess` 上报固定公钥并取得完整访问材料。
 - `CreateOperationPayload.username` 携带创建时的 Gitea 用户名，`git_user_email` 携带隐私保护后的 Git email。Manager 用用户名派生 Runtime Linux 用户名和 Git `user.name`，并只在 create 初始化时写入 Git identity；resume 使用本地 state，不覆盖 workspace 中用户后续修改过的 Git identity。
 - `CreateOperationPayload.dev_container` 按来源使用互斥字段：平台默认需要非空 `default_image`；仓库来源需要相对 `repository_path` 和 64 位小写十六进制 `repository_content_sha256`，对应提交复用 create 顶层锁定的 `commit_sha`。Manager 将该结构保存到本地 state，resume 从本地恢复，不要求 Gitea 重发 create payload。
-- `CreateOperationPayload.dev_container.user_features` 携带 Manager 领取 create 时的用户个人工具；引用和选项使用类型化字段，不传 JSON 文本，类型化编码后的总大小不超过 64 KiB。该字段属于本次 create 输入，resume 使用 Manager 已保存的环境和 Feature digest，不重新读取用户设置；`FetchOperationsResponse` 的控制面最小消息大小按每个 create 都达到该上限计算。
 - 多份仓库 Dev Container 文件只在 Gitea 创建页作为候选选择一份，RPC 始终只传一个 `dev_container`。基础镜像、Feature、Compose 与 lifecycle 组合由 Manager 原生运行时处理，不扩展控制面字段。
 - `CreateOperationPayload.dev_container` 必须携带创建确认时固定的 Dev Container 选择。仓库来源使用路径、完整提交和原始 JSONC SHA256；平台默认来源只使用当时的默认镜像。RPC 不传配置正文，Manager clone 后从 workspace 复检摘要，再由原生运行时解释。附加仓库权限只由 Gitea 从用户选中的仓库文件解析和授权，Manager 不接收 authorization ID 或规则副本。
 - observed-only 续租通过 `renewed_leases` 返回 UUID、版本和相对有效时长；普通 payload 使用相同的相对时长语义。Manager 据此建立不受两端墙上时钟差异影响的本地执行截止点。

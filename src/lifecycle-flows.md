@@ -14,7 +14,7 @@
 
 根配置优先作为默认候选；一级子目录中的配置分别作为独立环境，不相互融合。仓库没有配置时仍提供平台默认项，它只包含创建时的 `DEVCONTAINER_DEFAULT_IMAGE`。用户确认页展示所选来源、ref、配置名称、Secret 建议和附加仓库权限；Gitea 保存来源、路径、完整提交和原始文件 SHA256，RPC 不携带 JSONC 正文。
 
-仓库配置中的 `customizations.gitea.repositories` 只声明希望附加访问的仓库和单元权限。Gitea 在确认页按当前用户权限展开并让用户确认，最终授权保存在 Gitea；Manager 只解释标准 Dev Container 字段，不取得授权规则。顶层 `secrets` 只提供名称和说明，Secret 值仍由用户设置和仓库选择关系决定。
+仓库配置中的 `customizations.gitea.repositories` 只声明希望附加访问的仓库和单元权限。Gitea 在确认页按当前用户权限展开并让用户确认，最终授权保存在 Gitea；Manager 只解释标准 Dev Container 字段，不取得授权规则。顶层 `secrets` 只提供名称和说明，Secret 值仍由用户设置中的所有仓库范围或指定仓库关系决定。
 
 **设计如此：**配置正文来自锁定提交，Gitea 只解释自己负责的权限扩展，Manager 原生运行时解释开发环境。两侧各自只有一个权威来源，也不会因分支后来移动而改变已经创建的环境。
 
@@ -23,7 +23,7 @@
 - [x] ref 在创建前解析为完整 commit，解析失败不产生 Codespace 记录。
 - [x] 多个 Dev Container 文件作为候选单选，仓库没有配置时可选择平台默认项。
 - [x] 创建确认和持久数据包含配置来源、路径、提交和 SHA256，不保存原始正文。
-- [x] Secret 和附加仓库权限由 Gitea确认，Manager 不形成第二份授权状态。
+- [x] Secret 和附加仓库权限由 Gitea 确认，Manager 不形成第二份授权状态；所有仓库 Secret 与指定当前仓库的 Secret 在 create/resume 时按当前代码写权限解析。
 
 ### Manager 匹配与 operation 创建
 

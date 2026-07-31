@@ -203,11 +203,11 @@ Declare 声明：
 
 Declare 使用本地单调时钟且同一时刻只有一个请求。成功后在返回的 `heartbeat_interval_milliseconds` 内发起下一次；临时错误按控制面重试规则退避，但上限同样是该心跳周期，不加入正抖动。声明语法错误、Gateway URL 唯一冲突和 Gateway SSH 地址唯一冲突是确定性部署错误，Manager 关闭新准入并退出，由部署者修正配置或清理冲突 Manager 后重新启动。这样请求耗时和重试都不会把客户端自行配置成慢于 Gitea 的离线判断，也不会把无法通过配置修复前进展的错误伪装成网络抖动。
 
-Declare 使用明确类型字段提交客户端稳定身份和路由能力的完整快照，Gitea 校验后生成规范化 `meta_json`；Manager 不提交自由 map，也不存在顶层字段与 JSON 两份权威来源。名称、版本、tags、Gateway/SSH 地址和 host key 可以由客户端修改后重新声明；Manager 身份、owner、secret、容量和已有 Codespace binding 不由 Declare 修改。Gitea 只保存最近一次成功声明，不保存配置历史。
+Declare 使用明确类型字段提交客户端稳定身份和路由能力的完整快照，Gitea 校验后写入对应类型化列和地址表；Manager 不提交自由 map。名称、版本、tags、Gateway/SSH 地址和 host key 可以由客户端修改后重新声明；Manager 身份、owner、secret、容量和已有 Codespace binding 不由 Declare 修改。Gitea 只保存最近一次成功声明，不保存配置历史。
 
-`version` 写入规范化 `meta_json`，用于管理页面展示和兼容性诊断；它不参与 Manager matching、容量判断或 operation 领取。
+`version` 写入 Manager 的类型化列，用于管理页面展示和兼容性诊断；它不参与 Manager matching、容量判断或 operation 领取。
 
-`protocol_version` 在每个请求处理时校验，不保存到 `meta_json` 或 Manager 行。它与软件 `version` 分离，避免展示字符串或历史声明意外成为生命周期兼容判断。
+`protocol_version` 在每个请求处理时校验，不保存到 Manager 行。它与软件 `version` 分离，避免展示字符串或历史声明意外成为生命周期兼容判断。
 
 每个 Manager 使用唯一的规范化 `gateway_url` 和 `gateway_ssh_addr`，两者都来自当前 Manager 配置。Gitea 在 Manager lock 内把两类规范化地址和 Declare 快照写入同一事务，`codespace_manager_address` 的数据库唯一约束负责拒绝跨 Manager 冲突。Manager 更换 Gateway URL 前关闭全部 Endpoint session，更换 SSH 地址前关闭全部 SSH session，并关闭对应新连接准入；随后以 recovering 声明当前完整快照，成功后再声明 online，新连接使用变更后的地址。冲突时整个声明事务回滚，Manager 保持 recovering，Gitea 继续保存变更前的地址快照。两类入口都必须到达持有对应 Runtime 映射的 `serve` 进程，因此地址唯一性属于真实数据库关系，不依赖 metadata 扫描，也不增加共享 Gateway/SSH 路由层。
 
@@ -215,10 +215,10 @@ Declare 使用明确类型字段提交客户端稳定身份和路由能力的完
 
 实现验收点：
 
-- Declare 成功后，管理页面展示的名称、版本、Gateway/SSH 地址、host key 和 tags 与本次规范化声明一致；容量只作为 Manager 本地运行配置和 Fetch 当前槽位使用。
+- Declare 成功后，Manager 列表分别展示名称与版本、运行状态、所属用户、tags、最近在线时间和绑定数量，并通过单个编辑入口进入稳定 URL 的管理页。管理页只读展示 Manager ID、创建时间、Gateway/SSH 地址、host key 和完整 tags，并分页列出当前绑定的 Codespace。**设计如此：**这些字段来自 Manager 的完整 Declare 快照，Gitea 页面用于确认当前声明而不形成第二个配置来源；tags 使用独立列表达 Gitea 当前用于匹配基础设施环境的声明值，容量只作为 Manager 本地运行配置和 Fetch 当前槽位使用。
 - Declare 协议版本不匹配时旧声明和 heartbeat 保持不变，Manager 关闭入口和新动作后退出；匹配版本重启后按普通 recovering 流程恢复。
 - 客户端修改声明字段后使用完整快照整体覆盖，失败请求不改变任一旧字段或在线时间。
-- 两个 Manager 不能声明相同的规范化 `gateway_url` 或 `gateway_ssh_addr`；地址唯一性由数据库约束保证，heartbeat 不扫描其他 Manager metadata。
+- 两个 Manager 不能声明相同的规范化 `gateway_url` 或 `gateway_ssh_addr`；地址唯一性由数据库约束保证，heartbeat 不扫描其他 Manager 声明。
 - 声明语法错误、`gateway_url_conflict` 和 `gateway_ssh_addr_conflict` 会使 Manager 明确退出；修正配置或删除冲突 Manager 后再通过普通启动恢复。
 - 地址变化前对应已有 session 全部关闭，新连接只使用 Gitea 已接受的新地址。
 - `gitea_web_url` 使用 Gitea 返回的规范外部 URL；Gitea 位于子路径时，Gateway 生成的认证恢复地址保留该子路径。
@@ -800,7 +800,7 @@ manifest 中每个 Endpoint 只包含 `endpoint_id`、`label`、`upstream_scheme
 实现验收点：
 
 - [x] Manager create/resume 生成或恢复公钥后先写入 root seed，再以当前 operation 版本调用一次 `RequestRuntimeAccess`；成功后把 Gitea Token 和 known_hosts 写入同一 root seed，进程中断后的重试复用原密钥。
-- Manager 在 create/resume 中把当前仓库选择的用户 Secret 写成运行时 JSON；文件使用实际运行用户和 `0600` 权限，stop 后不存在。
+- Manager 在 create/resume 中把 Gitea 按所有仓库或当前仓库指定范围解析出的用户 Secret 写成运行时 JSON；文件使用实际运行用户和 `0600` 权限，stop 后不存在。
 - Runtime 内没有 Manager base URL、访问 Manager 的 token 或指向 Manager 的 HTTP helper；bootstrap、原生运行时和 Endpoint helper 只读写固定本地文件。
 - [x] Endpoint manifest 使用 `version=1` 和普通 Endpoint 完整列表语义；Manager 读取后固定补入 `workspace`，再用同一完整集合替换本地 Endpoint 快照、Gateway route 和 Runtime Metadata。空列表只清空普通 Endpoint。
 - [x] Runtime manifest 最多接受 63 个普通 Endpoint；Manager 补入 `workspace` 后本地快照与 Runtime Metadata 总数最多为 64。
@@ -1332,7 +1332,7 @@ SSH 暴力破解通常同时体现为来源 IP、目标 codespace 和公钥维�
 
 规则：
 
-- Gateway 对外 SSH host private key 保存在 Manager `0700` 状态目录中的独立 `0600` 文件，private key 不写入 Gitea、`meta_json`、日志或 Runtime Metadata。
+- Gateway 对外 SSH host private key 保存在 Manager `0700` 状态目录中的独立 `0600` 文件，private key 不写入 Gitea、日志或 Runtime Metadata。
 - 对外 host key 丢失时 Manager 生成新 key，并通过下一次 `DeclareManager` 更新 algorithm、fingerprint 和更新时间；用户页面据此展示新的核对信息。
 - Manager 到 Runtime 的交互使用 Incus API；Runtime 的交互能力由 Incus exec/file/SFTP 和 proxy 提供。
 - create 的固定顺序是：关闭准入、启动实例并等待 Incus 管理通道、写入本轮凭据、执行固定 bootstrap、原生创建 Dev Container、验证 Incus exec/file、workspace、容器、code-server 和普通 Endpoint、发布 ready、final done，最后复检并开放准入。resume 关闭准入、启动实例、重写凭据、恢复保存的容器集合、验证同一组后端、发布 ready、final done。ready 因而始终证明当前 Gateway 后端可用。

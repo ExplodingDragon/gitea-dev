@@ -38,7 +38,7 @@ Manager 普通配置与注册状态分开。普通配置只包含部署参数；
 - 用户生命周期为 create、open、resume、stop 和 delete；异步动作统一使用 operation。
 - 主状态为 creating、running、stopped、deleting 和 failed；排队、启动、停止、恢复与重建是由 operation 和 Manager 运行态派生的展示状态。
 - Gitea 固定仓库、提交、Dev Container 配置、权限和 Secret 授权；Manager 固定外层 Incus 环境并原生实现内部 Dev Container。
-- Gitea 在 Manager 领取 create 时把当前用户 Personal tools 加入类型化 payload；Manager 将其与仓库 Feature 和平台 Web IDE Feature 一次合并，创建后由环境状态负责恢复。
+- 仓库 Dev Container 配置声明项目 Feature，Manager 加入平台 Web IDE Feature；Gitea 只固定仓库配置选择，不维护另一套个人工具配置。
 - create 执行一次固定 bootstrap，然后创建完整 Dev Container 环境；stop 停止完整环境与实例；resume 恢复已经保存的环境；delete 删除 Incus 实例。
 - Gateway SSH、Web IDE 与 Endpoint 都读取同一份 Manager 本地环境状态。shell/exec 与 TCP bridge 通过 Incus exec 进入隐藏运行时，SFTP 使用 Incus 文件 API。
 - 容量由 Manager 按本地实例、Incus project、worker 和待清理状态计算后上报，Gitea 不推测后端剩余资源。
@@ -51,7 +51,7 @@ Manager 普通配置与注册状态分开。普通配置只包含部署参数；
 - [x] 生产路径只使用原生运行时，不保存可替换生命周期内容或字符串环境状态。
 - [x] 单容器与 Compose 使用同一结构化环境模型，Compose 侧车参与 stop/resume。
 - [x] SSH、Web IDE 与 Endpoint 不各自解析配置或猜测容器目标。
-- [x] Personal tools 只保存在 Gitea 用户设置中，领取后的 create payload 和 Manager 环境状态分别承担本次执行与之后恢复。
+- [x] 仓库 Feature 随锁定配置解析，平台 Web IDE Feature 随 Manager 配置加入；create payload 不携带用户工具偏好。
 - [x] code-server Feature 安装器随 Manager 固定，程序版本由 YAML 配置选择，新建后不自动改变。
 
 ## Gitea 测试

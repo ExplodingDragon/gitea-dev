@@ -58,7 +58,7 @@ Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs
 
 <span id="codespace-secret"></span>
 ### Codespace Secret
-个人用户保存并为精确仓库选择的私密环境变量。Gitea 在独立表中加密保存值；create/resume 只把当前源仓库匹配项交给绑定 Manager。Manager 把它写入运行中实例的 `/run/gitea-codespace/secrets.json`，供 Dev Container、shell 和 exec 使用，并在 stop 时清理。仓库 Dev Container 顶层 `secrets` 只提供名称和说明建议，不包含值或使用授权。
+个人用户保存的私密环境变量。它可以适用于该用户当前和以后具有代码写权限的所有仓库，也可以适用于一个可为空的指定仓库集合。Gitea 在独立表中加密保存值；create/resume 复核当前权限后，只把适用于当前源仓库的值交给绑定 Manager。Manager 把它写入运行中实例的 `/run/gitea-codespace/secrets.json`，供 Dev Container、shell 和 exec 使用，并在 stop 时清理。仓库 Dev Container 顶层 `secrets` 只提供名称和说明建议，不包含值或使用授权。**设计如此：**所有仓库是随用户当前写权限变化的动态范围，指定仓库用于更小范围；两者都不把 Secret 绑定到单个 Codespace。
 
 <span id="codespace-git-ssh-key"></span>
 ### Codespace Git SSH Key
@@ -82,7 +82,7 @@ open Endpoint、SSH、继续运行、resume。
 
 <span id="administrative-permission"></span>
 ### 管理权限
-按调用者和具体操作判定的 Codespace 管理能力。创建者可以查看自己的详情和日志、修改自动暂停设置并执行 stop/delete；站点管理员通过全站治理列表执行 stop/delete/force delete。组织所有者不会因为仓库归属或组织角色取得成员工作区权限。非创建者治理权限只提供治理列表和允许的操作，不提供对象详情、连接入口或自动暂停设置。
+按调用者和具体操作判定的 Codespace 管理能力。创建者可以查看自己的详情和日志、修改自动暂停设置并执行 stop/delete；站点管理员通过 Manager 单项管理页和未分配异常区域执行 stop/delete/force delete。组织所有者不会因为仓库归属或组织角色取得成员工作区权限。非创建者治理权限只提供治理摘要和允许的操作，不提供对象详情、连接入口或自动暂停设置。
 
 <span id="state-finalization"></span>
 ### State Finalization
@@ -110,7 +110,7 @@ Gitea 在每个 `ReportInstances` 结果中返回的互斥处理动作：删除�
 
 <span id="minimal-page-data"></span>
 ### 最小页面数据
-Web 列表使用明确的服务端页面数据结构。创建者列表可以包含自身 repository/ref 和活跃时间；站点治理列表只包含 UUID、展示态、创建者、Manager、更新时间、状态摘要和允许操作。两类页面数据都由服务端按权限构造，治理数据不包含 repository/ref/commit、日志、自动暂停、Endpoint 或 SSH。完整字段定义见 [Gitea 服务端 - 最小页面数据](gitea-server.md#最小页面数据)。
+Web 列表使用明确的服务端页面数据结构。创建者列表可以包含自身 repository/ref 和活跃时间；站点治理摘要包含 UUID、repository/ref、展示态、创建者、Manager、更新时间、状态摘要和允许操作。两类页面数据都由服务端按权限构造，治理数据不包含 commit、日志、自动暂停、Endpoint、SSH、资源指标或凭据。完整字段定义见 [Gitea 服务端 - 最小页面数据](gitea-server.md#最小页面数据)。
 
 实现验收点：
 

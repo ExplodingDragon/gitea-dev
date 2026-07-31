@@ -409,8 +409,8 @@ operation_status=running
 | operation | done | failed |
 | --- | --- | --- |
 | create | `status=running`，保留当前开发凭据并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
-| resume | `status=running, last_active_unix=now`，保留当前 Token 与 Git SSH Key，清空 active operation，`stopped_unix` 不清零 | `status=stopped`，物理删除 Token、保留 Git SSH Key 并清空 active operation |
-| stop | `status=stopped, stopped_unix=now`，物理删除 Token、保留 Git SSH Key 并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
+| resume | `status=running, last_active_unix=now`，保留当前 Token 与 Git SSH Key，并清空 active operation | `status=stopped`，物理删除 Token、保留 Git SSH Key 并清空 active operation |
+| stop | `status=stopped`，物理删除 Token、保留 Git SSH Key 并清空 active operation | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
 | delete | 物理删除 Codespace、Token、Git SSH Key、日志和绑定数据 | `status=failed`，物理删除 Token 与 Git SSH Key 并清空 active operation |
 
 resume worker 在 active operation 内先取得新 Token、读取或生成 Git SSH key、先写 key seed、确认公钥和 known_hosts、写入完整 root seed，再启动本地状态中的完整 Dev Container 环境、恢复已有 workspace 的本地凭据配置和交互入口；workspace remote 为 SSH 时校验最终私钥、公钥和 known_hosts 可用，然后上报同版本 `ready` Runtime Metadata。resume 阶段和 `running` 都可直接使用 Token 与 Git SSH Key；Manager 在 final 前只验证本地凭据配置，不探测 repository 可达性，面向用户的 open 和 Gateway SSH 仍等待 final done。Gitea 接受 final 时把主状态和用户交互能力一起切换为 running，并清空 active operation。Manager 重启后先终止遗留执行、停止 active resume 实例并恢复 `lease_paused`；本地 payload、boot 结果和 worker 阶段完整时才把该版本放入 Fetch，收到成功续租和新的相对有效时长后重新启动并继续到 ready。上下文缺失或服务端已超时的 operation 不会重新执行。final 幂等提交后不需要 operation 结束后的凭据刷新任务。
@@ -456,7 +456,7 @@ State Finalization 在同一事务内执行：
 3. final 时校验请求 `operation_type` 与当前 active operation 类型一致，并校验主状态和目标结果匹配。
 4. 更新 codespace 主状态。
 5. 按目标主状态分别保留或物理删除 Token 与 Git SSH Key；Git 首选项不参与凭据生命周期判定。
-6. 首次 final、timeout、missing、transition 或 queued idle stop 取消时写入 `updated_unix=now`，并按结果写入 `stopped_unix` 等状态字段；即使主状态保持稳定，active operation 首次结束也属于结果变化，相同结果的幂等重试不刷新时间。
+6. 首次 final、timeout、missing、transition 或 queued idle stop 取消时写入 `updated_unix=now`；即使主状态保持稳定，active operation 首次结束也属于结果变化，相同结果的幂等重试不刷新时间。停止时间由 `status=stopped` 对应的 `updated_unix` 表达，不另存重复字段。
 7. 清空包括 `operation_trigger` 在内的 active operation 字段。
 8. 封闭当前运行中日志追加窗口。
 
@@ -515,7 +515,7 @@ stateDiagram-v2
 
 **设计如此：Token 的有效期由 Codespace 工作阶段界定。**允许阶段持续使用当前行，时间经过本身不产生轮换；每个新请求仍实时检查工作阶段、源仓库或附加仓库能力、创建用户登录限制和 Gitea 原有权限。Token 行被生命周期事务删除后，下一次合法 resume 才重新签发。
 
-同一 `RequestRuntimeAccess` 响应还携带创建用户为当前源仓库选择的 Codespace Secret。Secret 不属于 Codespace 主状态或凭据状态机：Gitea 保存的是用户级加密值和仓库选择，Manager 在 create/resume 时解析当前结果并写入运行中实例的易失文件，stop 时清理。**设计如此：**值的更新在下一次启动边界生效即可，不需要为每个 Codespace 复制密文、增加轮换 operation 或改写主状态。
+同一 `RequestRuntimeAccess` 响应还携带创建用户当前可用于源仓库的 Codespace Secret，包括所有仓库范围和指定当前仓库的记录。Secret 不属于 Codespace 主状态或凭据状态机：Gitea 保存的是用户级加密值和访问范围，Manager 在 create/resume 时解析当前结果并写入运行中实例的易失文件，stop 时清理。**设计如此：**值和范围的更新在下一次启动边界生效即可，不需要为每个 Codespace 复制密文、增加轮换 operation 或改写主状态。
 
 `codespace_ssh_key` 属于 Codespace 整体生命周期：Manager 在每次 create/resume 初始化和稳定 running 恢复时生成或确认 Git SSH 公钥关系，请求使用当前 `operation_rversion` 防止迟到任务修改材料，但关系表本身不重复保存 operation 版本。有效 create/resume 初始化期与 running 都能使用；稳定 stopped 保留关系但拒绝 Git 命令，failed/deleting 和物理删除清理关系与 `PublicKey`。create 从 SSH 回退到 HTTP(S) 成功时允许保留已经登记的关系，最终使用 HTTP(S) 的 Codespace 也可以存在该关系。实际 remote 的差异只增加 Manager ready 前的本地凭据配置检查，不增加 Gitea final 分支、主状态或 active operation 类型。**设计如此：已登记公钥是限定到当前 Codespace 和仓库的生命周期凭据，operation 版本只保护请求时序，协议选择不为它增加补偿删除流程。**
 
@@ -587,8 +587,8 @@ stateDiagram-v2
 
 | 当前 Gitea 状态 | Manager 状态报告 | Gitea 行为 |
 | --- | --- | --- |
-| `running` 且无 active operation | `stopped` | 写 `status=stopped`，写 `stopped_unix=now`，物理删除 Token 并保留 Git SSH Key |
-| `running/stopped` 且无 active operation | `failed` | 写 `status=failed` 并物理删除 Token 与 Git SSH Key，提交后尽力清除交互 cache；running failure 不写 `stopped_unix` |
+| `running` 且无 active operation | `stopped` | 写 `status=stopped` 和 `updated_unix=now`，物理删除 Token 并保留 Git SSH Key |
+| `running/stopped` 且无 active operation | `failed` | 写 `status=failed` 和 `updated_unix=now` 并物理删除 Token 与 Git SSH Key，提交后尽力清除交互 cache |
 | `running/stopped` 且有 active operation | 任意 | 返回 `current_operation_conflict`，主状态不变 |
 | `failed` 且相同 generation 的 `failed` 重试 | `failed` | 目标主状态已经成立，幂等成功，不刷新 `updated_unix` 或 failed retention 起点 |
 | `creating/deleting/failed` 收到 stopped，或 `creating/deleting` 收到 failed | 任意 | 返回 `stale_operation`，主状态不变 |
@@ -813,7 +813,7 @@ stop、delete、租约中断的 create/resume、健康检查停止、稳定 runn
 
 实现验收点：
 
-- 完整详情页、状态片段、创建者列表和治理列表对同一数据库记录派生出相同展示态。
+- 完整详情页、状态片段、创建者列表和 Manager 管理页的治理摘要对同一数据库记录派生出相同展示态。
 - 多个条件同时满足时严格使用固定优先级。
 - queued idle stop 显示 running 并开放取消能力；相同版本被 Fetch 领取后显示 stopping 并关闭 open、SSH 和 continue。
 
