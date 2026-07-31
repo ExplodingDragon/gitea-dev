@@ -28,7 +28,7 @@ Code 面板表单和 `POST /{owner}/{repo}/codespaces` 表达用户选择的 git
 | 参数 | 说明 |
 | --- | --- |
 | `ref_type` | `branch` / `tag` / `commit` / `pull` |
-| `ref_name` | branch → 分支名；tag → 标签名；commit → 完整 commit SHA；pull → 十进制 PR index |
+| `ref_name` | branch → 分支名；tag → 标签名；commit → 完整 commit SHA；pull → `refs/pull/{index}/head` |
 
 `owner` 使用 Gitea repository 路由的 owner 语义，可以是用户或组织。`repo_id` 来自 `/{owner}/{repo}` 路由解析结果。Gitea 对 pull index 生成规范 `refs/pull/{index}/head`，对其他类型解析对应 ref，并把服务端得到的完整 commit SHA 写入 codespace；任何客户端提交的 `repo_id/commit_sha` 字段都作为未知输入拒绝。
 
@@ -76,7 +76,11 @@ POST   /-/codespaces/{uuid}/delete
 
 `GET /-/codespaces/{uuid}/state` 返回创建者详情页的当前状态 HTML 片段，`GET /-/codespaces/{uuid}/logs` 返回日志数据。两者属于创建者 Web 页面的内部数据接口；本设计的用户交互采用服务端 Web 页面，不定义版本化 Codespace REST API。
 
-详情页顶部展示返回入口、标题和 repository/ref 摘要，桌面主体左侧是占据主要宽度的控制台日志，右侧是状态与操作、访问方式、资源用量和对象详情。页面首屏不读取或嵌入日志正文，浏览器初始化后立即从 `offset=0` 请求已有日志，再按服务端返回的 byte offset 增量轮询。Manager 在 bootstrap、镜像构建、Feature 安装和 lifecycle 命令执行期间同时读取 stdout 和 stderr，并把其中的完整正文行通过 `UpdateLog` 有界批量上报；页面不把输出通道名称拼入正文。镜像拉取使用开始、完成和低频聚合进度表达当前状态。**设计如此：**日志仍走 ManagerService 的结构化 `UpdateLog`，而不是为 Web 页面增加另一套裸流式协议；首屏与日志读取分离可以让页面结构先稳定呈现，offset 读取则让刷新、重试和下载继续使用同一份 DBFS 日志。镜像拉取帧是同一状态的终端刷新，聚合后保存可以保留诊断价值并避免无意义地放大日志和页面节点。
+详情页顶部展示返回入口、标题和 repository/ref 摘要，桌面主体左侧是占据主要宽度的控制台日志，右侧是状态与操作、访问方式、资源用量和对象详情。页面首屏不读取或嵌入日志正文，浏览器初始化后立即从 `offset=0` 请求已有日志，再按服务端返回的 byte offset 增量轮询。Manager 在 bootstrap、镜像构建、Feature 安装和 lifecycle 命令执行期间同时读取 stdout 和 stderr，并把完整正文行通过 `UpdateLog` 有界批量上报；页面不把输出通道名称拼入正文。
+
+Manager 使用 Actions 已有的 `##[group]`、`##[endgroup]` 和 `##[error]` 控制行标记 operation、运行时访问准备、系统与 workspace 初始化、Dev Container 启动和 Endpoint 发布。Gitea 复用 Actions 的命令解析与 ANSI 安全渲染：正在执行和包含错误的分组展开，成功结束的历史分组折叠，原始正文完整保留。分组控制行仍是 protobuf `LogLine.message`，不新增日志枚举、数据库字段或另一套传输协议。**设计如此：**日志分组属于展示语义，Actions 已经提供稳定约定；复用同一格式可以减少协议和前端重复，同时让下载日志仍保留可读的阶段边界。
+
+日志轮询按结果分类处理：offset 冲突清空当前渲染并从零读取一次；权限丢失、对象不存在或重复冲突停止轮询并显示本地化错误；网络错误和服务端临时错误保留已有内容并退避重试。镜像拉取使用开始、完成和低频聚合进度表达当前状态。这样刷新、重试和下载继续使用同一份 DBFS 日志，同时避免永久加载和重复节点。
 
 **设计理由：repository 路径只是创建上下文和来源筛选，不是既有 Codespace 的身份路径。**创建成功后，对象的规范地址只包含 `codespace.uuid`。这样 repository 删除、改名、转移或变得不可访问时，既有 Codespace 的详情和生命周期操作仍保持稳定，也与 create 完成后不再依赖 repository 的状态模型一致。
 
@@ -136,6 +140,8 @@ Manager 在状态切换期间离线时，Gitea 保持已登记 operation 和原�
 - 创建入口只有 repository 代码页 Code 面板中的 `POST /{owner}/{repo}/codespaces`，全局页面只负责列表和对象详情。
 - 顶部导航在 Codespace 启用且用户已登录时显示 Codespaces，进入 `/-/codespaces`。
 - 详情页首屏只渲染日志容器，浏览器随后立即从 `offset=0` 读取同一份日志；Manager bootstrap、构建和 lifecycle 命令的 stdout/stderr 在运行期间按正文行进入日志，不添加通道前缀。
+- [x] Manager 为 operation 和主要启动阶段写入 Actions 格式分组，失败使用错误控制行；Gitea 复用 Actions 解析和 ANSI 渲染，当前与失败分组展开、成功历史分组折叠。
+- [x] 日志 offset 冲突只从零重载一次，403、404 和重复冲突停止轮询并展示错误，网络与 5xx 错误保留已有内容并退避。
 - 初次详情渲染与状态片段刷新使用同一个创建者详情服务、权限检查和操作集合；需要版本标识的协议范围固定为 ManagerService 和 Runtime 本地 manifest，状态片段按 Web 路由维护。
 - 状态片段响应禁止缓存，包含固定根节点和服务端给出的下一次刷新毫秒数；非创建者与对象页面使用相同的存在性和权限结果。
 - 过渡状态按 2 秒、稳定状态按 15 秒刷新，页面隐藏时停止请求；失败保留当前展示并最多退避到 30 秒，不把网络错误写成 operation 结果。
@@ -403,7 +409,7 @@ Web 页面使用明确的服务端页面数据结构，不直接序列化 `codes
 }
 ```
 
-页面模型把 metadata 中固定的 `endpoint_id=workspace`、`public=false` 记录映射为单独的 `workspace` 主入口，并使用请求语言对应的 “Workspace” 文案；Manager 把它代理到当前 Dev Container 的 code-server。`endpoints` 只包含其余普通 Endpoint，并原样带出必填 `public`。**设计如此：**页面布局可以突出默认开发入口，但可用性仍来自 Manager 上报的完整集合，避免展示层重新猜测 workspace。`open_path` 是 Gitea 站内 POST 路由，`can_open` 是当前页面状态判定；Gateway URL 只在 POST 服务内部由当前绑定 Manager 最近一次成功 Declare 的规范 `gateway_url`、完整 UUID 和 Endpoint ID 派生，页面不接收或拼接目标 URL 与 Runtime upstream。
+页面模型把 metadata 中固定的 `endpoint_id=workspace`、`public=false` 记录映射为单独的 `workspace` 主入口，并使用请求语言对应的 “Workspace” 文案；Manager 把它代理到当前 Dev Container 的 code-server。`endpoints` 只包含其余普通 Endpoint，并原样带出必填 `public`。普通 Endpoint 的固定 `port-<port>` ID 让页面可以同时展示端口和可见性；upstream 协议与 host 仍留在 Manager 路由，不扩展 Runtime Metadata。**设计如此：**页面布局可以突出默认开发入口，但可用性仍来自 Manager 上报的完整集合，避免展示层重新猜测 workspace。端口是用户识别服务所需信息，内部连接协议不是 Gitea 的授权或展示事实。`open_path` 是 Gitea 站内 POST 路由，`can_open` 是当前页面状态判定；Gateway URL 只在 POST 服务内部由当前绑定 Manager 最近一次成功 Declare 的规范 `gateway_url`、完整 UUID 和 Endpoint ID 派生，页面不接收或拼接目标 URL 与 Runtime upstream。
 
 `ssh` 只由绑定 Manager 对外声明的 `gateway_ssh_addr` 和 Gateway host key 展示字段构造。服务端拆分规范化的 host 与 port，用户名固定为 39 字节 ASCII 的 `cs-{小写规范 UUID}`，command 固定由这些字段生成。该用户名只供 Gateway 定位 Codespace，不映射为操作系统账户；Runtime 执行用户由 Manager 本地保存的非 root UID/GID 决定。该结构只提供用户实际连接所需的公开地址和 host key 核对信息，Runtime 内部目标、upstream 和任何 token 都不会进入详情响应。
 
@@ -1197,7 +1203,7 @@ stale report 使用分类响应而不是改写主状态，是因为 Manager 上�
 | `create.repo_full_name` | create | repository 完整名称 |
 | `repo_clone_http_url` | create | HTTP clone 启用时由 Gitea 生成的规范 HTTP(S) clone URL |
 | `repo_clone_ssh_url` | create | Codespace SSH clone 启用时由 Gitea 生成的规范 SSH clone URL |
-| `start_ref` | create | 固定 bootstrap 准备 workspace 时使用的 ref 提示 |
+| `start_ref` | create | 分支、Tag 或 Pull Request 的完整 Git ref；直接 commit 为空 |
 | `commit_sha` | create | 锁定 commit SHA |
 | `create.environment_tag` | create | Manager 本地运行环境键；只用于选择并持久化本次有效环境 |
 | `create.runtime_settings` | create | 当前有效自动暂停设置和交互版本 |
@@ -1212,7 +1218,7 @@ stale report 使用分类响应而不是改写主状态，是因为 Manager 上�
 - command `oneof` 必须且只能设置一个分支，Manager 使用生成类型做穷尽处理。
 - operation 类型由 command 分支唯一表达，envelope 不重复返回独立 `operation_type`。
 - Gitea 在领取前保存 operation 来源以处理 queued idle stop 的取消；来源不改变 Manager 命令，因此不进入 envelope。
-- `start_ref` 是 create init 用于准备 workspace 的输入提示，Manager 最终以 `commit_sha` 校验 HEAD。
+- `start_ref` 由持久 `ref_type/ref_name` 确定：branch 使用 `refs/heads/<name>`，tag 使用 `refs/tags/<name>`，pull 使用 `refs/pull/<index>/head`，commit 使用空值。Manager 据此选择 tracking branch 或 detached checkout，并最终以 `commit_sha` 校验 HEAD。
 - PR 场景使用 base repository clone URL 和 `refs/pull/{index}/head`，不下发 head repository clone URL。
 - `resume|stop|delete` 返回数据不包含 create 专属的 repository、用户身份、ref 或 commit 字段。
 - `resume` 完全基于已初始化 workspace 和绑定 Manager 执行，不重新解析 repository，不依赖 repository payload。
@@ -1238,6 +1244,7 @@ stale report 使用分类响应而不是改写主状态，是因为 Manager 上�
 - create payload 的 `environment_tag` 固定为 `default`；仓库不能选择 Manager 的基础设施环境。同一 Manager 可以保留其他 tag 供后续平台级选择能力使用，但当前创建流程只匹配 `default`。
 - create payload 的 `username` 使用创建用户当前 Gitea 用户名，`git_user_email` 使用隐私保护后的 Git email；Manager 派生 Linux 运行用户名并只保存到本地 state，不回写 Gitea。
 - create payload 的 `dev_container` 在平台默认时携带默认镜像，在仓库来源时携带所选路径和原始文件 SHA256，并复用顶层锁定提交。Manager clone 后从 workspace 复检该文件并交给 Manager 原生 Dev Container 运行时；正文不进入 RPC 或 Manager state，resume 使用本地保存的同一选择。
+- create payload 对普通分支下发完整 heads ref，使 Runtime 建立同名本地分支与 `origin/<branch>` upstream；Tag、Pull Request 和 commit 锁定到 detached HEAD。两类结果都必须等于 `commit_sha`。
 - create payload 的 `git_protocol` 等于 payload 构造时站点当前首选值；create 取得当前可用协议的规范 clone URL，首选协议对应 URL 必须非空。内置 bootstrap 在受控临时 workspace 中先使用首选地址，并在 clone/fetch 失败且另一种 URL 非空时在同一次 init 调用中尝试另一地址；最终失败写入不可恢复结果，不进入启动恢复重试。resume 不取得 repository payload，也不携带协议，只按 workspace 实际 remote 恢复本地凭据配置。
 - create/resume payload 的有效设置与当前数据库结果一致，Manager 重启后可恢复当前计时策略；stop 的来源不改变运行侧执行路径。
 - 普通 operation payload 返回正数相对 lease 时长，abort 返回 0；Gitea 的绝对 deadline 不进入协议。
@@ -1619,22 +1626,13 @@ Manager 本地配置由 Manager 自己管理，配置文件只使用 YAML，例�
 
 Manager 本地配置只保存部署者可编辑的运行参数。注册产生的 Gitea URL、Manager ID、Manager Secret、inventory generation、Gateway SSH Host Key 私钥和 Codespace 本地快照都保存在 `node.state_dir` 指向的状态目录中，不写入普通配置。这样设计是为了让配置表达“这个进程如何运行”，状态目录表达“这个 Manager 身份是谁以及当前管理到哪里”，避免复制配置文件时复制出同一个注册身份。
 
-Manager 本地配置包含：
+Manager 本地配置使用 `node`、`gateway` 和 `runtime` 三个顶层结构。下面是包含常用部署选择的完整示例；未列出的超时、并发和安全限额使用程序默认值，需要调整时再按示例配置文件中的同名嵌套结构覆盖。这样普通部署可以直接看出必须选择的地址、Incus 和环境，性能调优参数不会掩盖主要关系。
 
 ```yaml
-version: 1
-
 node:
   name: manager-01
   state_dir: /var/lib/gitea-codespace
-  version: 0.1.0
-  poll_interval: 750ms
-  declare_interval: 5s
   capacity_total: 100
-  startup_workers: 4
-  cleanup_workers: 4
-  http_timeout: 15s
-  shutdown_timeout: 10s
 
 gateway:
   http:
@@ -1643,44 +1641,19 @@ gateway:
   ssh:
     listen: 0.0.0.0:2222
     public_addr: ssh.codespace.example.com:22
-    handshake_timeout: 30s
-    max_channels_per_connection: 32
-    auth:
-      max_attempts_per_ip_per_minute: 30
-      max_attempts_per_codespace_per_minute: 20
-      max_attempts_per_ip_codespace_per_minute: 10
-      max_attempts_per_public_key_per_minute: 30
-      backoff_base: 1s
-      backoff_max: 30s
-      failure_window: 10m
-  sessions:
-    ttl: 8h
-    idle_timeout: 30m
-    revalidate_interval: 5m
-    max_per_codespace: 32
-    max_per_user: 128
-  limits:
-    max_inflight_total: 4096
-    max_inflight_per_session: 32
-    public_max_connections_per_endpoint: 64
-    public_max_connections_per_ip: 16
-    validation_max_inflight: 128
 
 runtime:
-  driver: incus
-  codespace_root: /codespace
-  bootstrap:
-    shell: /bin/bash
-    home_dir: /root
-    user_name: codespace
-    user: 0
-    group: 0
   git:
     ssh_key_type: ed25519
+  web_ide:
+    code_server_version: 4.121.0
+  cache:
+    registry: https://registry.example.com/gitea-codespace-cache
+    mirrors:
+      docker.io: https://docker-cache.example.com
+      ghcr.io: https://registry.example.com/ghcr
   incus:
-    connect:
-      unix_socket: /var/lib/incus/unix.socket
-      # remote_addr: https://incus.internal:8443
+    endpoint: unix:///var/lib/incus/unix.socket
     project:
       name: gitea-codespace
       manage: true
@@ -1691,33 +1664,24 @@ runtime:
       manage: true
   environments:
     - tag: debian-lxc
-      display_name: Debian 12 LXC
       type: lxc
       source:
-        type: image
         image: images:debian/12
       resources:
         cpu: 1
         memory: 1GiB
         root_disk: 10GiB
-      profiles:
-        use:
-          - default
     - tag: company-base
-      display_name: Company Base VM
       type: vm
       source:
-        type: instance
-        remote: local
-        project: base-images
-        name: dev-vm-base
+        instance:
+          project: base-images
+          name: dev-vm-base
       resources:
         cpu: 2
         memory: 1GiB
         root_disk: 20GiB
-      profiles:
-        use:
-          - company-dev-vm
+      profiles: [company-dev-vm]
 ```
 
 `node.state_dir` 是 Manager 身份、注册 Gitea URL 和运行状态的唯一目录。`gitea-codespace register` 严格读取显式 YAML 配置，取得状态目录独占锁并确认尚未注册后，才调用 Gitea；成功响应中的 Gitea URL、Manager ID、Manager Secret、协议版本、注册时间和初始 inventory generation 通过一次原子替换写入 `manager-state.json`。`gitea-codespace serve` 读取普通配置后取得同一把锁，并从该文件取得完整身份和 inventory generation；文件缺失、损坏或版本不匹配时在发送 RPC 前失败。registration token 只用于本次注册请求，不保存到本地文件。这样重复注册和配置错误不会创建新的 Manager 记录，注册成功也不会留下可见的半套本地身份。
@@ -1730,9 +1694,13 @@ Manager 当前配置是 `node.name`、`runtime.environments[].tag`、`gateway.ht
 
 `runtime.git.ssh_key_type` 是 Manager 本地生成 Runtime Git SSH key 的算法选择，默认 `ed25519`，可选 `rsa-4096`。该值只在 Runtime 内没有已有 key 时影响 Manager 生成 root seed 的方式，不进入 Gitea 数据库、RPC payload 或 Codespace state。Runtime Git SSH 私钥位于对应 Incus 实例内，不写入普通配置之外的 Manager 状态目录。**设计如此：**Gitea 只需要保存和鉴权公钥，不需要知道管理员选择哪种本地密钥算法；把算法留在 Manager 配置中可以满足部署偏好，同时不扩大控制面协议。
 
-`runtime.bootstrap` 只设置固定系统准备步骤使用的 shell、root home 和默认运行用户名。bootstrap 由 Manager 二进制内置，配置不提供脚本路径或替换入口；Dev Container create、resume、stop、exec 和 TCP 全部由同一 Go 运行时处理。**设计如此：**部署者只需要选择 Incus 和资源环境，仓库开发环境由 Dev Container 文件表达，不再通过 Manager 本地脚本形成另一套配置来源。完整行为见[Manager 原生 Dev Container 运行时](devcontainer-runtime.md)。
+`runtime.cache.registry` 是可选的 BuildKit registry cache namespace，必须包含 scheme、registry host 和 namespace 路径；`runtime.cache.mirrors` 的键是原始 OCI registry host，值是对应镜像缓存的 HTTP/HTTPS 基础 URL。两项都省略时，每个 Runtime 只使用自身 Docker daemon 的本地缓存。启用后，Manager 只在 create 下发配置：显式镜像和 Feature 优先从 mirror 取得，Dockerfile 与 Feature 构建从 registry cache 恢复并发布结果；resume 和 stop 使用现有环境，不访问这些地址。mirror 或 cache 暂时不可用会回退原始 registry 或本地构建，因此缓存用于降低下载流量和重复构建时间，不成为 Codespace 正确运行的依赖。
 
-`runtime.incus.connect.unix_socket` 连接本机 Incus socket；`runtime.incus.connect.remote_addr` 连接远程 Incus endpoint。远程连接使用本机 Incus client 已建立的信任配置，Manager 配置文件不保存客户端证书、服务端证书或 trust token。**设计如此：**Incus 证书和信任关系由 Incus 自身工具创建、轮换和撤销，Manager 只选择连接目标；把证书生命周期放进 Manager 配置会让普通部署多一套安全材料管理流程。
+私有缓存服务使用 Runtime 内 root 用户的标准 Docker credential store，部署者通过基础实例或自定义 profile 准备登录信息；Manager YAML 不保存 registry 密码。HTTP 地址会进入实例 Docker daemon 的 insecure registry 列表，生产部署推荐 HTTPS。Manager 合并已有 `/etc/docker/daemon.json`，保留部署者的日志、存储和其他 registry 设置。外部 cache 可能保存 Dockerfile 产生的私有层，部署者需要为 registry 配置访问控制、容量、保留期和垃圾回收。**设计如此：**Manager 只选择缓存位置和引用规则，registry 已经提供鉴权与存储生命周期能力，再在 Manager 内增加账号或清理协议会产生重复且不完整的运维面。
+
+Manager 版本来自当前二进制构建信息，生产运行固定使用 Incus，Codespace 根路径、Bash、root bootstrap 和系统准备用户属于内置运行协议。**设计如此：**这些值必须与随二进制发布的脚本、状态路径和恢复逻辑保持一致，把它们暴露为配置只会产生看似可改、实际无法闭环的组合。测试后端仍由测试代码直接注入，不作为部署能力。完整行为见[Manager 原生 Dev Container 运行时](devcontainer-runtime.md)。
+
+`runtime.incus.endpoint` 使用 URI 唯一选择 Incus：本机 socket 使用 `unix:///绝对路径`，远程服务使用 `https://主机:端口`。远程连接继续使用本机 Incus client 已建立的信任配置，Manager 配置文件不保存证书或 trust token。**设计如此：**单一 URI 已经同时表达连接方式和目标，避免两个互斥字段形成无效组合；证书生命周期仍由 Incus 工具负责。
 
 `runtime.incus.project.name` 是 Manager 的专用 Incus project。`manage: true` 时 Manager 启动时创建或校验该 project，启用 profile 和 storage volume 隔离，并设置 `features.networks=false` 共享 default project 中的 managed network；项目内 default profile 和实例由 Manager 管理。storage pool 是宿主机级资源，只通过 `runtime.incus.storage.pool` 引用，并在启动时校验存在。managed network 已存在时必须是 managed bridge；不存在且 `runtime.incus.network.manage=true` 时，Manager 在 default project 中创建它，再由 Codespace project 的 profile 引用。`runtime.incus.network.manage=true` 需要 `runtime.incus.project.manage=true`，因为 Manager 需要同时保证 project 功能和 default profile 都采用这条共享网络。Manager 创建的 bridge network 使用自动 IPv4 地址、IPv4 NAT、显式 DHCPv4 和禁用 IPv6，使新实例能通过普通 DHCP 获得出站网络。**设计如此：**Incus project 是实例、profile 和项目存储卷的命名空间，而 managed bridge 是宿主机级网络资源；由 default project 承载网络并让 Codespace project 共享，符合 Incus 不允许非 default project 管理该类 bridge 的规则。storage pool 同样只引用不创建，避免 Manager 承担宿主机存储运维。Manager 托管 network 明确开启 DHCPv4，是因为 bootstrap 和 Dev Container 构建需要访问 Gitea、包源、镜像仓库或代码仓库；非托管 network/profile 由部署者提供等价网络能力，Manager 不实现自己的 IP 地址分配器。
 
@@ -1771,9 +1739,9 @@ sudo firewall-cmd --reload
 - `dhclient -4` 有 `DHCPDISCOVER` 但没有 `DHCPOFFER`，且 `firewalld` 运行、Incus bridge 未归入可信 zone 时，运维修复路径明确为把该 bridge 加入 `trusted` zone 并 reload firewalld。
 - 修复后新建测试实例能在 `incus list` 或实例内 `ip -4 addr` 中看到 IPv4 地址；测试实例在验证结束后被删除。
 
-每个 `runtime.environments` 项完整指定 `tag`、`type`、`source`、`resources` 和 `profiles.use`。`type` 使用 `vm` 或 `lxc`，两者使用相同的 create/resume/stop/delete、managed bridge、固定 bootstrap 和原生运行时；VM 环境必须具备 Incus agent。`source.type=image` 从 image 创建实例，支持 `images:debian/12` 这类 simplestreams alias、本地 alias 和 `local:<fingerprint>` 本地 fingerprint；生产部署建议使用本地 fingerprint 固定镜像内容。`source.type=instance` 从同一 Incus 服务器的已有实例复制新实例，来源实例只作为来源，不被 Manager 接管或修改；跨 Incus 服务器复制需要迁移证书、网络可达性和传输模式，复杂度高且不是默认部署路径，当前用明确错误要求管理员先让 Manager 连接目标 Incus 服务器，再按 project/name 克隆。Manager 创建实例后写入归属字段、tag、资源限制和根盘大小。Manager 从展开 profile 设备中取得唯一的 `type=disk,path=/` 根盘设备，用同名实例设备覆盖 `size`，并通过 `limits.cpu` 和 `limits.memory` 写入资源限制。
+每个 `runtime.environments` 项指定 `tag`、`type`、`source` 和 `resources`，`profiles` 可省略并默认使用当前 project 的 `default` profile。`source.image` 与 `source.instance` 二选一：image 支持 `images:debian/12`、本地 alias 和 `local:<fingerprint>`；instance 使用当前 Incus endpoint 上的 `project/name`。**设计如此：**字段形状直接表达来源类型，不再要求维护额外的 `type` 判别值，也不会暗示支持跨 Incus 服务器复制。高级 profile 仍以扁平数组明确追加。
 
-Incus 端到端测试复用这组 Manager Incus 配置字段。本地测试可以使用默认 unix socket 或配置中的本地 socket；远程测试使用 `runtime.incus.connect.remote_addr` 和 project，并依赖本机 Incus client 的信任配置。测试环境由部署者准备可用 image、storage pool、网络和必要 profile；托管 project 轻量测试只创建测试 project、network 和 default profile，不启动实例；生命周期测试只创建带运行标识的实例并在结束时清理自己创建的实例。真实生命周期入口固定单实例内存为 `1GiB`，container/VM 的 provisioner 与完整 Manager 四条链路串行执行。这样设计是为了让测试验证真实 Incus 字段语义，同时避免测试把宿主 Incus 管理变成另一套自动化运维系统。
+Incus 端到端测试复用 `runtime.incus.endpoint`。本地测试使用 unix URI，远程测试使用 HTTPS URI 和 project，并依赖本机 Incus client 的信任配置。测试环境由部署者准备可用 image、storage pool、网络和必要 profile；真实生命周期入口固定单实例内存为 `1GiB`，container/VM 的 provisioner 与完整 Manager 四条链路串行执行。
 
 Manager 从实例展开设备中选择恰好一个连接到 `runtime.incus.network.name` 的 NIC，读取设备配置或 `volatile.<设备名>.hwaddr` 的 MAC，再按 MAC 匹配 Incus Instance State 中的实际来宾接口并取得全局 IPv4 地址。LXC 和 VM 使用同一流程，配置不包含来宾接口名。**设计如此：**profile 设备名和来宾接口名属于不同层级，VM 的接口名还会随镜像和虚拟硬件布局变化；MAC 由 Incus 设备和 guest agent 状态同时提供，能稳定关联两层而不要求用户猜测名称。目标网络没有 NIC 或出现多个 NIC 时，Manager 用明确配置错误说明 network 和设备；唯一 NIC 暂时没有地址时只在启动等待期重试。
 
@@ -1788,6 +1756,9 @@ Manager 本地部署配置仍使用 `codespace.yaml`；它与仓库中的 `devco
 实现验收点：
 
 - 控制面和 Gateway 在 HTTP 配置下可正常工作，启用对应 HTTPS 配置后使用证书和 CA 校验。
+- `runtime.cache` 省略时创建继续直接访问原始 registry；配置后只影响 create，并在 mirror 或 registry cache 不可用时完成明确回退。
+- cache registry URL、mirror host 和 mirror URL 在 Manager 启动时校验；Docker daemon 现有 JSON 字段在合并 cache 设置后保持不变。
+- registry 凭据不出现在 Manager YAML、控制面 RPC、Codespace 状态或日志，缓存存储清理由部署者使用 registry 自身能力完成。
 - Gateway Cookie Secure 按规范外部 `gateway.http.public_url` 选择 HTTPS `__Host-` 或 HTTP 普通保留 Cookie 名称；显式值与外部 scheme 不一致时启动失败。
 - `gateway.http.public_url` 的尾随点、非法 DNS 标签、非根 path、IP literal 和过长派生 Host 都被拒绝；基础域名与单层 wildcard DNS/TLS 可以覆盖所有派生 Endpoint host。
 - `register` 对 Gateway HTTP/SSH 对外地址做本地语法预检；`RegisterManager` 不占用地址，第一次 Declare 负责保存地址并判定唯一冲突。
@@ -1813,6 +1784,9 @@ Manager 本地部署配置仍使用 `codespace.yaml`；它与仓库中的 `devco
 - 显式注册配置必须存在并通过严格 YAML 解析；未指定配置且默认文件不存在时才使用内置默认值。`manager-state.json` 是本地注册完成的唯一提交点，重复注册、损坏状态和并发 register/serve 都在发送 RPC 前失败。
 - Endpoint 请求只能选择 `http|https` scheme，不能关闭 HTTPS 证书校验或指定任意 host。
 - [x] Declare tags 与 `runtime.environments[].tag` 完全一致；虚拟机与系统容器环境都不会把实例类型写入 Gitea。Manager 配置以 `node`、`gateway` 和 `runtime` 为唯一顶层结构，tag、Incus 连接和运行环境都能从这三个结构中唯一确定。
+- [x] Manager 代码直接读取 `node`、`gateway` 和 `runtime` 规范结构，不维护 Server、Manager、Provisioner、Incus 或 Gateway 扁平派生副本；默认值和校验只执行一次。
+- [x] `runtime.incus.endpoint` 接受本地 unix URI 和远程 HTTP(S) URI；环境 source 恰好选择 image 或 instance，profiles 省略时使用 `default`，显式 profiles 使用字符串数组。
+- [x] Manager 软件版本来自构建信息，生产 provisioner、bootstrap shell、root 身份和内部根路径由程序固定；部署配置只暴露能够形成完整运行行为的选择。
 - Manager 使用固定 bootstrap 与内置原生 Dev Container 运行时，配置中没有生命周期脚本入口；仓库配置由 create 时锁定的路径、提交和摘要唯一确定，resume 使用已经保存的完整环境状态。
 - [x] Incus project、非集群模式以及环境必填字段在领取 create/resume 前完成静态校验；`runtime.incus.network.manage=true` 时配置校验要求 `runtime.incus.project.manage=true`；`runtime.incus.project.manage=true` 时启动前校验 storage pool 存在、managed network 是 bridge、default profile 具有 root disk 和可选 NIC。默认 managed network 名称为符合 Linux 15 字符接口名上限的 `csnet`；Manager 创建的 bridge network 设置 `ipv4.address=auto`、`ipv4.nat=true`、`ipv4.dhcp=true` 和 `ipv6.address=none`。环境 `resources.cpu`、`resources.memory` 和 `resources.root_disk` 在 create 请求中分别写入 `limits.cpu`、`limits.memory` 和实例级根盘 `size`。设计如此是因为 CPU、内存和根盘大小属于新实例资源形状，必须在 Incus 创建记录时确定。
 - Incus bridge 有 IPv4 和 DHCP range 但实例没有 IPv4 时，故障排除能区分 Manager 配置问题、实例内 DHCP 客户端问题和宿主机 firewalld zone 问题；firewalld 场景的修复指向把 Incus bridge 加入 `trusted` zone。
