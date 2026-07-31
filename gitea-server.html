@@ -159,8 +159,9 @@
 <h2 id="web-路由与页面"><a class="header" href="#web-路由与页面">Web 路由与页面</a></h2>
 <p>Codespace 创建者只使用下列三类生命周期页面。站点管理员通过现有管理导航治理全部 Codespace 和 Manager，但不进入其他用户的对象详情页；个人用户在自己的设置页管理个人 Manager 和 registration token。组织只作为源仓库所有者存在，不拥有 Codespace 基础设施或成员工作区的治理权限。</p>
 <h3 id="repository-codespace-入口"><a class="header" href="#repository-codespace-入口">Repository Codespace 入口</a></h3>
-<pre><code class="language-text">POST /{owner}/{repo}/codespaces
-GET  /{owner}/{repo}/codespaces
+<pre><code class="language-text">GET  /{owner}/{repo}/codespaces
+GET  /{owner}/{repo}/codespaces/new
+POST /{owner}/{repo}/codespaces
 </code></pre>
 <p>作用：</p>
 <ul>
@@ -170,7 +171,8 @@ GET  /{owner}/{repo}/codespaces
 </ul>
 <p>Repository 代码页的 Code 按钮展开后包含 Clone 和 Codespaces 两个主 tab。Codespaces tab 使用当前页面的 ref 上下文，显示创建按钮和当前用户在该 repository 下已有的 Codespace。创建成功后跳转到 <code>GET /-/codespaces/{uuid}</code>，这个对象页在创建过程中展示大日志区域和右上角管理操作。</p>
 <p><code>GET /{owner}/{repo}/codespaces</code> 是 repository Codespace 集合路径的读侧归一化入口，重定向回 repository 代码页。**设计如此：**创建入口需要 repository/ref 上下文，而这个上下文已经存在于代码页和 Code 面板中；列表入口按用户维度放在 <code>/-/codespaces</code>，对象详情按 UUID 放在 <code>/-/codespaces/{uuid}</code>。这样用户能从创建、列表和对象详情三个清晰入口进入，不会误以为既有 Codespace 的身份路径包含 repository。对象身份仍只使用 UUID。</p>
-<p>Code 面板表单和 <code>POST /{owner}/{repo}/codespaces</code> 表达用户选择的 git ref 和 Dev Container 候选，由 Gitea 解析并锁定 <code>commit_sha</code>、配置路径与摘要；客户端不能指定最终 commit 或覆盖路由 repository。确认页另行要求用户从站点全局 Manager 与当前用户个人 Manager 已声明的环境 tag 中选择一个。环境 tag 由部署者映射到实例类型、镜像、资源和网络；仓库 Dev Container 只定义内部开发环境，不控制这些基础设施信息。</p>
+<p>Code 面板使用 GET 表单把当前 git ref 带到 <code>GET /{owner}/{repo}/codespaces/new</code>。这个确认入口只读取仓库并生成创建计划，页面切换 Dev Container 候选时继续使用 GET 重新生成计划，因此预览不会创建 Codespace、授权或 Secret 关系。用户确认后，页面中的唯一主表单提交到 <code>POST /{owner}/{repo}/codespaces</code>；服务端重新解析并锁定 <code>commit_sha</code>、配置路径与摘要，客户端不能指定最终 commit 或覆盖路由 repository。</p>
+<p>确认页按照仓库与 ref、运行环境、Dev Container、附加仓库权限、推荐 Secret 的顺序展示创建条件。页面使用一个表单承载最终选择和一个创建按钮，因为这些输入共同组成同一次创建决定；预览刷新只携带 ref 与 Dev Container 选择，不把权限或 Secret 放入 URL。运行环境由用户从站点全局 Manager 与当前用户个人 Manager 已声明的 tag 中选择。环境 tag 由部署者映射到实例类型、镜像、资源和网络；仓库 Dev Container 只定义内部开发环境，不控制这些基础设施信息。</p>
 <p>创建输入：</p>
 <div class="table-wrapper"><table><thead><tr><th>参数</th><th>说明</th></tr></thead><tbody>
 <tr><td><code>ref_type</code></td><td><code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td></tr>
@@ -179,8 +181,9 @@ GET  /{owner}/{repo}/codespaces
 </tbody></table>
 </div>
 <p><code>owner</code> 使用 Gitea repository 路由的 owner 语义，可以是用户或组织。<code>repo_id</code> 来自 <code>/{owner}/{repo}</code> 路由解析结果。Gitea 对 pull index 生成规范 <code>refs/pull/{index}/head</code>，对其他类型解析对应 ref，并把服务端得到的完整 commit SHA 写入 codespace；任何客户端提交的 <code>repo_id/commit_sha</code> 字段都作为未知输入拒绝。</p>
-<p>路径使用复数 <code>codespaces</code>，因为 POST 向 repository 下的 Codespace 集合创建对象；GET 使用同一路径重定向到代码页，使 repository 维度的读入口统一回到包含 Code 面板的页面。</p>
+<p>路径使用复数 <code>codespaces</code>，因为 POST 向 repository 下的 Codespace 集合创建对象；集合 GET 重定向到代码页，使 repository 维度的读入口统一回到包含 Code 面板的页面。<code>codespaces/new</code> 是创建前的只读确认入口，明确区分“查看当前计划”和“提交创建”。</p>
 <p>确认页按 tag 合并可见 Manager 的声明，并显示说明、来源与当前在线提示。来源分为站点、个人以及二者同时提供；相同 tag 只有一个非空说明时展示该说明，多个不同的非空说明只展示 tag，并在 Manager 详情中提示配置不一致。在线状态只帮助用户判断等待可能性，不决定 tag 是否可选，因为暂时离线的 Manager 恢复后仍可以领取已排队的 create。即使只有一个选项也要求用户显式选择，避免用户在不知情时使用部署者新增的基础设施环境。</p>
+<p>附加仓库权限按仓库分组，每个仓库单元使用无权限、读取或写入单选项表达本次授权；推荐 Secret 使用分隔列表展示名称、说明和当前可用状态。创建校验失败时页面可以保留环境与权限选择，但不回显 Secret 明文。没有可见环境时页面明确说明基础设施尚不可用并提供返回仓库的操作，而不是展示一个无法提交的表单。</p>
 <p>最终提交在现有用户锁、repository lock 和数据库事务内重新读取可见环境。tag 已消失、格式无效或不属于站点及当前用户声明时，页面重新展示当前选项且不创建 Codespace 或 operation。tag 不进入 <code>request_hash</code>：该哈希只锁定会影响 Dev Container 权限和推荐 Secret 复核的仓库内容，环境 tag 是最终表单中的直接输入并由服务端重新校验，加入哈希只会制造一次没有安全收益的额外复核。</p>
 <p>**设计理由：创建入口位于 repository 代码页的 Code 面板。**创建请求需要明确的 repository/ref 上下文，因此复用该页面已经解析好的 repository、ref 和权限结果；<code>GET /-/codespaces</code> 用于展示当前用户已有对象，顶部导航中的 Codespaces 入口直接进入该列表。环境选择位于创建确认页，是因为该页已经集中展示 Dev Container、附加仓库权限和 Secret，用户可以在一次提交前确认完整运行条件。</p>
 <p>实现验收点：</p>
@@ -189,6 +192,9 @@ GET  /{owner}/{repo}/codespaces
 <li>环境说明一致或只有一个非空值时展示说明；多个不同非空说明时创建仍可进行，Manager 详情提示冲突。</li>
 <li>用户必须显式选择环境；没有可见环境、提交非法环境或提交期间环境消失时不写入 Codespace 和 operation。</li>
 <li><code>request_hash</code> 不包含环境 tag；最终提交在锁和事务内重新校验 tag，并把规范值写入 <code>environment_tag</code>。</li>
+<li>Code 面板通过 GET 打开只读确认页；切换 Dev Container 只重新生成计划，只有最终 POST 可以写入 Codespace、授权和 Secret 关系。</li>
+<li>确认页只有一个最终创建表单，按运行环境、Dev Container、附加权限和推荐 Secret 的顺序展示；错误响应不回显 Secret 值。</li>
+<li>没有可见环境时确认页显示不可用原因和返回操作，不显示可提交的创建按钮；离线环境仍可选择并明确说明创建会排队等待。</li>
 </ul>
 <h3 id="用户-codespace-列表页"><a class="header" href="#用户-codespace-列表页">用户 Codespace 列表页</a></h3>
 <pre><code class="language-text">GET /-/codespaces
@@ -219,7 +225,11 @@ POST   /-/codespaces/{uuid}/delete
 </code></pre>
 <p><code>GET /-/codespaces/{uuid}</code> 是唯一对象页面。</p>
 <p><code>GET /-/codespaces/{uuid}/state</code> 返回创建者详情页的当前状态 HTML 片段，<code>GET /-/codespaces/{uuid}/logs</code> 返回日志数据。两者属于创建者 Web 页面的内部数据接口；本设计的用户交互采用服务端 Web 页面，不定义版本化 Codespace REST API。</p>
-<p>详情页顶部展示返回入口、标题和 repository/ref 摘要，桌面主体左侧是占据主要宽度的控制台日志，右侧是状态与操作、访问方式、资源用量和对象详情。页面首屏不读取或嵌入日志正文，浏览器初始化后立即从 <code>offset=0</code> 请求已有日志，再按服务端返回的 byte offset 增量轮询。Manager 在 bootstrap、镜像构建、Feature 安装和 lifecycle 命令执行期间同时读取 stdout 和 stderr，并把完整正文行通过 <code>UpdateLog</code> 有界批量上报；页面不把输出通道名称拼入正文。</p>
+<p>详情页使用 repository 名称作为对象标题，并在标题下展示 ref、可跳转的短 commit 和创建时间。UUID 继续作为路由和服务端对象标识，但不占用创建者页面的主要信息区域，因为创建者定位工作区时使用 repository 和 ref 更直接。状态摘要和当前可用操作位于同一全宽页头，长 repository、ref 和操作按钮可以分别换行，避免窄栏挤压。</p>
+<p>详情页提供 Overview 和 Logs 两个页签。<code>queued</code>、<code>booting</code>、<code>resuming</code>、<code>stopping</code>、<code>deleting</code> 和 <code>failed</code> 默认打开 Logs，便于用户直接观察当前生命周期操作；<code>running</code>、<code>stopped</code>、<code>recovering</code> 和 <code>metadata_rebuilding</code> 默认打开 Overview，便于用户访问工作区或判断当前可恢复状态。用户显式选择页签后，状态刷新保持该选择；使用默认页签且状态跨越上述两类布局时，浏览器完整刷新一次并进入新状态的默认页签。**设计如此：**生命周期过程和稳定使用阶段的首要任务不同，采用同一路径上的两个页签可以保持对象地址稳定，同时避免把日志、入口、资源和内部标识全部挤进同一屏。</p>
+<p>Overview 使用较宽的连接区域和较窄的运行上下文区域。Workspace 是页头唯一的主要打开操作，因此在 Overview 和 Logs 中位置一致。当前允许的普通 Continue、Stop 和 Delete 也直接显示在页头：Continue 与 Stop 使用次要按钮，设置使用图标按钮，Delete 位于末尾并使用红色确认样式。详情页动作数量有限，直接显示可以让用户清楚看到当前生命周期能力和删除影响，不需要通过更多菜单寻找。额外连接方式按用途分为 SSH 和 Ports 两个独立章节：SSH 使用完整宽度的命令复制控件，主机密钥算法、SHA256 指纹和更新时间收纳在可展开的校验信息中；Ports 按 Service、Port、Visibility 和打开操作分列，操作列表头只提供无障碍名称，移动端把名称与操作放在第一行、端口与访问范围放在第二行。运行上下文展示环境标签、ref、可跳转的短 commit、创建时间、最后活动时间、当前有效自动暂停和 CPU、内存、磁盘用量。Runtime 就绪时展示当前连接信息和实时资源，其他状态集中展示仍然有效的运行上下文。</p>
+<p>Overview 和 Logs 共用相同的页面、容器、页头和页签布局。桌面端始终保留稳定的页面滚动槽，页头和页签保持固定的收缩规则；两种模式只替换页签下方的内容。Logs 使用剩余高度和控制台内部滚动，Overview 按内容自然延伸。**设计如此：**页签切换只代表内容视角变化，共用页面外壳可以保持标题、状态、操作和页签的位置稳定，也让浏览器在完整页面导航后使用相同的滚动与页脚几何关系。</p>
+<p>Logs 使用全宽控制台。日志面板在桌面、中间宽度和移动端都占满内容列，窄屏仍保持标题与更多菜单在同一行；进入全屏后面板移动到全局高度容器并继续填满宽高，正文使用页头之外的剩余空间。更多菜单使用与 Actions 控制台一致的背景、边框、指向箭头和菜单项状态，时间戳勾选位保持固定宽度。**设计如此：**菜单属于深色控制台的一部分，需要使用同一组控制台颜色；面板移动到全屏容器后不再具有详情页祖先，独立的全屏尺寸规则才能保证宽度变化和 DOM 位置变化不会破坏日志布局。页面进入 Logs 后立即从 <code>offset=0</code> 请求已有日志，再按服务端返回的 byte offset 增量轮询。生命周期状态同时展示 Runtime Metadata 中与当前 operation 版本一致的启动阶段，阶段直接表达准备 Runtime、初始化系统、准备 workspace、启动开发环境、发布访问入口和完成启动。Manager 在 bootstrap、镜像构建、Feature 安装和 lifecycle 命令执行期间同时读取 stdout 和 stderr，并把完整正文行通过 <code>UpdateLog</code> 有界批量上报；页面正文保持 Manager 上报的原始内容。</p>
 <p>Manager 使用 Actions 已有的 <code>##[group]</code>、<code>##[endgroup]</code> 和 <code>##[error]</code> 控制行标记 operation、运行时访问准备、系统与 workspace 初始化、Dev Container 启动和 Endpoint 发布。Gitea 复用 Actions 的命令解析与 ANSI 安全渲染：正在执行和包含错误的分组展开，成功结束的历史分组折叠，原始正文完整保留。分组控制行仍是 protobuf <code>LogLine.message</code>，不新增日志枚举、数据库字段或另一套传输协议。**设计如此：**日志分组属于展示语义，Actions 已经提供稳定约定；复用同一格式可以减少协议和前端重复，同时让下载日志仍保留可读的阶段边界。</p>
 <p>日志轮询按结果分类处理：offset 冲突清空当前渲染并从零读取一次；权限丢失、对象不存在或重复冲突停止轮询并显示本地化错误；网络错误和服务端临时错误保留已有内容并退避重试。镜像拉取使用开始、完成和低频聚合进度表达当前状态。这样刷新、重试和下载继续使用同一份 DBFS 日志，同时避免永久加载和重复节点。</p>
 <p>**设计理由：repository 路径只是创建上下文和来源筛选，不是既有 Codespace 的身份路径。**创建成功后，对象的规范地址只包含 <code>codespace.uuid</code>。这样 repository 删除、改名、转移或变得不可访问时，既有 Codespace 的详情和生命周期操作仍保持稳定，也与 create 完成后不再依赖 repository 的状态模型一致。</p>
@@ -260,20 +270,26 @@ POST   /-/codespaces/{uuid}/delete
 <li>用户提交操作后，页面立即禁用会与该操作冲突的按钮。服务端确认 active operation 后，页面根据展示态保留对应的禁用进度按钮；delete 仍按状态机规则保持可用，可以接管 create、stop 或 resume。</li>
 <li>页面禁用只用于防止重复点击。每个 POST 在 Codespace lock 内重新校验身份、主状态和 active operation；冲突返回 <code>409 Conflict</code> 及当前展示态，页面据此刷新，不把浏览器中的旧操作集当作授权依据。</li>
 <li>完整详情页和 <code>GET /-/codespaces/{uuid}/state</code> 调用同一个创建者详情服务并渲染同一个状态模板片段。状态响应使用 <code>Content-Type: text/html</code> 和 <code>Cache-Control: no-store</code>，根节点固定为 <code>id=codespace-live-state</code>，并通过 <code>data-refresh-after-ms</code> 声明下一次刷新间隔：过渡状态为 2 秒，稳定状态为 15 秒。页面不可见时暂停计时，重新可见后立即刷新；同一页面同一时刻只保留一个状态请求，因此晚到响应不会覆盖更新结果。</li>
+<li>状态片段包含页头、操作、状态摘要、页签和 Overview 内容。使用默认页签时，片段中的默认展示模式发生变化会触发一次完整页面刷新；URL 中已有合法 <code>tab=overview|logs</code> 时保持用户选择。这样状态变化可以重组完整页面，同时日志控制台和设置弹窗不会被周期刷新误删。</li>
 <li>状态刷新失败时保留当前页面，不自行判定 operation 失败，并逐步退避到最长 30 秒。成功响应中没有规范状态片段，或者对象、登录状态和权限已经变化时，浏览器执行完整页面跳转，由现有登录页、对象页或 404 页面给出结果。该接口只读取当前服务端状态，不推进生命周期版本。</li>
 </ul>
 <p>Manager 在状态切换期间离线时，Gitea 保持已登记 operation 和原有截止时间。页面继续显示当前过渡状态，并明确说明正在等待 Manager；Manager 恢复后按现有 Fetch 和续租流程继续，截止时间到达后按<a href="state-machine.html#%E8%B6%85%E6%97%B6%E5%A4%84%E7%90%86">超时处理</a>进入唯一结果。稳定 <code>running</code> 或 <code>stopped</code> 对象不会仅因 Manager 离线改变主状态：连接类操作和 resume 暂时禁用，stop 与 delete 仍可提交并等待 Manager 领取。这样短暂故障不会被误报为 Codespace 失败，永久故障又会由 operation 超时、普通重试和站点管理员强制删除得到明确结果。</p>
 <p>**设计理由：页面区分权限不足、状态不适用和基础设施暂时不可用。**权限不足的操作不应暴露，已经提交的状态切换需要保留可见进度，Manager 离线则需要告诉用户持久状态没有被改写。服务端始终负责最终校验，使多标签页、重复点击和 Manager 状态变化不会绕过生命周期规则。</p>
 <p>实现验收点：</p>
 <ul>
-<li>用户 repository 和组织 repository 都通过代码页 Code 面板的 Codespaces tab 展示当前用户在该 repository 下的对象；创建动作使用 <code>POST /{owner}/{repo}/codespaces</code>，并由服务端解析 repository、ref 和 commit。</li>
+<li>用户 repository 和组织 repository 都通过代码页 Code 面板的 Codespaces tab 展示当前用户在该 repository 下的对象；创建入口使用 <code>GET /{owner}/{repo}/codespaces/new</code> 生成确认计划，最终创建使用 <code>POST /{owner}/{repo}/codespaces</code>，并由服务端解析 repository、ref 和 commit。</li>
 <li><code>GET /{owner}/{repo}/codespaces</code> 重定向到 repository 代码页。设计如此是因为仓库入口属于 Code 面板的一部分，不是对象身份路径。</li>
 <li>所有 Codespace Web 集合与对象路由使用复数 <code>codespaces</code>；创建成功后的规范地址不包含 repository 路径。</li>
 <li><code>/-/codespaces</code> 使用 Gitea 功能前缀；名为 <code>codespaces</code> 的用户、组织和 repository 继续使用原有通用路由。</li>
 <li>repository 删除、改名、转移或权限丢失后，已有对象仍通过 <code>/-/codespaces/{uuid}</code> 执行详情、日志和允许的生命周期操作。</li>
-<li>创建入口只有 repository 代码页 Code 面板中的 <code>POST /{owner}/{repo}/codespaces</code>，全局页面只负责列表和对象详情。</li>
+<li>创建入口只有 repository 代码页 Code 面板中的确认页链接，确认页提交到同一 repository 的 Codespace 集合；全局页面只负责列表和对象详情。</li>
 <li>顶部导航在 Codespace 启用且用户已登录时显示 Codespaces，进入 <code>/-/codespaces</code>。</li>
-<li>详情页首屏只渲染日志容器，浏览器随后立即从 <code>offset=0</code> 读取同一份日志；Manager bootstrap、构建和 lifecycle 命令的 stdout/stderr 在运行期间按正文行进入日志，不添加通道前缀。</li>
+<li>生命周期态默认进入 Logs 并从 <code>offset=0</code> 读取同一份日志；稳定态默认进入 Overview。用户显式选择 Overview 或 Logs 后，状态轮询保持该选择；使用默认页签且状态跨越布局类型时只完整刷新一次。</li>
+<li>详情页以 repository、ref 和可跳转的短 commit 标识工作区，UUID 只用于内部路由和对象身份。Workspace 使用页头唯一的主要打开操作，运行中 Overview 分别展示 SSH 和 Ports；其他状态展示仍然有效的运行上下文。</li>
+<li>当前允许的普通 Continue、Stop 和 Delete 在页头直接显示，Delete 位于末尾并保留红色确认样式；详情生命周期操作不使用更多菜单。Ports 的图标操作列宽度稳定，列表头只提供无障碍名称。</li>
+<li>Overview 和 Logs 使用相同的页面祖先布局、页头高度、页签高度、底部间距和页面滚动槽；切换页签时标题、状态摘要、操作区和页签位置保持一致。</li>
+<li>日志面板在桌面、中间宽度、移动端和全屏状态均占满可用宽度；窄屏页头保持标题与菜单同一行，全屏正文使用菜单页头之外的剩余高度。更多菜单的背景、边框、指向箭头、悬停状态和固定勾选位与 Actions 控制台一致。</li>
+<li>booting 和 resuming 在 Runtime Metadata 的 operation 版本与当前操作一致时显示明确启动阶段；缺少匹配阶段时只展示状态摘要，不推测进度或百分比。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Manager 为 operation 和主要启动阶段写入 Actions 格式分组，失败使用错误控制行；Gitea 复用 Actions 解析和 ANSI 渲染，当前与失败分组展开、成功历史分组折叠。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -503,9 +519,9 @@ CanAdministerCodespace(ctx, user, codespace, action) Decision
 <p>只有创建者详情在当前 Runtime Metadata 存在时返回 <code>resource_usage</code>。该对象只包含 CPU、内存和磁盘当前用量、对应 limit 和采样时间；limit 为 0 时页面显示限制未知。指标缺失不影响 workspace、Endpoint、SSH 或 allowed actions 的返回，页面显示暂不可用。治理摘要不包含资源指标，也不按这些指标排序。**设计如此：**创建者需要快速判断自己的工作区是否接近资源上限，管理员治理只依赖状态、归属和允许动作；把瞬时指标放进治理数据会引入容易误判的运维含义。</p>
 <p>创建者详情使用 Gitea 原生进度条展示 CPU、内存和磁盘的 <code>used/limit</code>，并在旁边保留格式化后的真实数值。limit 大于 0 时进度条表达当前占比，used 超过 limit 时进度条显示为满格而文字继续显示真实数值；limit 等于 0 时只显示当前用量和“限制未知”。**设计如此：**limit 等于 0 表示 Manager 没有取得有效上限，并不表示资源无限或使用率为零；省略进度条可以避免向用户展示无法成立的比例。页面不自行增加告警阈值和告警颜色，因为不同 Incus 配置下瞬时用量与可执行动作没有统一告警语义。</p>
 <p>创建者列表继续使用 Gitea 的响应式分隔列表。Manager 列表和单项页的绑定 Codespace 使用与 Actions Runner 相同的基础表格：Manager 列表只展示名称与版本、状态、可选所属用户、tags、最后在线、绑定数量和编辑图标；单项页在基础信息区展示可换行的 Gateway、SSH 和 Host Key，再用分页表格展示绑定 Codespace。窄屏时表格只在 attached segment 内横向滚动，不扩大整个设置页面。**设计如此：**Manager 是低频管理对象，列结构稳定且需要快速纵向比较；单项页承载长连接信息和实例管理，可以避免列表弹窗为每行重复生成详情内容。</p>
-<p>创建者详情采用与 Gitea Actions 详情相同的信息层级：全宽页面顶部显示返回入口、标题和 repository/ref 摘要，主体在桌面端分为左右两列。左侧使用剩余宽度展示操作日志，右侧保持 300 到 340 像素，依次展示实时状态与当前操作、访问方式、资源用量和 UUID/commit/创建时间/最后活跃时间；repository 和 ref 已经在页头表达，因此右侧不重复展示。页面占用 Gitea 导航栏与页脚之间的剩余高度，日志与右侧信息分别滚动，文档本身不产生纵向滚动。页面宽度低于 992 像素时恢复自然文档滚动，状态信息按 DOM 顺序先于日志显示，避免固定高度在触屏设备上形成嵌套滚动。右侧信息按章节和分隔线组织，不堆叠卡片。**设计如此：**创建和恢复期间用户主要阅读连续日志，日志应获得主要宽度；状态与控制需要持续可见但内容宽度有限。桌面端使用独立滚动保持两者同时可用，移动端改用自然滚动则更符合触屏浏览方式。</p>
+<p>创建者详情采用与 Gitea 其他对象页一致的全宽标题、状态摘要、操作区和页签。标题使用 repository 名称，ref、可跳转的短 commit 和创建时间作为次要信息；UUID 只承担路由和服务端对象身份。Overview 的连接区域占主要宽度，运行上下文在桌面端位于较窄的第二列，低于 992 像素时按自然文档流排列。连接区域按 SSH 和 Ports 分节，Workspace 打开操作固定在页头。页头始终直接展示当前可执行的 Continue、Stop 和 Delete：主要的 Open Workspace、Resume 或 Continue 位于最前，普通 Continue 与 Stop 使用次要按钮，设置使用图标按钮，Delete 作为最后一个红色确认操作。**设计如此：**详情页的生命周期操作数量有限且影响明确，直接展示比单独的更多菜单更容易发现，也能让删除操作的危险样式始终可见；按钮按当前服务端权限自然出现，不为不存在的动作预留位置。</p>
 <p>Auto-stop 使用创建者列表和详情页共用的设置弹窗。模式使用纵向原生单选组：站点默认项直接展示当前站点时长，自定义项展开数值和单位并展示允许范围，永不自动暂停项说明运行环境由用户手动停止；弹窗同时展示当前已保存策略的实际结果。自定义数值使用剩余行宽，单位使用 Gitea 标准紧凑下拉框并保持稳定宽度；窄屏可以换为上下排列。切换离开自定义项时禁用从属字段但保留尚未保存的输入，切回后可以继续编辑；详情状态变化只更新弹窗是否可提交。已有自定义秒数超出管理员后来调整的范围时，弹窗保留原值并显示范围提示，下一次保存由用户明确选择新值。**设计如此：**Auto-stop 是低频设置，不需要长期占用详情页空间；共用弹窗让列表页也能直接设置，同时三项单选仍能清楚表达继承、自定义和保持运行的区别。</p>
-<p>操作日志使用一个完整的 Actions 风格控制台面板。面板顶部显示日志标题、轮询说明和下载按钮，正文按完整物理行增量渲染；每行由固定宽度行号和可换行正文组成，长内容换行后继续与正文起点对齐。页面继续使用现有字节 offset 读取接口和纯文本下载格式，不解析 Actions step、ANSI command 或日志分组。新日志到达时，页面只在用户原本位于底部附近时跟随到底部；用户正在阅读历史行时保持当前位置。下载接口先完成权限和首个分页读取，再把同一 DBFS 日志逐页写入 HTTP 响应。**设计如此：**Codespace 日志是单一生命周期日志流，不具备 Actions job 和 step 语义；复用 Actions 的控制台层级、颜色和行布局可以获得一致的阅读体验。逐页下载沿用现有 offset 和单文件存储，不需要为完整日志分配等量服务端内存。</p>
+<p>操作日志使用一个完整的 Actions 风格控制台面板。面板顶部提供时间列切换、全屏和下载操作，更多菜单使用与 Actions 控制台一致的背景、边框、指向箭头和交互颜色；时间戳勾选位固定宽度，状态变化不会移动菜单文字。正文按完整物理行增量渲染，每行由固定宽度行号、可选时间和可换行正文组成。日志面板在所有页面宽度下占满唯一内容列，窄屏仍保持标题与更多菜单同一行；进入全屏后即使面板移动到全局容器，也继续填满完整宽高并让正文使用剩余空间。页面复用 Actions 的 ANSI 安全渲染和 <code>##[group]</code>、<code>##[endgroup]</code>、严重级别控制行解析，使阶段可以折叠且错误保持醒目；它仍是一条生命周期日志流，不引入 Actions job 或 step 数据模型。新日志到达时，页面只在用户原本位于底部附近时跟随到底部；用户正在阅读历史行时保持当前位置。下载接口先完成权限和首个分页读取，再把同一 DBFS 日志逐页写入 HTTP 响应。**设计如此：**复用现有日志展示约定可以获得一致的阅读体验，明确面板自身的响应式和全屏尺寸可以避免 DOM 位置变化后意外继承普通页面高度，同时 byte offset 和单文件存储仍是唯一的读取与下载来源。</p>
 <p>创建者列表和详情页中的 Workspace、Open Workspace 和普通 Endpoint 入口共用页面内的确认弹窗。普通点击确认后，浏览器在新标签页提交 POST 并进入 Gateway，提交事件完成后原页面关闭弹窗并清除加载状态，使原来的 Gitea 列表或详情页继续用于查看状态、日志和管理工作区。Gateway 认证恢复进入详情页时，弹窗在当前标签页提交 POST，使该 Gateway 标签页能在 code 交换后回到原 path/query。**设计如此：**两种提交目标服务于不同上下文，但都复用同一弹窗和 POST 路由；只在新标签页路径主动结束原页面弹窗，当前页恢复仍沿用 Gitea 传统表单等待页面跳转的行为。页面脚本不接收 Gateway URL，目标地址始终由服务端按当前 Manager 和 metadata 推导。</p>
 <p>Codespace 删除、站点强制删除和 Manager 删除使用 Gitea 公共确认弹窗。普通删除说明工作区、凭据和操作日志会被清理；强制删除说明 Gitea 记录会立即移除，Manager 在后续对账中清理残留运行时资源；Manager 删除说明该 Manager 身份和绑定的 Gitea Codespace 记录会一并清理。确认后仍提交服务端要求的 <code>confirm=force-delete</code> 或 <code>confirm=delete-manager</code> 标记，弹窗只改善交互，不替代服务端校验。Stop 可以通过 Resume 恢复，因此直接提交。**设计如此：**确认内容按实际影响区分，用户能在提交前理解结果，同时权限和生命周期判断继续由服务端统一负责。</p>
 <p><code>allowed_actions</code> 使用固定值 <code>open_workspace / open_endpoint / ssh / continue / configure_auto_stop / stop / resume / delete / force_delete</code>，但按调用者角色返回不同子集：</p>
@@ -547,10 +563,10 @@ CanAdministerCodespace(ctx, user, codespace, action) Decision
 <li>创建者详情中的 workspace 和普通 Endpoint 都带站内 <code>open_path</code> 和当前 <code>can_open</code>；workspace 固定需要认证，普通 Endpoint 的 <code>public</code> 标记与 Runtime Metadata 一致。页面只通过弹窗 POST 打开，Gateway URL 不进入页面数据。</li>
 <li><code>display_status</code> 与 <code>allowed_actions</code> 分工明确：前者产生正在创建、停止、恢复或删除的禁用进度按钮，后者只产生可以提交的操作。</li>
 <li>创建者列表、Manager 列表和 Manager 单项页在 1440、1024、768 和 375 像素宽度下不产生页面级横向滚动；Manager 表格在 attached segment 内滚动，长仓库名、引用名、Gateway URL、SSH 地址、SSH 命令和主机密钥指纹在各自内容区内换行。</li>
-<li>详情页在桌面端使用可伸缩的左侧日志栏和 300 到 340 像素的右侧上下文栏，占用主内容剩余高度；日志与右栏分别滚动，文档本身不纵向滚动。低于 992 像素时恢复自然文档流并按状态、日志顺序排列，两种布局都不产生页面级横向滚动。</li>
-<li>状态与操作、Access、Runtime usage 和 Details 在右侧按章节展示；页头已经展示 repository/ref，右侧 Details 只展示 UUID、commit 和时间。Auto-stop 使用状态片段之外的公共弹窗，状态轮询不会覆盖正在编辑的模式和时间。</li>
+<li>Logs 在桌面端占用主内容剩余高度并在控制台内部滚动；Overview 使用自然文档流和“宽连接区、窄上下文”布局。两种页签共用页面外壳和稳定滚动槽；低于 992 像素时 Overview 改为单列。日志面板在桌面、中间宽度和移动端都占满内容列，窄屏标题与菜单保持同一行；全屏面板移动到 <code>.full.height</code> 后继续填满宽高，正文使用页头之外的剩余空间。</li>
+<li>状态、操作和页签使用全宽页头，Workspace 只在页头提供一次主要打开操作。当前允许的普通 Continue、Stop 和 Delete 直接显示，Delete 位于操作区末尾并保留红色确认样式；详情页不使用生命周期更多菜单。SSH 使用独立章节和完整宽度命令控件；Ports 使用 Service、Port、Visibility 和固定图标操作列，操作列表头只提供无障碍名称，移动端使用两行结构。主机密钥校验可以展开查看并复制指纹。Auto-stop 使用状态片段之外的公共弹窗，状态轮询不会覆盖正在编辑的模式和时间。</li>
 <li>列表页更多菜单和详情页设置按钮打开同一个 Auto-stop 弹窗。三种模式使用原生单选组；站点默认展示当前默认时长，自定义只在选中且当前状态可配置时启用正整数数值和秒、分钟、小时、天标准下拉框，永不自动暂停说明由用户手动停止。保存只根据固定 <code>list|detail</code> 来源返回发起页。</li>
-<li>操作日志使用 Actions 风格的单一控制台面板，行号、可选时间列和正文分别对齐；时间默认隐藏，用户可以切换时间显示、进入全屏或下载日志。页面初始化后立即从 byte offset 0 读取，后续增量轮询只在用户位于底部附近时自动跟随。</li>
+<li>操作日志使用 Actions 风格的单一控制台面板，行号、可选时间列和正文分别对齐；更多菜单的背景、边框、指向箭头、菜单项状态和固定勾选位与控制台一致。时间默认隐藏，用户可以切换时间显示、进入全屏或下载日志。页面初始化后立即从 byte offset 0 读取，后续增量轮询只在用户位于底部附近时自动跟随。</li>
 <li>日志下载在完成访问校验后逐页输出纯文本，内容和页面读取来自同一 DBFS 文件；下载过程不在服务端内存中拼接整份日志。</li>
 <li>创建者列表和详情页的 Workspace 与普通 Endpoint 入口共用一个页面弹窗；普通确认在新标签页提交后关闭原页面弹窗并清除加载状态，Gateway 恢复确认在当前标签页提交，原来的管理页面和恢复路径都保持可用。</li>
 <li>普通删除、强制删除和 Manager 删除提交前显示与实际影响一致的确认弹窗；强制删除和 Manager 删除确认后仍由服务端验证各自的确认标记，Stop 不显示删除类确认。</li>
