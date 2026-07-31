@@ -145,13 +145,20 @@ message DeclareManagerRequest {
   // Gateway scheme, DNS base domain, and optional port; no business path.
   string gateway_url = 2;
   string gateway_ssh_addr = 3;
-  repeated string tags = 4;
+  repeated EnvironmentTag environments = 4;
   string version = 5;
   string name = 6;
   ManagerRuntimeState manager_runtime_state = 7;
   string gateway_ssh_host_key_algorithm = 8;
   string gateway_ssh_host_key_fingerprint_sha256 = 9;
   int64 gateway_ssh_host_key_updated_unix = 10;
+}
+
+message EnvironmentTag {
+  // Stable environment key selected during Codespace creation.
+  string tag = 1;
+  // Short user-facing explanation of the environment.
+  string description = 2;
 }
 
 message DeclareManagerResponse {
@@ -173,6 +180,8 @@ message FetchOperationsRequest {
   repeated AcceptedOperationType accepted_operation_types = 3;
   repeated ObservedOperation observed_operations = 4;
   int32 cleanup_capacity_available = 5;
+  // Declared environment tags that can create a new instance in this fetch.
+  repeated string accepted_create_tags = 6;
 }
 
 message ObservedOperation {
@@ -586,7 +595,7 @@ x-codespace-manager-secret: <manager secret>
 - `codespace_uuid` 只接受 Gitea 生成的 36 字符小写带连字符 UUID v4；其他形式在查询和构造锁 key 前返回 `invalid_argument`，保证一个 Codespace 只有一种外部表达。
 - 数据库中的 operation/generation `0` 只表示尚未产生版本；`operation_rversion`、`inventory_generation`、`runtime_generation` 和 `metadata_generation` 的有效新值从 `1` 开始。operation-bound RPC 和 `ReportRuntimeTransition.observed_operation_rversion` 必须大于 0。inventory item 的 `observed_operation_rversion=0` 固定表示 Manager 没有可继续的完整 active operation 上下文，即使 Gitea 当前 `codespace.operation_rversion` 已经是正数也成立；正数固定表示 Manager 持有该版本的完整 active operation 上下文。该字段不传输本地历史最高版本，也不写回数据库版本。
 - 所有版本递增使用 checked increment。任一 operation、交互或 Manager generation 无法递增时返回不可重试的 `version_exhausted`，不提交主状态、active operation、交互结果或本地快照的部分写入。Codespace operation/交互版本由管理员 force delete，单对象 runtime/metadata 版本由 Manager 清理该 UUID，inventory 版本由管理员删除 Manager 并重新注册；版本保持正数和单调递增，不回绕或重置。
-- Manager 本地 `capacity_total` 为 `1..10000`，只用于限制本机管理的 Runtime 总数，不进入 Declare 或 Gitea 数据库。`FetchOperations.startup_capacity_available` 和 `cleanup_capacity_available` 均为 `0..256`，分别限制本次新领取的 create/resume 与 stop/delete。Gitea 以两者之和推导 operation payload 上限，并限制在 `1..256`；两个可用容量都为 0 时仍处理全部 observed 续租，但不领取 queued operation。Manager 每次提交全部本地上下文完整的 running operation：相同版本续租，较低版本取得当前 payload，省略项保持不执行并等待原 deadline。**设计如此：**总容量是 Manager 的本地调度事实，Fetch 只传递当前真正可执行的槽位，避免 Gitea 保存会立即过期的容量快照。
+- Manager 本地 `capacity_total` 为 `1..10000`，只用于限制本机管理的 Runtime 总数，不进入 Declare 或 Gitea 数据库。`FetchOperations.startup_capacity_available` 和 `cleanup_capacity_available` 均为 `0..256`，分别限制本次新领取的 create/resume 与 stop/delete。`accepted_create_tags` 最多 64 项，必须是当前 Declare 环境 tag 的规范子集，只限制新 create；resume 继续使用既有 Manager binding 和本地环境快照。Gitea 以两类容量之和推导 operation payload 上限，并限制在 `1..256`；两个可用容量都为 0 时仍处理全部 observed 续租，但不领取 queued operation。Manager 每次提交全部本地上下文完整的 running operation：相同版本续租，较低版本取得当前 payload，省略项保持不执行并等待原 deadline。**设计如此：**总容量和各环境当前能否创建都是 Manager 的瞬时运行事实，Fetch 只传递当前真正可执行的范围，避免 Gitea 保存会立即过期的容量快照。
 - `FetchOperations` 在续租、timeout 和 claim 前批量预检 observed 版本；高于已存在且绑定当前 Manager 的 Codespace 当前版本时整次返回 `state_history_conflict`。无记录或 binding 不匹配的 UUID 不续租，由完整 inventory 返回清理结果。
 - `FetchOperationsResponse.renewed_leases` 最多与 request 的 `observed_operations` 等长；同一 UUID 不能同时出现在 `operations` 和 `renewed_leases`。普通 operation payload 与 observed 批量续租都返回正数 `lease_valid_for_milliseconds`：通常精确等于 `OPERATION_LEASE_TIMEOUT`，标准 lease 会越过固定总执行期限时返回到总期限为止、向下取整的实际正整数毫秒数。Gitea 把同一次授权的绝对 deadline 写入数据库但不通过协议回传；abort payload 不续租，因此相对时长固定为 0。
 - `ReportInstances.instances` 最多 10000 条且 UUID 唯一，每次都是完整扫描结果。每次提交都使用高于 Manager 本地已使用值的新 `inventory_generation`；传输失败后的下一次完整扫描也使用更高值。Gitea 原子接受任何高于数据库当前值的 generation，等于或低于当前值返回 stale；更高请求成立后，旧 handler 在逐项写入和返回响应前复检失败并停止。数据库查询成功并明确确认 reported UUID 不存在时才返回 `cleanup_local_runtime`；数据库或请求处理失败不转换成清理指令。
@@ -596,7 +605,7 @@ x-codespace-manager-secret: <manager secret>
 - `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 Gitea running、Runtime stopped 的分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。Gitea stopped、Runtime running 返回 `stop_local_runtime`；启动只能由 Gitea 下发的 resume operation 完成。`ReportRuntimeTransition.runtime_state` 只接受 `STOPPED|FAILED`：运行健康检查确认基础交互持续失败时，Manager 先停止实例再提交 `STOPPED`；只有资源明确不可恢复时提交 `FAILED`。诊断详情只进入 Manager 本地日志。
 - `DeclareManager` 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret 或 Codespace binding。
 - `DeclareManagerResponse` 返回正数 `heartbeat_interval_milliseconds`、`runtime_metadata_refresh_interval_milliseconds` 和 `control_plane_max_message_size_bytes`，并返回来自 Gitea `ROOT_URL` 的规范 absolute `http|https` `gitea_web_url`。该 URL 必须有 host，不含 userinfo、query 或 fragment，path 是规范 AppSubURL 并以 `/` 结尾；HTTP 与 HTTPS 都可使用。Manager 启动后先以 recovering 立即声明，成功取得全部字段后才启动周期任务和领取流程；后续成功响应原子替换当前服务端参数。字段非法时 Manager 保持 recovering，后续 Fetch 提交两类零可用槽位，不采用本地猜测值。
-- `DeclareManager.tags` 最多 64 项，单项 lower-case 后使用 `[a-z0-9_-]+`、长度为 1-64，并规范化去重。
+- `DeclareManager.environments` 包含 1..64 项；tag 转为 lower-case 后使用 `[a-z0-9_-]+`、长度为 1..64，description trim 后最长 255 字符。规范化后的重复 tag 拒绝整次声明。
 - `gateway_url` 使用无尾随点的规范 ASCII DNS 主机名，每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符，并与 Gitea `ROOT_URL` 处于不同可注册域；`gateway_url` 与 `gateway_ssh_addr` 分别在 Manager 间保持规范化唯一。任一校验或唯一性冲突都不产生部分声明更新。
 - `ReportRuntimeMetadata.metadata` 使用 `RuntimeMetadata` typed message。`endpoints`、`boot` 和 `resource_usage` 都通过 proto 字段表达。Gitea 按规范化后的 typed snapshot 计算编码大小，不能超过 `RUNTIME_METADATA_MAX_SIZE`。**设计如此：**Manager、codespace-proto-go 和 Gitea 共享同一份生成结构，字段含义由 proto 定义承担；页面展示、缓存 hash 和 Gateway 判定使用同一组字段。
 - Runtime Metadata 中 endpoints 最多 64 个且 `endpoint_id` 唯一；其中最多 63 个来自 Runtime manifest，Manager 固定补入一个 `endpoint_id=workspace`、`label=Workspace`、`public=false` 的 Web IDE 描述。普通 ID 固定匹配 `^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`，每项必须包含布尔 `public`。`workspace` 继续使用无 ID 前缀的 workspace Host。
@@ -676,7 +685,7 @@ x-codespace-manager-secret: <manager secret>
 实现验收点：
 
 - 每个 operation envelope 的 `command` 必须设置一个分支；普通 create 携带完整 payload，resume/stop/delete 使用各自分支；站点排空后 deadline 未到期的 create 使用 `abort_create`，对应 resume 使用 `abort_resume`。
-- `CreateOperationPayload.environment_tag` 携带 Gitea 选择并用于 claim 的运行环境键；当前创建流程固定使用 `default`，仓库 Dev Container 文件不修改该字段。Manager 把它保存到本地 state、Incus 实例元数据和 bootstrap 输入。
+- `CreateOperationPayload.environment_tag` 携带用户在 Gitea 确认页显式选择、服务端最终复检并用于 claim 的运行环境键；仓库 Dev Container 文件不修改该字段。Manager 在修改 Incus 前精确匹配本地声明环境，并把有效环境保存到本地 state、Incus 实例元数据和 bootstrap 输入。
 - `CreateOperationPayload.repo_clone_http_url` 和 `repo_clone_ssh_url` 由 Gitea 现有仓库克隆地址生成器分别产生规范 HTTP(S) 与 SSH 地址；只有对应 clone 能力可用时返回非空。`git_protocol` 表示本次 create 的首次首选项，并且必须指向一个非空 URL。内置 bootstrap 在受控临时 workspace 中先使用首选地址，clone/fetch 非零退出且另一种 URL 非空时清理该目录并在同一次调用中重试一次；最终失败写入不可恢复结果。本地前置错误和 HEAD 校验失败不切换协议。Manager 仍以锁定 SHA 和实际 remote 的本地凭据配置作为结果校验。
 - `CreateOperationPayload` 携带 `GitProtocol`；`ResumeOperationPayload` 不携带协议。Manager 无论实际 remote 使用何种协议都通过一次 `RequestRuntimeAccess` 上报固定公钥并取得完整访问材料。
 - `CreateOperationPayload.username` 携带创建时的 Gitea 用户名，`git_user_email` 携带隐私保护后的 Git email。Manager 用用户名派生 Runtime Linux 用户名和 Git `user.name`，并只在 create 初始化时写入 Git identity；resume 使用本地 state，不覆盖 workspace 中用户后续修改过的 Git identity。

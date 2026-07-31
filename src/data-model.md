@@ -13,7 +13,7 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、创
 | `repo_id` | `BIGINT NOT NULL DEFAULT 0` | 大于 0 时表示源仓库；源仓库权限由创建用户当前权限自动派生，repository 删除 pre-cleanup 时写为 0 |
 | `ref_type` | `VARCHAR(16) NOT NULL DEFAULT ''` | 有效记录只允许 `branch` / `tag` / `commit` / `pull` |
 | `ref_name` | `TEXT NOT NULL` | branch/tag/commit 标识或规范化 PR ref 路径 |
-| `environment_tag` | `VARCHAR(64) NOT NULL DEFAULT 'default'` | 当前由 Gitea 固定为平台默认运行环境键，用于 Manager claim；仓库配置不参与基础设施调度 |
+| `environment_tag` | `VARCHAR(64) NOT NULL` | 用户创建时显式选择并经 Gitea 复检的运行环境键，用于 Manager claim；仓库配置不参与基础设施调度 |
 | `commit_sha` | `VARCHAR(64) NOT NULL DEFAULT ''` | create 前置校验完成后必须为完整锁定 commit SHA |
 | `dev_container_path` | `VARCHAR(512) NOT NULL DEFAULT ''` | 仓库配置相对路径；平台默认来源为空 |
 | `dev_container_content_sha256` | `CHAR(64) NOT NULL DEFAULT ''` | 仓库原始 JSONC 的 SHA256；平台默认来源为空 |
@@ -45,9 +45,9 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 `operation_rversion`、`runtime_generation`、`inventory_generation` 和 `interaction_generation` 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 `BIGINT` 时使用 checked increment，不回绕到 0 或负数。任一版本无法递增时返回不可重试的 `version_exhausted`，不写主状态、active operation、交互结果或本地快照的部分结果。Codespace 的 operation 或交互版本耗尽后由管理员 force delete；单 Codespace 的 runtime/metadata 版本耗尽由 Manager 按 Incus 归属字段清理该对象；Manager inventory 版本耗尽后删除 Manager、清理部署侧资源并重新注册。该情况需要超过 `int64` 可表达次数，继续为计数设计自动恢复没有实际收益，因此按影响范围使用现有删除路径收敛。`runtime_generation` 仅保存当前值；相同 generation 的幂等以状态报告的目标主状态是否已成立判定，不需要再增加历史状态报告类型字段。
 
-**设计如此：数据库版本与 Manager 观察值是两个独立字段。**数据库 `codespace.operation_rversion=0` 只表示 Gitea 从未为该 Codespace 创建 operation；无匹配 Manager 而直接创建的 failed 记录只是这一初始值的一个实例。inventory 中的 `RuntimeInstance.observed_operation_rversion=0` 表示 Manager 当前没有可继续的完整 active operation 上下文，即使数据库已经保留正数版本也可以上报 0；该观察值只参与本次对账，数据库版本继续由 Gitea 生命周期事务维护。Manager 持有完整上下文时上报对应的正数版本，operation-bound RPC 和状态报告始终使用正数版本。
+**设计如此：数据库版本与 Manager 观察值是两个独立字段。**数据库 `codespace.operation_rversion=0` 只表示 Gitea 从未为该 Codespace 创建 operation。inventory 中的 `RuntimeInstance.observed_operation_rversion=0` 表示 Manager 当前没有可继续的完整 active operation 上下文，即使数据库已经保留正数版本也可以上报 0；该观察值只参与本次对账，数据库版本继续由 Gitea 生命周期事务维护。Manager 持有完整上下文时上报对应的正数版本，operation-bound RPC 和状态报告始终使用正数版本。
 
-`environment_tag` 是 Gitea 控制的运行环境键，当前创建流程固定使用 `default`。仓库 Dev Container 文件只描述内部开发环境，不选择 Incus 主机、实例类型或 Manager tag。**设计如此：**基础设施容量由部署管理员声明，仓库代码可以定义容器镜像和生命周期命令，但不能借配置文件改变调度范围。create 被领取后，stop、resume 和 delete 只使用已经绑定的 `manager_id`。
+`environment_tag` 是用户在 Gitea 创建确认页显式选择的运行环境键。可选值来自站点全局 Manager 和当前用户个人 Manager 已成功 Declare 的环境声明，最终提交在事务内重新校验后保存。仓库 Dev Container 文件只描述内部开发环境，不选择 Incus 主机、实例类型或 Manager tag。**设计如此：**用户能够明确选择部署管理员提供的基础设施能力，仓库代码仍不能借配置文件改变调度范围。create 被领取后，stop、resume 和 delete 只使用已经绑定的 `manager_id` 与 Manager 本地环境快照。
 
 三个 `dev_container_*` 字段共同保存创建确认时的不可变选择，不保存 JSONC 正文。仓库来源使用非空路径和原始字节摘要，平台默认来源使用非空默认镜像，两种形态互斥；配置所在提交直接使用同一行的 `commit_sha`。**设计如此：创建时解析配置和锁定源码使用同一个提交，来源又能由互斥字段无歧义地判断，重复保存来源枚举和提交会形成可能不一致的第二份状态。**Manager clone 后从锁定提交校验所选文件，站点默认镜像之后变化也不会改变已创建对象。
 
@@ -70,7 +70,7 @@ Endpoint、boot、CPU/内存/磁盘 resource usage 和 last_reported 保存在 G
 | `user_id` | `BIGINT NOT NULL DEFAULT 0` | 0 表示站点全局 Manager；正数表示个人用户的 Manager |
 | `secret_hash` | `VARCHAR(64) NOT NULL DEFAULT ''` | SHA-256 hex verifier |
 | `secret_salt` | `VARCHAR(32) NOT NULL DEFAULT ''` | 16 随机字节的 hex 编码 |
-| `tags_json` | `TEXT NOT NULL` | 规范化、去重后的 tags JSON 数组 |
+| `tags_json` | `TEXT NOT NULL` | 规范化后的 `{tag, description}` 环境声明 JSON 数组；每个 Manager 内 tag 唯一 |
 | `runtime_state` | `VARCHAR(16) NOT NULL DEFAULT 'recovering'` | 只保存 `online` / `recovering`，offline 实时派生 |
 | `last_online_unix` | `BIGINT NOT NULL DEFAULT 0` | 最近成功 Declare 时间 |
 | `inventory_generation` | `BIGINT NOT NULL DEFAULT 0` | 最近接受的完整 inventory 请求版本；只接受更高值 |
@@ -82,7 +82,7 @@ Endpoint、boot、CPU/内存/磁盘 resource usage 和 last_reported 保存在 G
 
 Manager secret 固定为 32 个随机字节的 64 位小写十六进制字符串，salt 为 16 个随机字节的 32 位小写十六进制字符串；`secret_hash` 固定保存 `hex(SHA-256(salt_bytes || secret_bytes))`。明确按解码后的字节计算，可以让注册签发与后续认证使用同一算法，避免实现分别拼接文本得到不同 verifier。
 
-**设计理由：Manager 的身份、可用性和调度意愿分别由现有字段表达。** Manager row 存在表示注册身份有效，`runtime_state + heartbeat` 表示当前可用性，Fetch 的 `startup_capacity_available + accepted_operation_types` 表示本次是否接收 create/resume，`cleanup_capacity_available` 表示本次是否接收 stop/delete，删除 row 表示永久撤销身份。两个 Fetch 可用容量都是单次请求的瞬时值，不写入 Manager 表；总容量只保存在 Manager 本地配置。计划排空由 Manager 上报零启动容量，维护中断由 recovering/offline 表达。各信号职责单一，因此 operation、Token、Gateway session 和 Runtime transition 可按明确来源判定，无需额外管理状态字段。
+**设计理由：Manager 的身份、可用性、稳定环境声明和本轮调度意愿分别由现有字段表达。** Manager row 存在表示注册身份有效，`runtime_state + heartbeat` 表示当前可用性，`tags_json` 表示可供用户选择的环境，Fetch 的 `startup_capacity_available + accepted_operation_types + accepted_create_tags` 表示本次是否接收 create/resume 以及哪些环境还能创建，`cleanup_capacity_available` 表示本次是否接收 stop/delete，删除 row 表示永久撤销身份。Fetch 容量和接受集合都是单次请求的瞬时值，不写入 Manager 表；总容量只保存在 Manager 本地配置。计划排空由 Manager 上报零启动容量，维护中断由 recovering/offline 表达。各信号职责单一，因此 operation、Token、Gateway session 和 Runtime transition 可按明确来源判定，无需额外管理状态字段。
 
 Manager 删除由服务层先按 `codespace.manager_id` 收集并删除绑定 Codespace，再删除 Manager row。提交完成后，数据库只包含 Gitea 当前仍管理的对象；运行侧残留由部署运维处理，不参与 Gitea 删除结果，因此数据表只需保存当前 Manager 记录。
 
@@ -245,7 +245,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] 数据迁移创建文中列出的真实字段和非空默认值；模型校验只允许文中列出的状态、operation 类型和运行态值。
 - [x] active operation 完成后 operation 字段清空，`operation_rversion` 和最新状态报告 generation 保留当前值。
 - [x] 每个 active operation 都保存 `user` 或 `idle` 来源，完成、超时、取消或物理删除时与其他 active operation 字段一同清空。
-- [x] `environment_tag` 是 Gitea 控制的持久调度键，当前新建对象固定为 `default`；索引和 create claim 使用该列，仓库文件不能修改它。
+- [x] `environment_tag` 是用户显式选择并由 Gitea 复检的持久调度键；索引和 create claim 使用该列，仓库文件不能修改它，没有可见或有效环境时不创建数据库记录。
 - [x] Dev Container 仓库路径与摘要和平台默认镜像按两种形态互斥保存；来源由字段形态派生，配置提交统一使用 `commit_sha`，数据库不保存原始 JSONC 正文。
 - [x] Fetch create payload 直接使用持久 Dev Container 选择，不重新读取移动中的 branch 或站点当前默认镜像。
 - [x] `git_protocol` 不存在于 Codespace 表；create payload 按 Manager 领取时的站点配置计算首选协议和可用 clone URL，resume payload 不携带协议。

@@ -185,9 +185,8 @@ queued idle stop 被用户交互取消或被用户 stop 接管时不递增 `oper
 
 | 当前主状态 | 用户动作 | 写入结果 |
 | --- | --- | --- |
-| 无记录，来源完整且有匹配 Manager | create | `status=creating, operation_rversion=1, operation_type=create, operation_status=queued, operation_trigger=user, manager_id=0` |
-| repository/ref/commit/config 前置校验失败 | 无 | 返回创建错误，不创建 codespace |
-| 来源数据完整但无 Manager 匹配 | create | `status=failed, manager_id=0, operation_rversion=0`，operation 字段为空，Gitea 尽力写入失败摘要日志 |
+| 无记录，来源完整且已选择当前可见环境 | create | `status=creating, operation_rversion=1, operation_type=create, operation_status=queued, operation_trigger=user, manager_id=0` |
+| repository/ref/commit/config 前置校验失败，或环境未选择、非法、不可见 | 无 | 返回创建错误，不创建 codespace |
 | `running` | open / SSH | 推进 `interaction_generation`；若存在 queued idle stop 则同事务取消，随后签发或返回访问凭据 |
 | `running` | 继续运行 | 推进 `interaction_generation`；若存在 queued idle stop 则同事务取消，保持 `status=running` |
 | `running` | stop | 无 active operation 时创建 `operation_type=stop, operation_status=queued, operation_trigger=user`；已有 queued idle stop 时原地改为 `operation_trigger=user` |
@@ -202,14 +201,14 @@ queued idle stop 被用户交互取消或被用户 stop 接管时不递增 `oper
 
 除 delete 外，普通生命周期动作要求当前没有 active operation；queued idle stop 的取消和接管是上述规则的明确例外。Open Code 签发、Open Code 成功消费、SSH 成功认证和“继续运行”都在 Codespace lock 内推进 `interaction_generation`，并取消尚未被 Manager 领取的 idle stop；事务先成立的用户交互使后到的 `RequestIdleStop` 因版本不匹配而重置计时，idle stop 先被领取则访问入口返回 stopping，用户在停止完成后使用既有 resume。任一版本无法递增时返回不可重试的 `version_exhausted`，不提交本次用户动作。未绑定 Manager 表示 create 尚未在运行侧建立受 Gitea 管理的资源，delete 在 Codespace lock 内使用短事务直接清理 Gitea 记录。事务先按 UUID、当前 `operation_rversion`、`manager_id=0`、主状态和预读到的全部 operation 字段删除 Codespace 主记录；queued create 匹配 `operation_type=create + operation_status=queued`，没有 active operation 的 failed 记录匹配空 operation 字段。affected rows 为 1 后再删除 Token、Git SSH Key 和日志元数据并一同提交；子项失败会使整笔事务回滚。若条件删除影响 0 行，服务重新读取记录：Fetch 已先完成 claim 时，delete 按已绑定规则创建 delete operation；记录已经由其他删除提交时按 Web 入口约定返回对象不存在；其他版本或 operation 变化按当前状态重新判定。已经绑定 Manager 时，delete 是终止目标，可以抢占当前 create/resume/stop：Gitea 递增 `operation_rversion`，写入 `operation_trigger=user` 的 delete operation，把主状态改为 `deleting`，并在同一事务内物理删除 Token 与 Git SSH Key。Manager 持有先前的 operation 版本上报时返回 stale，避免先前结果覆盖当前删除目标。站点管理员 force delete 是明确的 Gitea 本地删除入口，可作用于任意未物理删除状态；提交前展示该动作不等待运行侧回收并要求确认。原 Manager 身份仍有效时，之后成功提交的完整 inventory 查询不到该 UUID 并收到 `cleanup_local_runtime`；Manager 身份已删除或永久失联时由部署运维处理。
 
-无匹配 Manager 的 failed 记录没有产生 Gitea-issued operation，所以保留初始版本 0；后续 Manager 注册、Declare 或 tags 变化不自动创建 operation。该记录用于展示固定失败结果和日志，用户删除后重新 create 才会重新执行匹配。这样版本 1 始终表示实际创建过的第一个 operation，不把前置判定伪装成已下发任务。
+创建确认只列出已有成功 Declare 的可见环境，因此合法创建总是从版本 1 的 queued create operation 开始。Manager 暂时离线、没有 worker 槽位或本轮没有该 tag 的 create 配额时，记录保持 queued，等待后续 Fetch 或队列超时；前置校验失败不创建版本 0 的失败对象。这样版本 1 始终表示实际创建过的第一个 operation，创建错误也不会留下没有运行侧任务的对象。
 
 实现验收点：
 
 - 普通动作在 active operation 存在时返回 conflict；queued idle stop 可以被用户交互取消、被用户 stop 接管，delete 仍可按规则抢占。
 - Open Code 签发和消费、SSH 成功认证、继续运行与 resume 都推进交互版本；queued idle stop 与这些动作并发时只能形成“取消后继续运行”或“已领取后完成停止”之一。
 - 公共 Endpoint 请求不参与用户交互竞态，queued idle stop 存在时不因匿名请求取消或延后。
-- 无匹配 Manager 的 create 直接形成版本 0 failed 记录，后续 Manager 变化不会自动复活；有匹配 Manager 的 create 从版本 1 queued operation 开始。
+- 合法 create 从版本 1 queued operation 开始；环境不可见或最终复检失败时不创建记录，Manager 暂时离线或无容量时由现有队列超时机制收敛。
 - 无绑定 delete 同步完成，有绑定 delete 生成 queued operation 并物理删除 Token 与 Git SSH Key。
 - 未绑定 delete 与 create claim 并发时，条件写入只产生一种已提交结果：claim 成功后 delete 转为绑定删除，或物理删除成功后 claim 影响 0 行；开发凭据、日志元数据和 Codespace 主记录在同一删除事务中共同提交或共同回滚。
 - force delete 可从包括 deleting 在内的任意未物理删除状态同步完成，不读取 Manager 状态或创建 operation。
@@ -291,11 +290,11 @@ operation_deadline_unix=min(
 
 **设计如此：总执行期限限制的是一次 active operation，不限制 Runtime 的整个生命周期。**它只处理 Manager 持续在线并持续续租、但脚本或 Incus 操作始终无法完成的情况；到期结果继续使用现有 running timeout 映射，因此不增加失败类型、重试计数或历史记录。
 
-领取实现沿用 Actions `runs-on` 的“稳定字段筛选、Go 层判断、条件 UPDATE 抢占”形态。Gitea 从认证 Manager 的最新 `tags_json` 解析普通标量列表；Fetch request 不携带 tags，数据库也不执行 JSON 匹配。候选查询按 operation 状态、类型、`environment_tag IN manager.tags` 和 `codespace.user_id` 做筛选，`accepted_operation_types` 与 capacity 在 Go 层判断。
+领取实现沿用 Actions `runs-on` 的“稳定字段筛选、Go 层判断、条件 UPDATE 抢占”形态。Gitea 从认证 Manager 的最新 `tags_json` 解析环境声明，并校验 Fetch 的 `accepted_create_tags` 是已声明 tag 的子集。create 候选查询按 operation 状态、类型、`environment_tag IN accepted_create_tags` 和 `codespace.user_id` 做筛选，`accepted_operation_types` 与 capacity 在 Go 层判断；resume 使用原 `manager_id`，不使用当前环境声明筛选。
 
 **设计理由：站点全局 Manager 与创建者的个人 Manager 没有调度优先级。**两者同时满足用户范围、tag、online 和 capacity 条件时，都可以参与同一 create 的条件 UPDATE，首个更新成功者取得 operation；binding 成立后不会因为个人 Manager 更具体而迁移。站点全局 Manager 表达可服务全部用户的站点容量，不是个人 Manager 的延迟后备。保持无优先级竞争可以沿用现有 claim 模型，避免增加等待窗口、容量预留和新的失活判定。
 
-create 最终条件 UPDATE 再次确认 Manager online、`status=creating`、当前 `operation_rversion`、`manager_id=0`、`operation_type=create`、`operation_status=queued`、`operation_trigger=user`、`environment_tag` 属于最新 tags、`repo_id>0` 且 repository 存在；个人 Manager 还要求 `codespace.user_id` 与 Manager 的 `user_id` 相同，站点全局 Manager 不限制用户。repository transfer 不改变创建者，所以不改变候选 Manager。
+create 最终条件 UPDATE 再次确认 Manager online、`status=creating`、当前 `operation_rversion`、`manager_id=0`、`operation_type=create`、`operation_status=queued`、`operation_trigger=user`、`environment_tag` 属于本轮 `accepted_create_tags`、`repo_id>0` 且 repository 存在；个人 Manager 还要求 `codespace.user_id` 与 Manager 的 `user_id` 相同，站点全局 Manager 不限制用户。repository transfer 不改变创建者，所以不改变候选 Manager。
 
 Fetch 不使用覆盖整批操作的大事务。running lease 刷新和每条 queued claim 分别使用短事务；每条 claim 成功提交后再加载 payload。payload 加入响应前重新读取同一 UUID，并确认当前 `operation_rversion`、`manager_id`、`operation_type`、`operation_trigger` 和 `operation_status=running` 仍与本次 claim 一致；账户清理已经删除记录或其他流程已经替换 operation 时，该候选不返回旧 payload。若加载 create 所需 repository/user 数据或构造 payload 失败，服务使用单独短事务按 `codespace_uuid + operation_rversion + operation_status=running + manager_id` 条件释放尚未下发的 claim：恢复 `operation_status=queued`，清空 started/deadline，保留来源，create 额外恢复 `manager_id=0`。释放条件 affected rows 为 0 表示 operation 已被其他流程替换，不再覆盖当前状态。单条候选失败后继续处理本批其他候选；数据库连接等系统性错误终止本次 RPC 且不返回 response，已经提交的 claim 保持 running 并等待原 deadline。这样每条 claim 仍使用独立短事务，无法确认 payload 已被 Manager 持久化时也不会重新启动动作。
 

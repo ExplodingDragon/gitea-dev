@@ -215,7 +215,7 @@ Declare 使用明确类型字段提交客户端稳定身份和路由能力的完
 
 实现验收点：
 
-- Declare 成功后，Manager 列表分别展示名称与版本、运行状态、所属用户、tags、最近在线时间和绑定数量，并通过单个编辑入口进入稳定 URL 的管理页。管理页只读展示 Manager ID、创建时间、Gateway/SSH 地址、host key 和完整 tags，并分页列出当前绑定的 Codespace。**设计如此：**这些字段来自 Manager 的完整 Declare 快照，Gitea 页面用于确认当前声明而不形成第二个配置来源；tags 使用独立列表达 Gitea 当前用于匹配基础设施环境的声明值，容量只作为 Manager 本地运行配置和 Fetch 当前槽位使用。
+- Declare 成功后，Manager 列表分别展示名称与版本、运行状态、所属用户、tags、最近在线时间和绑定数量，并通过单个编辑入口进入稳定 URL 的管理页。管理页只读展示 Manager ID、创建时间、Gateway/SSH 地址、host key 以及带说明的完整环境声明，并分页列出当前绑定的 Codespace。同一可见范围内多个 Manager 为同名 tag 声明不同非空说明时，详情页提示部署配置不一致，但不阻断创建或调度。**设计如此：**这些字段来自 Manager 的完整 Declare 快照，Gitea 页面用于确认当前声明而不形成第二个配置来源；环境声明表达 Gitea 当前可供用户选择的稳定基础设施能力，容量只作为 Manager 本地运行配置和 Fetch 当前槽位使用。
 - Declare 协议版本不匹配时旧声明和 heartbeat 保持不变，Manager 关闭入口和新动作后退出；匹配版本重启后按普通 recovering 流程恢复。
 - 客户端修改声明字段后使用完整快照整体覆盖，失败请求不改变任一旧字段或在线时间。
 - 两个 Manager 不能声明相同的规范化 `gateway_url` 或 `gateway_ssh_addr`；地址唯一性由数据库约束保证，heartbeat 不扫描其他 Manager 声明。
@@ -235,12 +235,12 @@ Declare 使用明确类型字段提交客户端稳定身份和路由能力的完
 - create/resume 需要 Manager 在本次 `FetchOperations` 中声明可接收，且 `startup_capacity_available > 0`；stop/delete 需要 `cleanup_capacity_available > 0`。两类 operation 使用独立执行槽位。
 - `FetchOperations` 提交本次两类可用容量，Gitea 将二者之和限制到最多 256 条完整 operation payload；续租回执不占该上限。
 - **设计如此：**Declare 只声明稳定的身份、路由和 tags。总容量与瞬时可用容量都由 Manager 本地配置、实例和 worker 状态计算，Gitea 不保存陈旧容量，也不据此形成第二套调度状态。
-- Manager tags 使用 lower-case 和 `[a-z0-9_-]+` 校验，单项最长 64 字符；Declare 时去重后写入 `tags_json`。当前 Gitea 创建流程只使用 `default`。
+- Manager 必须声明 1..64 个环境。tag 使用 lower-case 和 `[a-z0-9_-]+` 校验，单项最长 64 字符，description 最长 255 字符；同一 Manager 内规范化后的重复 tag 作为配置错误拒绝。Gitea 在创建确认页聚合站点全局和当前用户个人 Manager 的声明，并要求用户显式选择一个 tag。
 - Manager 根据本地真实容量决定是否拉取 create/resume [Operation](glossary.md#operation)。
 - Gitea 通过数据库条件更新保证 operation 只被一个 Manager 领取。Manager 自行控制本地并发，不超容量拉取。
 - 站点全局 Manager 与创建者的个人 Manager 同时满足条件时均可竞争领取，不等待个人 Manager，也不在 binding 后自动迁移。
 
-Manager 主动 pull operation；启动槽位满时不拉取 create/resume，清理槽位满时不拉取 stop/delete，queued operation 自然等待。两个容量都为 0 时仍通过同一 Fetch 为已有 operation 续租。Gitea 从认证 Manager 数据库记录读取最新 `tags_json`，解析为普通标量列表筛选 `codespace.environment_tag`；Go 层继续判断本次接受类型、容量和最终状态，条件 UPDATE 决定唯一领取者。
+Manager 主动 pull operation；启动槽位满时不拉取 create/resume，清理槽位满时不拉取 stop/delete，queued operation 自然等待。两个容量都为 0 时仍通过同一 Fetch 为已有 operation 续租。Gitea 从认证 Manager 数据库记录读取最新环境声明，并校验 Fetch 的 `accepted_create_tags` 是声明子集；新 create 按该集合筛选 `codespace.environment_tag`，resume 只按既有 `manager_id`。Go 层继续判断本次接受类型、容量和最终状态，条件 UPDATE 决定唯一领取者。
 
 单个 Manager 最多管理 10000 个带完整 `manager_id` 归属字段的 Incus 实例，包括 creating、running、stopped 和异常残留。达到上限后 `startup_capacity_available=0`，不再领取新的 create/resume；全量扫描超过上限时保持 recovering 且不发送截断 inventory，由运维先清理到协议上限内。该硬上限与 Gitea 启动时的最大不可拆分消息校验一致，保证完整 inventory 和全部本地 running operation 都能放入 Declare 返回的消息上限，并分别以一个完整请求提交。
 
@@ -283,11 +283,11 @@ Codespace 的 workspace、软件安装和用户修改都位于实例根存储中
 
 #### Tag 与运行环境
 
-Manager 本地配置在 `runtime.environments[]` 中显式声明 tag；这个 tag 集合就是 Manager 向 Gitea Declare 的 tags，不再维护第二份平行列表。当前 Gitea 创建流程固定选择 `default`，仓库的 Dev Container 配置不能控制实例类型、来源、profiles 或资源限制。每个环境包含实例类型、来源、profiles 和资源限制；固定 bootstrap 与原生运行时由 Manager 程序统一提供，不在 tag 中重复配置。
+Manager 本地配置在 `runtime.environments[]` 中显式声明 tag 和可选 description；这组环境就是 Manager 向 Gitea Declare 的完整环境声明，不再维护第二份平行列表。Gitea 让用户从可见声明中显式选择 tag，仓库的 Dev Container 配置不能控制实例类型、来源、profiles 或资源限制。每个环境包含实例类型、来源、profiles 和资源限制；固定 bootstrap 与原生运行时由 Manager 程序统一提供，不在 tag 中重复配置。
 
 同一个 tag 可以在不同 Manager 上分别映射为 Incus 虚拟机或系统容器，但必须提供相同的用户可见开发能力，例如相同架构、工具链和 workspace 约定。**设计如此：tag 表达可调度的开发环境能力，不表达底层虚拟化技术、用户授权或信任等级；虚拟机与系统容器对 Gitea、bootstrap、Gateway 和用户操作完全透明。**需要让用户明确选择不同开发能力时，应使用不同 tag，而不是让 Gitea 理解实例类型。
 
-虚拟机拥有独立内核，适合作为不受信任代码的默认环境；系统容器共享宿主机内核，适合部署管理员确认可接受该安全边界的环境。当前站点全局或个人 Manager 的 `default` 环境必须适合其创建范围内的仓库代码。image、profile、设备和实例类型只提供部署管理员愿意交给该范围内仓库代码的资源，不依赖 tag 名称隐藏宿主资源或长期凭据。
+虚拟机拥有独立内核，适合作为不受信任代码的环境；系统容器共享宿主机内核，适合部署管理员确认可接受该安全边界的环境。站点全局或个人 Manager 的每个已声明环境都必须适合其创建范围内的仓库代码。image、profile、设备和实例类型只提供部署管理员愿意交给该范围内仓库代码的资源，不依赖 tag 名称隐藏宿主资源或长期凭据。
 
 需要不同信任边界的环境时，部署管理员使用独立的站点或个人 Manager 身份，并且不向不适用的创建范围声明对应 tag。Manager 启动时继续校验 project、环境结构和展开后的实际配置，不尝试自动判断任意 Incus profile 是否符合管理员的安全策略。**设计理由：profile 可以组合宿主设备和部署策略，通用代码无法可靠推断其业务信任含义；明确声明范围和部署责任比增加一套不完整的 tag ACL 或 profile 安全扫描更可验证。**
 
@@ -346,7 +346,7 @@ Manager 重启本身不改变 Gitea 主状态。启动时读取本地快照、�
 
 Manager 使用三个简单上限：配置中的 `capacity_total` 限制可以同时处于 creating、resuming 或 running 的实例数量；`startup_workers` 限制同时执行的 create/resume，`cleanup_workers` 限制同时执行的 stop/delete 和本地资源缩减任务。Incus 可用时，`startup_capacity_available` 取运行实例剩余名额和空闲启动槽位的较小值；`cleanup_capacity_available` 取空闲清理槽位数。Incus 不可用时两者都为 0。stopped 实例不占运行名额，但仍计入 project 的实例数和磁盘配额。
 
-`accepted_operation_types` 分开表达新建和恢复能力。有运行名额时，Manager 接受 resume；只有 project 的剩余实例数、实例类型、内存配额和全局磁盘配额足以容纳所有已声明 tag 的新实例环境时，才同时接受 create。采用全环境保守判断的原因是 Fetch 只有一个启动容量值，不能按 tag 表达不同资源成本；它可能暂缓一个实际放得下的小环境，但不会领取一个随后必然因 project 配额失败的 create。Manager 使用 Incus project state 的全局 `disk` 配额做预检查；pool 级空间、profile 设备组合和存储池调度由部署管理员在 Incus project/profile 中保证。这样设计可以在不引入额外 profile 展开和池选择状态的情况下，覆盖站点级磁盘容量保护。stop 和 delete 不占启动容量，但领取前必须有清理槽位，保证 operation 的执行期限不会消耗在 Manager 本地等待队列中。
+`accepted_operation_types` 分开表达新建和恢复能力。有运行名额时，Manager 接受 resume；Manager 再按 project 的剩余实例数、实例类型、内存配额和全局磁盘配额逐个检查已声明环境，把能够创建的 tag 放入 `accepted_create_tags`。至少一个环境可创建时接受 create，Gitea 只下发集合内的 queued create。**设计如此：**启动容量限制本次 worker 总量，tag 集合表达不同资源规格的当前可用性；小环境仍可创建时无需被暂时不可用的高规格环境阻塞。Manager 使用 Incus project state 的全局 `disk` 配额做预检查；pool 级空间、profile 设备组合和存储池调度由部署管理员在 Incus project/profile 中保证。stop 和 delete 不占启动容量，但领取前必须有清理槽位，保证 operation 的执行期限不会消耗在 Manager 本地等待队列中。
 
 环境规格差异不引入加权调度。需要明显不同容量池时，部署多个使用不同 tag 和 Incus project 的 Manager，使每个 Manager 的容量仍可直接按实例计数。这个取舍保留了 Gitea 当前的简单 claim 模型，也让容量不足时的行为可预测。
 
@@ -374,7 +374,7 @@ Incus 端到端测试通过独立入口运行。测试启动时先识别当前�
 
 - [x] Manager 只通过 Incus 管理 Runtime；启动时验证 Incus 服务端可达、客户端为 trusted、服务端不是 public-only、配置的 project 为当前 project，且服务处于非集群模式。当前实现先完成这些前置校验，再允许 Incus provisioner 创建成功；环境字段和权限最小化继续按本节规则验收。
 - 每个 Codespace 恰好映射一个使用 `cs-{codespace_uuid_short}` 名称、带完整 `manager_id + codespace_uuid` 归属字段的 Incus 实例；名称冲突时使用完整归属字段作硬错误判定，workspace 随实例停止保留并随实例删除。测试同时验证该本地名称与 Gateway 使用的 `cs-{完整规范 UUID}` SSH 路由名分别从完整 UUID 派生，并各自在本地资源操作和 SSH 路由中使用。
-- [x] Declare tags 完全由 `runtime.environments[].tag` 生成；同一 tag 的虚拟机或系统容器差异不进入 Gitea 数据、RPC 或 Dev Container 配置。Manager 配置以 `node`、`gateway` 和 `runtime` 为唯一顶层结构，tag、Incus 连接和运行环境都能从这三个结构中唯一确定。
+- [x] Declare 环境声明完全由 `runtime.environments[]` 的 tag 和 description 生成；同一 tag 的虚拟机或系统容器差异不进入 Gitea 数据、RPC 或 Dev Container 配置。Manager 配置以 `node`、`gateway` 和 `runtime` 为唯一顶层结构，tag、说明、Incus 连接和运行环境都能从这三个结构中唯一确定。
 - 站点全局 Manager 的每个已声明环境都适用于站点创建范围，个人 Manager 的每个已声明环境都适用于该用户创建范围；tag 只表达开发能力和资源形状，不作为用户授权或信任等级。需要不同信任边界时由独立 Manager 身份提供，不向不适用的范围声明对应 tag。
 - [x] create payload 的 `environment_tag` 选择同名本地运行环境；环境缺失时不修改 Incus，并以 create final failed 结束该 operation。
 - create 在首次 Incus 修改前持久化有效环境快照；tag 映射变更不改变已有实例的 resume、stop 和 delete 行为，共享 profile 通过新版本名称演进。
@@ -391,11 +391,11 @@ Incus 端到端测试通过独立入口运行。测试启动时先识别当前�
 - create 名称冲突且归属不匹配时保留原实例并返回固定硬错误；同归属实例按已持久化 operation 阶段幂等继续。
 - Manager 重启只恢复快照、扫描和上报，不因重启本身改变任何 Incus 实例状态。
 - [x] capacity 使用 running/creating 实例数和启动 worker 数计算；cleanup capacity 使用清理 worker、本地 cleanup pending 和正在执行的清理 operation 计算。stopped 实例保留但不占运行名额；stop/delete 只使用空闲清理槽位。
-- [x] 当前 Incus 环境实现通过 project state 的实例数、实例类型和内存资源判断 create 配额；project 配额不足以创建任一已声明环境的新实例时只关闭 create，仍可在有运行名额时领取 resume。设计如此是因为 resume 使用已有 stopped 实例，能够让用户恢复现有 workspace，同时避免领取随后会被 Incus project 拒绝的新 create；Fetch 没有按 tag 表达容量的字段，因此多环境场景按全部已声明环境保守判断。
+- [x] 当前 Incus 环境实现通过 project state 的实例数、实例类型和内存资源逐个判断环境 create 配额；Fetch 的 `accepted_create_tags` 只包含本轮能创建的环境。全部环境都不可创建时只关闭 create，仍可在有运行名额时领取 resume，因为 resume 使用已有 stopped 实例，不申请新的 project 资源。
 - [x] Incus 环境 `resources.cpu`、`resources.memory` 和 `resources.root_disk` 已进入实例创建请求；root disk 覆盖复制 profile 根盘设备并只改 `size`。设计如此是因为 Incus 实例级 root disk 需要保留 profile 中的 storage pool，Manager 只负责确定本次实例大小。真实 Incus container 和 VM E2E 覆盖创建后的资源配置读取。
 - [x] Incus project state 的实例数、实例类型、内存和全局磁盘配额都会影响 create 接受类型；配额不足时 Fetch 仍可在有运行名额时接受 resume。设计如此是因为 resume 使用已有实例，create 才需要申请新的 project 资源。
 - [x] LXC 与 VM 使用相同的 managed bridge 配置；Manager 通过展开 NIC 的配置或 `volatile` MAC 匹配 Instance State 中的实际来宾接口，并只从匹配接口取得全局 IPv4 地址。更换来宾接口名不影响地址识别，目标网桥没有 NIC 或出现多个 NIC 时返回包含 network 和设备名称的明确错误。当前单元测试覆盖三种来宾接口名以及 NIC 缺失和重复，真实 Incus matrix 已覆盖 provisioner 与完整 Manager 的 LXC/VM 链路。
-- [x] 容量验收覆盖多个 tag 规格不同时按全部已声明环境保守判断 create 配额；当前磁盘预检查使用 project state 的全局 `disk` 资源，pool 级细分由部署侧 profile/project 管理。
+- [x] 容量验收覆盖多个 tag 规格不同时分别计算 create 可用性，一个环境配额不足不阻塞其他环境；当前磁盘预检查使用 project state 的全局 `disk` 资源，pool 级细分由部署侧 profile/project 管理。
 - [x] `codespace` 提供普通、自动、required、provisioner container/VM、Manager container/VM、四链路 matrix 和原生运行时完整入口；自动入口识别本地 Incus 可用时运行真实 E2E，不可用时跳过并输出原因。强制入口把缺失项或创建失败作为测试失败；matrix 在配方中串行调用四条 required 链路，不依赖 Make prerequisite 的调度顺序。
 - [x] Incus 端到端测试有独立入口；普通单元测试和 Gitea 常规后端测试不因本机缺少 Incus 失败。
 - [x] Incus 端到端测试启动前识别 Incus API、trusted 客户端、非 public-only、非集群、project、image、profile、storage 和 managed network。默认缺失时跳过并列出缺失项；强制验收模式缺失时失败并列出缺失项。
@@ -437,13 +437,14 @@ Manager 只有在以下条件同时成立时才在本地开放新 session：Gite
 - Manager 只有在本地具备继续执行所需的完整 operation 上下文时才把版本放入 `observed_operations`；本地版本较低时 Gitea 返回当前 payload，相同版本时只续租。payload 或 boot 结果缺失时省略该 UUID 并等待原 deadline。
 - 单次 `operations` 总数不超过 Gitea 由两类当前可用容量推导并限制在 `1..256` 的 payload 上限。
 - 本次新领取的 queued create/resume 数量不超过 `startup_capacity_available`；已有上下文的 running operation 和 abort 不占新容量。
+- queued create 的 `environment_tag` 必须属于本次 `accepted_create_tags`；queued resume 使用已有 binding，不按当前环境声明或接受集合过滤。
 - 本次新领取的 queued stop/delete 数量不超过 `cleanup_capacity_available`；清理容量为 0 时仍可按启动容量领取 resume/create。
 - 已领取的 operation 使用 `operation_rversion` 绑定后续 `FinalizeOperation` 和 `UpdateLog`。
 - create/resume 使用启动槽位；stop/delete 和持久化的本地缩减动作使用清理槽位。
 - operation 调度优先级为 `delete > stop > resume > create`。
 - 同类型按 `operation_created_unix ASC, uuid ASC` keyset 分页处理；单次 request 最多返回 256 条，observed 列表最多 10000 条，DB 在稳定 scope/tag 筛选后合计最多检查 1024 条候选。
 - `startup_capacity_available` 根据空闲启动槽位、Fetch 预留、Incus 可用性、正在启动/恢复和 running 的实例数量计算；`cleanup_capacity_available` 根据空闲清理槽位、Fetch 预留和已有本地 pending 计算。
-- `accepted_operation_types` 只声明本次是否接收 create/resume；stop/delete 不使用该字段，只按清理容量领取。
+- `accepted_operation_types` 声明本次是否接收 create/resume，`accepted_create_tags` 进一步限定 create；stop/delete 不使用这两个字段，只按清理容量领取。
 - Fetch 周期不超过 `OPERATION_LEASE_TIMEOUT / 3`，同一个循环同时负责领取和全部 observed operation 续租。
 - 空闲 Fetch 默认每 2 秒发起一次，并加入 0-20% 正抖动；网络或服务端临时错误可以退避，但存在 active worker 时下一次 Fetch 仍须在最早本地续租时点前发起。这样不需要第二套续租调度，临时错误也不会让退避越过已有 operation 的本地截止时间。
 - Manager 在每个 Fetch 请求发出前记录 `request_started_monotonic`。普通 payload 或续租成功后按 `local_worker_deadline = request_started_monotonic + lease_valid_for_milliseconds` 建立本地执行截止点，并在剩余本地时长的三分之一前完成下一次 Fetch。服务端实际授予发生在请求开始之后，所以 RPC 耗时会缩短而不会扩大本地授权；墙上时钟跳变也不改变该边界。

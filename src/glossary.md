@@ -38,11 +38,11 @@ Manager/Gateway 在 Codespace 为 running/ready、设置启用、没有生命周
 
 <span id="manager-matching"></span>
 ### Manager Matching
-Gitea 按 Codespace 创建者和固定的 `default` 环境匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。仓库 Dev Container 配置不参与 Manager 匹配。
+Gitea 按 Codespace 创建者和用户在确认页显式选择的环境 tag 匹配可以领取 create operation 的 Manager；站点全局 Manager 可服务全部创建者，个人 Manager 只服务其所属用户。Manager 每次 Fetch 再提交本轮可创建的已声明 tag 子集。仓库 Dev Container 配置不参与 Manager 匹配，create 绑定后 resume、stop 和 delete 只使用原 Manager。
 
 <span id="manager-capacity"></span>
 ### Manager Capacity
-Manager 本地的 `capacity_total` 限制运行实例数量，`startup_workers` 和 `cleanup_workers` 分别限制启动与清理并发。`FetchOperations` 只提交当次可用的 `startup_capacity_available` 和 `cleanup_capacity_available`，由 Gitea 据此限制返回数量。**设计如此：**总容量属于 Manager 本地调度实现，Gitea 只需要知道当前能立即执行多少工作，避免持久化一个很快过期的容量快照。
+Manager 本地的 `capacity_total` 限制运行实例数量，`startup_workers` 和 `cleanup_workers` 分别限制启动与清理并发。`FetchOperations` 提交当次可用的 `startup_capacity_available`、`cleanup_capacity_available` 和 `accepted_create_tags`，由 Gitea 据此限制返回数量及可领取的 create 环境。**设计如此：**总容量和环境配额属于 Manager 本地调度实现，Gitea 只需要知道当前能立即执行多少工作，避免持久化很快过期的容量快照。
 
 <span id="endpoint"></span>
 ### Endpoint

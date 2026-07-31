@@ -36,7 +36,7 @@ flowchart LR
 
 Gitea 与 Manager 只通过 ManagerService 通信。Manager 主动发起 Register、Declare、Fetch、日志、Runtime Metadata、凭据和状态报告；Runtime 内没有访问 Manager 控制端口的路径。Gateway 的 HTTP、WebSocket、SSH、SFTP和端口转发都先完成 Gitea授权，再通过 Incus exec/file进入当前 Dev Container。
 
-每个 Codespace 对应一个确定性命名的 Incus 实例。实例可以是系统容器或虚拟机，虚拟机强制要求 agent。Manager project隔离实例、profile和项目卷；managed bridge位于 default project，由 Codespace project共享。Manager托管 bridge时开启 IPv4 NAT和 DHCPv4，实例资源限制由所选本地 environment定义，仓库不能改变调度 tag或 Incus规格。
+每个 Codespace 对应一个确定性命名的 Incus 实例。实例可以是系统容器或虚拟机，虚拟机强制要求 agent。Manager project隔离实例、profile和项目卷；managed bridge位于 default project，由 Codespace project共享。Manager托管 bridge时开启 IPv4 NAT和 DHCPv4，实例资源限制由用户在 Gitea 创建确认页选择、Manager 已声明的本地 environment定义，仓库不能改变调度 tag或 Incus规格。
 
 实例内只保留一个固定 bootstrap 和同一 `gitea-codespace` 可执行文件。bootstrap 准备外层用户、Git、Docker 和 workspace；隐藏的原生 runtime 负责 Dev Container create/resume/stop/inspect/exec/TCP。完整环境状态保存主容器、Compose 相关容器、用户、workspace、合并配置、Feature digest 和 lifecycle；固定 Web IDE 端口由产品适配层提供，Secret 不进入环境状态。
 

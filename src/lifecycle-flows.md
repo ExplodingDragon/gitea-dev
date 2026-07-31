@@ -27,13 +27,14 @@
 
 ### Manager 匹配与 operation 创建
 
-Gitea 以固定 `environment_tag=default` 选择声明同名 tag、online、具有 create 容量并接受 create 的 Manager。tag 表示部署管理员定义的基础设施环境，不是仓库配置、Incus profile 或实例类型。没有 Manager 当前可接单时 Codespace 进入 queued create；Fetch 按稳定顺序领取，并在数据库事务中绑定 `manager_id`、写入 running operation、版本、开始时间和 deadline。
+Gitea 把用户在确认页显式选择的 `environment_tag` 写入 Codespace。成功 Declare 同名 tag 的站点全局 Manager 与当前用户个人 Manager 都可参与领取；Manager online、具有启动容量、接受 create，且本轮 `accepted_create_tags` 包含该 tag 时可以 claim。tag 表示部署管理员定义的基础设施环境，不是仓库配置、Incus profile 或实例类型。暂时没有 Manager 当前可接单时 Codespace 保持 queued create；Fetch 按稳定顺序领取，并在数据库事务中绑定 `manager_id`、写入 running operation、版本、开始时间和 deadline。
 
 create payload 使用领取时重新读取的 repository 名称生成 HTTP(S)、SSH 和 Web URL。`git_protocol` 只表示首次 clone 的首选协议；不可用协议的 URL 为空。`start_ref` 使用完整 Git ref：分支为 `refs/heads/<name>`，Tag 为 `refs/tags/<name>`，Pull Request 为 `refs/pull/<index>/head`，直接 commit 为空。Manager 不从 Fetch 请求 Host 推导外部地址。**设计如此：**完整 ref 让 bootstrap 能区分分支与标签并精确 fetch，`commit_sha` 继续锁定实际内容，因此分支既保持可正常提交和推送的 tracking 状态，也不会因远端随后移动而改变首次工作区。
 
 ### 实现验收点
 
-- [x] create 只由 tag、实时 Manager 状态、容量和接受类型共同匹配。
+- [x] create 只由用户已选 tag、Manager 用户范围、实时状态、启动容量、接受类型和本轮可创建 tag 集合共同匹配。
+- [x] 没有可见 tag 时不创建记录；tag 已声明但 Manager 暂时离线或无容量时 create 保持排队。
 - [x] claim 事务同时绑定 Manager 和 operation 版本，重复 Fetch 不会产生第二个 active operation。
 - [x] payload URL 来自 Gitea 规范地址生成器，首选协议始终对应非空 clone URL。
 - [x] payload 的分支、Tag、Pull Request 使用完整 Git ref，直接 commit 使用空 ref，且全部由同一 `commit_sha` 锁定。
