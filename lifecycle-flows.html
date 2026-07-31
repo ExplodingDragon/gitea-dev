@@ -179,7 +179,7 @@ Secret 和附加仓库权限由 Gitea 确认，Manager 不形成第二份授权�
 </ul>
 <h3 id="manager-匹配与-operation-创建"><a class="header" href="#manager-匹配与-operation-创建">Manager 匹配与 operation 创建</a></h3>
 <p>Gitea 以固定 <code>environment_tag=default</code> 选择声明同名 tag、online、具有 create 容量并接受 create 的 Manager。tag 表示部署管理员定义的基础设施环境，不是仓库配置、Incus profile 或实例类型。没有 Manager 当前可接单时 Codespace 进入 queued create；Fetch 按稳定顺序领取，并在数据库事务中绑定 <code>manager_id</code>、写入 running operation、版本、开始时间和 deadline。</p>
-<p>create payload 使用领取时重新读取的 repository 名称生成 HTTP(S)、SSH 和 Web URL。<code>git_protocol</code> 只表示首次 clone 的首选协议；不可用协议的 URL 为空。Manager 不从 Fetch 请求 Host 推导外部地址。</p>
+<p>create payload 使用领取时重新读取的 repository 名称生成 HTTP(S)、SSH 和 Web URL。<code>git_protocol</code> 只表示首次 clone 的首选协议；不可用协议的 URL 为空。<code>start_ref</code> 使用完整 Git ref：分支为 <code>refs/heads/&lt;name&gt;</code>，Tag 为 <code>refs/tags/&lt;name&gt;</code>，Pull Request 为 <code>refs/pull/&lt;index&gt;/head</code>，直接 commit 为空。Manager 不从 Fetch 请求 Host 推导外部地址。**设计如此：**完整 ref 让 bootstrap 能区分分支与标签并精确 fetch，<code>commit_sha</code> 继续锁定实际内容，因此分支既保持可正常提交和推送的 tracking 状态，也不会因远端随后移动而改变首次工作区。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -188,6 +188,8 @@ create 只由 tag、实时 Manager 状态、容量和接受类型共同匹配。
 claim 事务同时绑定 Manager 和 operation 版本，重复 Fetch 不会产生第二个 active operation。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 payload URL 来自 Gitea 规范地址生成器，首选协议始终对应非空 clone URL。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+payload 的分支、Tag、Pull Request 使用完整 Git ref，直接 commit 使用空 ref，且全部由同一 <code>commit_sha</code> 锁定。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 queued create 由 queue timeout 收敛，不通过 Manager 本地猜测改写状态。</li>
 </ul>
@@ -212,15 +214,21 @@ queued create 由 queue timeout 收敛，不通过 Manager 本地猜测改写状
     M-&gt;&gt;G: ReportRuntimeMetadata(ready)
     M-&gt;&gt;G: FinalizeOperation(done)
 </pre>
-<p>bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次；锁定 commit 校验成功后原子移动到最终目录。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。</p>
+<p>bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 <code>--no-checkout</code>，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支精确 fetch 到 <code>origin/&lt;branch&gt;</code>，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。</p>
 <p>原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；Feature 通过 OCI API解析并固定 digest，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server <code>/healthz</code> 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。</p>
-<p>**设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会重复提交一个已经完成的 workspace，也不会接管其他对象。</p>
+<p>**设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。普通分支保持开发者熟悉的 branch/upstream 语义，Tag、Pull Request 和直接 commit 则保持锁定提交语义；create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会接管其他对象。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 bootstrap、构建、Feature 和 lifecycle 的 stdout/stderr 按正文行实时写入同一 operation 日志。</li>
 <li><input disabled="" type="checkbox" checked=""/>
+operation 使用顶层日志分组，启动流程按运行时访问、系统与 workspace、Dev Container 和 Endpoint 发布分组；错误分组保持展开，正文不因折叠而丢弃。</li>
+<li><input disabled="" type="checkbox" checked=""/>
 workspace 在临时目录校验 commit 后原子提交，协议回退最多一次。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+普通分支检出同名本地分支并跟踪 <code>origin/&lt;branch&gt;</code>；Tag、Pull Request 和直接 commit 使用 detached HEAD，最终 HEAD 都等于锁定提交。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+create 重试对已有 workspace 使用同一 ref 检出与 commit 校验流程。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 原生 create 保存完整环境、所有 Compose 容器和 Feature digest。</li>
 <li><input disabled="" type="checkbox" checked=""/>
