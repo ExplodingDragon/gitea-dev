@@ -810,8 +810,8 @@ cache TTL 刷新不改写 <code>last_active_unix</code> 或主状态。</li>
 <li>日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。</li>
 <li>Gitea 单实例内使用按 <code>codespace_uuid</code> 分片的日志追加 keyed lock 串行化日志追加，key 为 <code>codespace_log_{codespace_uuid}</code>；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 <code>log_size</code> 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。</li>
 <li>**设计如此：日志追加使用专用锁，而不是复用交互和生命周期的 Codespace lock。**日志写入只修改 DBFS 文件和 <code>codespace</code> 行里的日志元数据，专用锁可以保证日志连续 offset 与元数据一致，同时避免高频日志上报阻塞 open、SSH、Token 和空闲停止等交互路径。生命周期结果仍通过 operation 版本、状态复读和物理删除事务与日志路径闭合。</li>
-<li>在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 <code>LOG_MAX_SIZE</code> 减内部最终摘要预留空间时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 <code>LOG_MAX_SIZE</code>，最终摘要优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。</li>
-<li>Manager 在 final 前写 operation 最终摘要。对于仍保留 Codespace 记录的 final、timeout、missing 和 Runtime 状态报告，Gitea 在状态主事务提交后，使用日志专用锁和独立 DBFS 事务尽力追加内部状态摘要；该摘要失败或空间耗尽时只记录服务端告警，不回滚已经提交的生命周期结果。delete done、Gitea 直接删除和 retention 清理跳过摘要，避免删除后重新创建日志。</li>
+<li>在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 <code>LOG_MAX_SIZE</code> 减内部状态摘要预留空间时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和内部状态摘要合计上限为 <code>LOG_MAX_SIZE</code>，控制面诊断优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。</li>
+<li>Manager 在 final 前关闭并上传 operation 日志分组，final 结果由分组内容与页面主状态表达。对于 timeout、missing 和 Runtime 状态报告等由 Gitea 独立判定的变化，Gitea 在状态主事务提交后使用日志专用锁和独立 DBFS 事务尽力追加内部状态摘要；该摘要失败或空间耗尽时只记录服务端告警，不回滚已经提交的生命周期结果。delete done、Gitea 直接删除和 retention 清理跳过摘要，避免删除后重新创建日志。</li>
 </ul>
 <p>日志存储在 DBFS 单文件中，<code>codespace</code> 行保存当前日志元数据。只有当前 <code>operation_status=running</code> 且 <code>operation_rversion</code> 匹配时允许追加日志。DBFS 写入与生命周期事务边界明确，日志归档状态不会进入 Codespace 状态机。</p>
 <p>实现验收点：</p>
@@ -829,7 +829,7 @@ offset 按服务端规范化编码后的完整字节计算，客户端使用 <co
 <li><input disabled="" type="checkbox" checked=""/>
 达到普通日志上限后只出现一条截断摘要，普通 batch 被拒绝，最终文件大小不超过 <code>LOG_MAX_SIZE</code>。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。</li>
+内部状态摘要只用于 timeout、missing 和 Runtime 状态报告等独立控制面判定；final 不重复追加结果，摘要事务失败时主状态保持已提交，物理删除后日志保持不存在。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1219,8 +1219,8 @@ operation_status=running
 <li>清空包括 <code>operation_trigger</code> 在内的 active operation 字段。</li>
 <li>封闭当前运行中日志追加窗口。</li>
 </ol>
-<p>主事务提交后，如果 Codespace 记录仍然存在，final、timeout、missing 和 Runtime 状态报告会通过日志专用锁尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端告警，不回滚已经成立的生命周期结果。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，因此跳过内部摘要，不再创建日志。这样主状态写入不依赖诊断文本，也不会让高频日志路径绑定生命周期锁。</p>
-<p>active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后不再声称能够验证已经删除的原类型，而是按相同 <code>operation_rversion</code> 和请求目标主状态判断是否已经完成；create/resume done 对应 running，resume failed 和 stop done 对应 stopped，create/stop/delete failed 对应 failed。Codespace 已物理删除时响应 <code>resource_absent=true</code>，其余首次接受、重复提交或当前状态已经不再接受旧结果的情况都返回空成功响应。Manager 对空成功响应统一结束该版本本地 operation；资源不存在时结束上下文并立即触发完整 inventory。</p>
+<p>主事务提交后，如果 Codespace 记录仍然存在，timeout、missing 和 Runtime 状态报告会通过日志专用锁尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端告警，不回滚已经成立的生命周期结果。正常 final 和 Manager 已报告的失败不追加 Gitea 摘要，因为 operation 分组已经包含执行过程与错误，页面主状态也表达最终结果；重复写一条协议状态转换只会产生分组外噪声。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，同样不再创建日志。这样主状态写入不依赖诊断文本，也不会让高频日志路径绑定生命周期锁。</p>
+<p>active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后，数据库已经没有足够信息恢复原类型，Gitea 保留当前主状态并返回空成功响应。Codespace 已物理删除时响应 <code>resource_absent=true</code>，其余首次接受、重复提交或当前状态已经不再接受旧结果的情况都返回空成功响应。Manager 对空成功响应统一结束该版本本地 operation；资源不存在时结束上下文并立即触发完整 inventory。</p>
 <p>active operation 仍存在且 final 携带的 <code>operation_rversion</code> 与当前值相同，但有效 <code>operation_type</code> 与当前类型不同时，Gitea 不写入生命周期结果并返回空成功响应。这表示该 Manager worker 已经完成它能执行的本地动作，继续保留旧上下文或重试不会产生新信息。<code>UNSPECIFIED</code> 或未知枚举仍属于 <code>invalid_argument</code>。</p>
 <div class="table-wrapper"><table><thead><tr><th>response</th><th>Manager 行为</th></tr></thead><tbody>
 <tr><td><code>resource_absent=false</code></td><td>清除该版本 operation payload 和 worker 阶段；最新 boot 终态结果继续保留用于重启恢复，resume 的 <code>unrecoverable_failed</code> 还会继续驱动 failed 状态报告。</td></tr>
@@ -1270,10 +1270,10 @@ operation_status=running
 <li>create/resume final done 要求当前版本 ready metadata 和 Token 行；Manager 在发布 ready 前验证实际 remote 对应的 HTTP helper 或完整 SSH Key 关系。Key 不携带 operation 版本。</li>
 <li>final、timeout、取消和物理删除都清空 <code>operation_trigger</code>；该来源只供 Gitea 内部判定 queued idle stop 是否可取消。</li>
 <li><code>updated_unix</code> 仅在创建记录、创建或替换 active operation，以及首次 final/timeout/missing/transition/queued idle stop 取消时更新；未改变 active operation 的交互或设置、claim、续租和幂等结果不刷新该字段。</li>
-<li>Gitea 只为仍保留记录的状态结果在主事务提交后，通过日志专用锁尝试写内部摘要；物理删除路径跳过摘要，摘要失败不回滚生命周期结果。</li>
-<li>final 的 operation 类型与 active operation 不一致时拒绝；active 已清空时按相同版本和请求映射的目标主状态返回确定的幂等结果。</li>
+<li>Gitea 只为 timeout、missing 和 Runtime 状态报告等独立控制面判定尝试写内部摘要；final 结果由 operation 分组和页面主状态表达，物理删除路径不创建摘要。</li>
+<li>final 的 operation 类型与 active operation 不一致时拒绝；active 已清空时保留当前主状态并返回普通成功。</li>
 <li>active operation 存在时，当前版本的 final 携带错误有效 operation 类型返回 <code>stale_operation</code>；Manager 停止该 worker 并从 observed 集合省略旧上下文，Gitea 按原 deadline 超时，随后由完整 inventory 收敛 Runtime 差异。active 已清空时直接由 inventory 处理当前差异。非法枚举始终返回 <code>invalid_argument</code>。</li>
-<li>active operation 清空后的幂等只证明相同版本已经到达相同目标主状态，不再证明原 operation 类型仍可从数据库恢复。</li>
+<li>active operation 清空后的响应只确认 Gitea 已经收敛到当前持久状态，不再证明原 operation 类型可从数据库恢复。</li>
 <li>Fetch observed 续租刷新 deadline，final 重试返回明确幂等结果；boot stage 只通过 Runtime Metadata 和日志展示。</li>
 <li>Manager 对四种 outcome 执行确定的本地处理；stale 不清除更高版本上下文，resource absent 触发完整 inventory 而不直接删除 Runtime。</li>
 <li>delete final 物理删除后重复 final 返回 <code>resource_absent</code>；若 Incus 实例仍存在，下一次成功的完整 inventory 按无数据库记录返回 cleanup。</li>
@@ -1619,7 +1619,7 @@ metadata_generation
 </tbody></table>
 </div>
 <p>Manager 可用性和 operation 执行期限分别表达不同事实：online/recovering/offline 决定当前是否可以交互、领取或提交请求，<code>operation_deadline_unix</code> 决定已领取动作还能否继续。Fetch、final 和 Cron 都直接校验同一 deadline；第一个成功的条件更新成立后，其他请求按当前状态返回幂等或 stale 结果。<strong>设计如此：Manager 重启、recovering 声明和成功续租都不会改变 <code>operation_started_unix</code>，因此不会创建额外总执行时间。</strong></p>
-<p>Manager 调用当前版本 <code>FinalizeOperation</code> 时，如果 handler 发现 <code>now &gt;= operation_deadline_unix</code> 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization。随后按请求 final 映射出的目标主状态判断：目标已与 timeout 结果一致时作为重复成功处理，其他目标保持 timeout 结果；两种情况都返回 <code>resource_absent=false</code>，Manager 结束本地旧 operation。这样不增加 expired 响应分支，也不要求 Manager 根据已经稳定的服务端状态继续重试。</p>
+<p>Manager 调用当前版本 <code>FinalizeOperation</code> 时，如果 handler 发现 <code>now &gt;= operation_deadline_unix</code> 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization，并返回 <code>resource_absent=false</code>。Manager 结束本地旧 operation，timeout 已经成立的服务端状态不会再被迟到的 final 覆盖。这样不增加 expired 响应分支，也不要求 Manager 根据已经稳定的服务端状态继续重试。</p>
 <p>Manager 在发送 Fetch 前记录 <code>request_started_monotonic</code>，收到 operation payload 或续租回执后按 <code>local_worker_deadline = request_started_monotonic + lease_valid_for_milliseconds</code> 建立本地执行截止点。服务端授予 lease 晚于请求开始，因此把请求耗时计入已消耗时间会得到保守边界；两端墙上时钟不一致也不会延长本地授权。Manager 不接收或保存 Gitea 的绝对 Unix deadline。bootstrap、原生运行时和 Incus operation 都绑定该 worker context；截止、abort、进程关闭或更高版本 operation 会取消在途工作。</p>
 <p>到达本地截止点且尚未收到新的成功 Fetch 续租或 final outcome 时，Manager 取消在途 Incus exec 与原生运行时请求。create/resume 还要停止实例，把本地 worker 持久化为 <code>lease_paused</code> 并保留当前上下文，不提交 final；stop/delete 的实际资源结果由后续续租或 inventory 判断。同版本成功续租后，create/resume 才重新启动实例并从已提交事实继续。<strong>设计如此：<code>lease_paused</code> 只限制 Manager/Runtime 本地执行，不是新的 Gitea lease、主状态或 RPC 字段；最终结果继续由现有 deadline、final 和 inventory 决定。</strong></p>
 <p>Gitea 每次授予 lease 时，用该次 <code>grant_time + OPERATION_LEASE_TIMEOUT</code> 向未来取整到整数 Unix 秒，再与固定总执行期限取较早值写入 <code>operation_deadline_unix</code>。未接近总期限时响应返回配置时长的精确整数毫秒值；最后一段授权返回到总期限为止向下取整的正整数毫秒数。向未来取整允许普通 lease 的 Gitea 侧边界最多多出不足一秒，但总期限不参与向未来取整。<strong>设计如此：Manager 始终按实际返回时长和本地单调时钟停止 Incus 变更，最后一次续租不能把执行延长到总期限之后。</strong></p>
@@ -1745,14 +1745,14 @@ queued create 由 queue timeout 收敛，不通过 Manager 本地猜测改写状
     M-&gt;&gt;G: FinalizeOperation(done)
 </pre>
 <p>bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 <code>--no-checkout</code>，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支和普通 Pull Request 来源分支精确 fetch 到 <code>origin/&lt;branch&gt;</code>，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、AGit Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。</p>
-<p>原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；Feature 通过 OCI API解析并固定 digest，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server <code>/healthz</code> 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。</p>
+<p>原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；OCI 与 HTTPS Feature 固定摘要，仓库内 Feature 由锁定提交固定，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server <code>/healthz</code> 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。</p>
 <p>**设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。普通分支和普通 Pull Request 保持开发者熟悉的 branch/upstream 语义，Tag、AGit Pull Request 和直接 commit 保持锁定提交语义；create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会接管其他对象。</p>
 <h3 id="实现验收点-8"><a class="header" href="#实现验收点-8">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
-bootstrap、构建、Feature 和 lifecycle 的 stdout/stderr 按正文行实时写入同一 operation 日志。</li>
+bootstrap、构建、Feature 和 lifecycle 的 stdout/stderr 按正文行实时写入同一 operation 日志；用于解析 shell 与环境的内部探测只返回结果，不进入用户日志，命令末尾没有换行时展示流仍与下一条分组标记保持独立行。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-operation 使用顶层日志分组，启动流程按运行时访问、系统与 workspace、Dev Container 和 Endpoint 发布分组；错误分组保持展开，正文不因折叠而丢弃。</li>
+operation 使用顶层日志分组，启动流程按运行时访问、系统与 workspace、Dev Container 和 Endpoint 发布分组；lifecycle 与 VS Code 扩展安装使用阶段子分组，错误分组保持展开，正文不因折叠而丢弃。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 workspace 在临时目录校验 commit 后原子提交，协议回退最多一次。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1869,7 +1869,7 @@ create、resume 和 stop 的 Dev Container 操作由 Go 运行时完成，不下
 bootstrap 输出只包含外层 UID、GID、用户名和 workspace，不保存内部容器状态。</li>
 </ul>
 <h2 id="公开包与产品适配"><a class="header" href="#公开包与产品适配">公开包与产品适配</a></h2>
-<p>Dev Container 实现位于可独立导入的 <code>gitea.dev/codespace/devcontainer</code> 和 <code>gitea.dev/codespace/devcontainer/docker</code>。前者提供配置类型、JSONC 读取、变量替换、元数据合并、锁文件、错误分类和可恢复状态；后者提供直接使用 Docker、Compose 和 OCI Feature 的具体 <code>Engine</code>。当前只有一个运行后端，因此公开 API 保留具体实现，不增加只有一个实现者的接口层。</p>
+<p>Dev Container 实现位于可独立导入的 <code>gitea.dev/codespace/devcontainer</code> 和 <code>gitea.dev/codespace/devcontainer/docker</code>。前者提供配置类型、JSONC 读取、变量替换、元数据合并、锁文件、错误分类和可恢复状态；后者提供直接使用 Docker、Compose 以及 OCI、HTTPS 归档和仓库内 Feature 的具体 <code>Engine</code>。当前只有一个运行后端，因此公开 API 保留具体实现，不增加只有一个实现者的接口层。</p>
 <p>Codespace 业务位于 <code>internal/devcontainerruntime</code>。该适配层把 Codespace UUID、Git 用户信息、运行时只读挂载、平台 Web IDE Feature、Endpoint manifest 和请求结果文件映射到公开 API。<code>internal/runtimecmd</code> 只负责实例内命令入口。公开 Engine 在确定 remote user 和 remote environment 后提供一次 lifecycle 前准备回调，Codespace 用它写入 Git 用户信息、凭据助手和运行时可执行文件；这些产品内容统一由内部适配层解释。**设计如此：**Dev Container 解析和 Docker 生命周期本身可以被其他 Go 程序复用，而 Git、Web IDE、Gateway 和 Codespace operation 是本产品的策略；lifecycle 前回调保留必要的执行顺序，同时让公开状态只表达通用环境。</p>
 <p>公开加载 API 可以读取调用方指定的绝对或相对配置路径，并通过可选的 <code>AllowedPathRoot</code> 施加路径范围。Codespace 创建时始终把当前锁定 workspace 作为该范围，所以配置文件、Compose 文件、Dockerfile 和 build context 解析符号链接后都必须留在本次仓库内；独立调用者可以根据自己的信任模型选择其他根目录。这里由调用方传入范围，是为了让通用库保持可复用，同时让 Codespace 的仓库固定和摘要校验继续形成完整边界。</p>
 <h3 id="实现验收点-16"><a class="header" href="#实现验收点-16">实现验收点</a></h3>
@@ -1889,8 +1889,10 @@ Codespace 调用公开加载 API 时固定 <code>AllowedPathRoot=workspace</code
 <p>Dev Container 是仓库开发环境的唯一配置格式。Gitea 从规范位置列出候选，每次创建选择一份；没有仓库配置时选择只包含平台默认镜像的配置。仓库文件使用 JSONC，Gitea 与 Manager 都使用 <code>github.com/tailscale/hujson</code> 标准化。Gitea 保存来源、路径、锁定提交和原始文件 SHA256；Manager clone 后从 workspace 解析同一文件并再次核对摘要。</p>
 <p>原生运行时支持单镜像、Dockerfile build 和多文件 Docker Compose。Dockerfile 路径相对配置文件解析，再确认位于 build context 内。Compose 文件按声明顺序交给 <code>compose-go</code> 合并，主服务由 <code>service</code> 指定，<code>runServices</code> 决定一同启动的服务；主服务和相关容器都进入本地环境状态。Compose 使用主机环境与创建请求的 local environment 做插值，使用 service user 作为用户默认值，并由 Compose 自身执行依赖、健康等待、启动和停止。</p>
 <p>配置处理分为三个阶段。读取阶段保留字段是否声明、<code>remoteEnv</code> 的 <code>null</code>、JSON 数字和字符串或数组形式的端口语义，只检查仓库配置恰好选择 image、build 或 Compose 之一；合并阶段依次应用镜像元数据、Feature 元数据和仓库配置；定型阶段解析容器变量、补充 <code>waitFor</code>、<code>userEnvProbe</code> 与 <code>shutdownAction</code> 默认值，再校验最终配置和主机资源。**设计如此：**默认值如果在元数据合并前写入，会被误认为仓库明确选择并遮盖镜像声明；可选字段如果先转成 <code>null</code> 或空字符串，还会把单镜像配置误判成 Compose。三阶段让“没有声明”和“明确声明”在完成合并前保持区别，同时只对真正运行的最终配置做一次权威校验。</p>
-<p>单镜像和 Dockerfile 配置默认把 workspace 挂载到 <code>/workspaces/&lt;目录名&gt;</code>。Compose 配置默认工作目录为 <code>/</code>，workspace 位置由 service volumes 和 <code>workspaceFolder</code> 决定，不额外注入一份 bind mount。**设计如此：**Compose 文件已经是多服务卷关系的权威来源，运行时再次挂载 workspace 会覆盖项目声明并让主服务和侧车看到不同文件系统；这一行为与 Dev Container 的 Compose 语义保持一致。</p>
-<p>变量替换覆盖 <code>${localWorkspaceFolder}</code>、<code>${localWorkspaceFolderBasename}</code>、<code>${localEnv:NAME}</code>、<code>${localEnv:NAME:default}</code> 和 <code>${devcontainerId}</code>。镜像与 Feature 元数据合并后，再解析 <code>${containerWorkspaceFolder}</code>、<code>${containerWorkspaceFolderBasename}</code>、<code>${containerEnv:NAME}</code> 和默认值。<code>remoteEnv</code>、<code>containerEnv</code>、mount、用户、capability、安全选项、init、端口和 lifecycle 使用类型化字段进入 Docker API；mount 按 target 后者覆盖，并支持常用只读、bind propagation 和 volume nocopy 语义。<code>build.options</code> 和 <code>runArgs</code> 是未类型化命令行字符串，原生运行时无法在不调用 Docker CLI 解析器的情况下证明其含义与安全边界，因此配置应使用对应的类型化 build、mount、capability、security 和 container 字段；出现这两个字段时返回包含替代方式的配置错误。**设计如此：**明确拒绝无法可靠解释的输入，比静默忽略或只支持部分参数更容易定位，也不会制造看似成功但运行结果不同的环境。</p>
+<p>单镜像和 Dockerfile 配置默认把 workspace 挂载到 <code>/workspaces/&lt;目录名&gt;</code>。Compose 配置必须显式声明 <code>workspaceFolder</code>，workspace 位置由 service volumes 和该字段共同决定，不额外注入一份 bind mount。**设计如此：**Compose 文件已经是多服务卷关系的权威来源，运行时无法从任意卷关系可靠推导工作区；要求仓库明确位置既避免覆盖项目声明，也让 lifecycle、Git、Web IDE 和交互入口使用同一个目录。</p>
+<p>变量替换覆盖 <code>${localWorkspaceFolder}</code>、<code>${localWorkspaceFolderBasename}</code>、<code>${localEnv:NAME}</code>、<code>${env:NAME}</code>、对应默认值和 <code>${devcontainerId}</code>。镜像与 Feature 元数据合并后，再解析 <code>${containerWorkspaceFolder}</code>、<code>${containerWorkspaceFolderBasename}</code>、<code>${containerEnv:NAME}</code> 和默认值。其他 <code>${...}</code> 原样保留，例如 Feature 的 <code>${PATH}</code> 留给 Feature 环境扩展，仓库命令中的 shell 变量留给命令执行。Feature 的 <code>containerEnv</code> 按安装顺序扩展，因此后一个 Feature 能看到基础镜像和前序 Feature 已产生的环境值。**设计如此：**Dev Container 变量与 shell 变量使用相同外形，只处理规范明确拥有的命名空间，才能避免把合法的 <code>$PATH</code> 当成配置错误。</p>
+<p><code>remoteEnv</code>、<code>containerEnv</code>、mount、用户、capability、安全选项、init、端口和 lifecycle 使用类型化字段进入 Docker API。mount 按 target 后者覆盖，并支持只读、bind propagation、volume nocopy 和 consistency。<code>runArgs</code> 与 <code>build.options</code> 使用项目依赖的 Docker CLI Go 解析器生成同一 Docker API 请求，不启动外部 Docker 或 Dev Container 进程；产品所有者标签和容器名称在解析后固定，普通 Docker 运行与构建参数按官方 CLI 语义执行。<code>runArgs</code> 中最后一个 <code>--user</code> 或 <code>-u</code> 在仓库没有声明 <code>remoteUser</code> 时同时决定 lifecycle 用户。**设计如此：**这两个字段本来就是 Docker 命令参数，复用官方解析器可以覆盖完整参数集合，也保留原生 Go 运行时、统一日志和取消控制。</p>
+<p><code>hostRequirements</code> 合并全部元数据来源后检查 CPU、内存和 workspace 所在存储的可用容量。CPU 保留规范的数值类型，内存和存储使用规范的小写容量单位。声明 GPU 时查询当前 Docker daemon 的 <code>nvidia</code> runtime：可用时为单容器或 Compose 主服务请求全部 GPU；必需 GPU 不可用时创建失败，可选 GPU 不可用时继续。GPU 对象中的核心数和显存保留为期望规格，但不转换成虚假的设备数量判断，因为 Docker 的通用设备请求只能可靠表达 GPU capability，不能跨厂商证明这两项硬件细节。**设计如此：**容量判断只使用运行时能够权威取得的事实，既让必需资源在创建前闭环，也避免把渲染设备或设备数量误报成符合 GPU 规格。</p>
 <h3 id="实现验收点-17"><a class="header" href="#实现验收点-17">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1904,11 +1906,15 @@ Codespace 的配置、Compose 文件、Dockerfile 和本地 build context 在符
 <li><input disabled="" type="checkbox" checked=""/>
 单容器自动挂载 workspace；Compose 使用 service volumes，不覆盖仓库声明的卷关系。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-本地与容器阶段变量、环境、mount、用户和容器属性进入 Docker API；未类型化参数返回说明原因和替代字段的错误。</li>
+本地与容器阶段变量、环境、mount、用户和容器属性进入 Docker API；未知变量保留，Feature 环境按安装顺序扩展。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>runArgs</code> 和 <code>build.options</code> 由 Docker CLI Go 解析器转成当前 Engine 的 API 请求，容器所有者标签与名称保持固定。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 image、build 和 Compose 配置经过变量替换后仍保持唯一来源，未声明的字符串或数组字段不会生成空值来源。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 默认值只在镜像、Feature 和仓库配置合并后写入，最终主机资源要求包含全部来源。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+CPU、内存和存储要求在创建前校验；GPU 通过 Docker runtime 能力判断，并按必需或可选语义注入单容器与 Compose。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>remoteEnv</code> 的 <code>null</code> 删除继承变量，标量或数组 <code>appPort</code> 在创建容器前完成类型校验。</li>
 </ul>
@@ -1916,14 +1922,14 @@ image、build 和 Compose 配置经过变量替换后仍保持唯一来源，未
 <p>每个 Incus 实例继续运行独立 Docker daemon，停止后恢复同一实例时直接使用本地镜像和构建层。部署者可以通过 Manager 的 <code>runtime.cache</code> 为新实例增加两类跨实例缓存：<code>mirrors</code> 把原始 OCI registry 主机映射到镜像缓存的基础 URL，<code>registry</code> 指定 BuildKit 写入和读取缓存清单的 registry namespace。两项都省略时保持直接访问原始 registry 和实例本地构建，不需要额外基础设施。</p>
 <p>镜像映射覆盖单镜像配置、Compose 实际启动服务的显式镜像和 OCI Feature。映射值可以带路径，例如把 <code>ghcr.io/owner/tool:1</code> 映射为 <code>cache.example.com/ghcr/owner/tool:1</code>；无路径的 Docker Hub mirror 还会合并到实例已有的 Docker daemon 配置，使 Dockerfile 中的 Docker Hub 基础镜像也能使用标准 mirror。Docker daemon 的其他配置和既有 mirror 会保留。带路径的 mirror 以及 Docker Hub 之外的 host 映射由运行时在显式拉取时完成，因为 Docker daemon 的 <code>registry-mirrors</code> 不能准确表达这两种关系。**设计如此：**镜像引用转换只承担能够证明语义一致的获取路径，不改写 Dockerfile，也不假设所有 registry 产品都实现同一种代理规则。</p>
 <p>mirror 拉取成功后，容器可以使用本地取得的 mirror 引用，但配置、Feature lock 和 Manager 环境状态仍记录仓库声明的原始引用及实际内容 digest。mirror 访问失败时记录一次包含原始引用的警告，再访问原始 registry。HTTPS 是推荐部署方式；显式 HTTP 地址会合并到 Docker daemon 的 insecure registry 列表。私有 mirror 和 cache registry 使用实例 root 用户的标准 Docker credential store，部署者通过基础实例或自定义 profile 准备对应登录信息，不把 registry 用户名、密码或 token 写入 Manager YAML。</p>
-<p>Dockerfile、Compose build、Feature 安装层和运行用户调整层统一使用 BuildKit registry cache。cache ref 由仓库、锁定 commit、Dev Container 文件摘要、平台 Web IDE 版本、目标平台和构建阶段计算，因此同一输入的新实例可以复用缓存，不同输入和不同阶段不会并发写入同一引用。平台 Secret、Gitea Token 和 Git SSH 私钥不参与摘要，也不作为 build args 传入。缓存导入不可用时，运行时给出一次警告并使用本地构建重试；缓存导出使用允许失败的发布方式，环境镜像构建成功后不会因为 cache registry 暂时不可用而失败。</p>
+<p>Dockerfile、Compose build、Feature 安装层和运行用户调整层通常使用 BuildKit registry cache。cache ref 由仓库、锁定 commit、Dev Container 文件摘要、平台 Web IDE 版本、目标平台和构建阶段计算，因此同一输入的新实例可以复用缓存，不同输入和不同阶段不会并发写入同一引用。平台 Secret、Gitea Token 和 Git SSH 私钥不参与摘要，也不作为 build args 传入。缓存导入不可用时，运行时给出一次警告并使用本地构建重试；缓存导出使用允许失败的发布方式，环境镜像构建成功后不会因为 cache registry 暂时不可用而失败。仓库声明 <code>build.options</code> 时改用 Docker 官方命令参数解析器，并使用仓库声明的 <code>cacheFrom</code> 与实例本地缓存；任意 Docker 参数可能改变 builder 和输出方式，因此这一路径不额外注入平台 registry cache。**设计如此：**仓库显式 Docker 选项具有完整语义，平台不能在不理解参数组合的情况下追加缓存导出并假定构建结果相同。</p>
 <p>缓存只参与 create。resume 使用已保存的容器和环境状态，stop 只停止这些资源，两者不访问 registry。Manager 不共享不同实例的 <code>/var/lib/docker</code>，因为该目录同时包含 daemon 元数据和可写运行状态，跨实例共享会破坏现有隔离。外部 registry 保存的构建层可能包含 Dockerfile 复制进去的私有源代码或构建产物，部署者需要为其配置与 Codespace 数据相匹配的访问控制、存储上限、保留期和垃圾回收；这些属于 registry 运维，不在 Manager 中再实现一套容量管理。</p>
 <h3 id="实现验收点-18"><a class="header" href="#实现验收点-18">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>runtime.cache.mirrors</code> 统一作用于单镜像、Compose 实际启动服务和 OCI Feature；原始引用和真实 digest 继续进入配置、lock 与环境状态。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-Dockerfile、Compose、Feature 和运行用户调整构建使用按仓库输入、平台和阶段隔离的 BuildKit registry cache，cache key 不包含 Secret 或开发凭据。</li>
+常规 Dockerfile、Compose、Feature 和运行用户调整构建使用按仓库输入、平台和阶段隔离的 BuildKit registry cache；带 <code>build.options</code> 的构建保留仓库 cache 语义，cache key 不包含 Secret 或开发凭据。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 mirror 与构建缓存不可用时 create 可以回退原始 registry 或本地构建，并输出一条说明回退对象和原因的警告。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1934,19 +1940,19 @@ cache 配置只随 create 进入原生运行时，resume 和 stop 不访问 regi
 实例继续使用独立 Docker 数据目录；registry 的鉴权、容量、保留期和垃圾回收由部署者管理。</li>
 </ul>
 <h2 id="feature-与-web-ide"><a class="header" href="#feature-与-web-ide">Feature 与 Web IDE</a></h2>
-<p>Manager 使用 ORAS Go 客户端读取 OCI Dev Container Feature，并复用 Docker 凭据访问私有镜像和私有 Feature。每个 Feature 校验媒体类型、单一 layer、<code>devcontainer-feature.json</code>、<code>install.sh</code>、选项类型、字符串枚举和依赖；<code>dependsOn</code> 是硬依赖，<code>installsAfter</code> 是不产生失败环的顺序提示，<code>overrideFeatureInstallOrder</code> 在满足硬依赖后决定优先顺序。Feature 安装器取得最终 container user、remote user 与 home 环境，entrypoint 在每次容器启动时执行。</p>
-<p>运行时读取基础镜像的 <code>devcontainer.metadata</code>，按“镜像元数据、Feature 元数据、仓库配置”合并。镜像元数据只提供用户、环境、mount、端口、生命周期、entrypoint 和资源要求等运行属性，不选择 image、build、Compose 或 Feature；Feature 元数据只提供 Feature 规范允许的容器属性。仓库配置在标量和同名环境变量上具有最终选择权，mount 按 target 合并，数组去重，customizations 深度合并，主机资源要求取能够满足全部来源的较大值。**设计如此：**配置来源属于用户选择的仓库文件，镜像和 Feature 只能补充自身拥有的运行信息；明确字段所有权可以防止依赖内容改变创建来源或在宿主机执行仓库之外的初始化命令。最终 OCI digest 写入环境状态，使恢复和诊断可以确认首次创建实际使用的内容。</p>
-<p>仓库 Feature 固定到与配置文件同目录的 <code>devcontainer-lock.json</code> 或 <code>.devcontainer-lock.json</code>，内容记录 version、resolved digest、integrity 和依赖。普通创建在解析完成后原子更新锁文件，frozen 模式要求现有文件完全匹配；平台 Web IDE 由 Codespace 适配层注入，不写入仓库锁。这样仓库锁只描述仓库声明，平台能力不会改写工作区文件；仓库和平台 Feature 的最终 OCI digest 共同写入 Manager 环境状态，恢复和诊断使用的是实际创建结果。</p>
+<p>Manager 支持 OCI、HTTPS tar 归档和仓库配置目录中的 Dev Container Feature。OCI 使用 ORAS Go 客户端并复用 Docker 凭据访问私有仓库；HTTPS 归档校验下载内容摘要；本地 Feature 在解析符号链接后必须位于锁定 workspace。每个 Feature 校验媒体类型、单一 layer、<code>devcontainer-feature.json</code>、<code>install.sh</code>、选项类型、字符串枚举和依赖；<code>dependsOn</code> 是硬依赖，<code>installsAfter</code> 是不产生失败环的顺序提示，<code>overrideFeatureInstallOrder</code> 在满足硬依赖后决定优先顺序。Feature 安装器取得最终 container user、remote user 与 home 环境，entrypoint 在每次容器启动时执行。</p>
+<p>运行时读取基础镜像的 <code>devcontainer.metadata</code>，按“镜像元数据、Feature 元数据、仓库配置”合并。镜像元数据只提供用户、环境、mount、端口、生命周期、entrypoint 和资源要求等运行属性，不选择 image、build、Compose 或 Feature；Feature 元数据只提供 Feature 规范允许的容器属性。仓库配置在标量和同名环境变量上具有最终选择权，mount 按 target 合并，数组去重，VS Code customizations 按工具结构合并，其他工具数据由后一个来源完整替换并原样保留，主机资源要求取能够满足全部来源的较大值。**设计如此：**只有 VS Code 的设置与扩展结构属于当前运行时已理解的数据；对未知工具做通用深度合并会擅自改变厂商定义，完整保留后一个声明更可预测。最终内容摘要写入环境状态，使恢复和诊断可以确认首次创建实际使用的内容。</p>
+<p>仓库 Feature 固定到与配置文件同目录的 <code>devcontainer-lock.json</code> 或 <code>.devcontainer-lock.json</code>，内容记录 version、resolved、integrity 和依赖。OCI 与 HTTPS 归档具有稳定摘要并进入锁文件；仓库内 Feature 直接随锁定提交固定，不重复写入锁。普通创建在解析完成后原子更新锁文件，frozen 模式要求现有文件完全匹配；平台 Web IDE 由 Codespace 适配层注入，不写入仓库锁。**设计如此：**锁文件只固定外部可变化内容，本地 Feature 已由仓库提交和配置摘要共同固定，重复记录既没有增加校验能力，也会偏离官方锁文件范围。</p>
 <p>仓库和平台 Feature 进入同一解析、依赖排序和安装流程。相同标准 Feature ID 只有在完整引用和规范化选项一致时去重；引用版本、来源或选项不同表示仓库环境和平台能力对同一工具提出了不同结果，创建会返回指出双方来源和引用的配置错误。**设计如此：**仓库不能静默改写平台 Web IDE，平台也不覆盖仓库配置；明确冲突让仓库维护者调整声明即可得到唯一、可复现的环境。</p>
-<p>平台始终加入固定引用的 Coder code-server Feature。Feature 只负责把指定版本的程序安装进镜像，不接管容器 entrypoint；Manager 在容器启动后按实际 remote user、workspace、<code>remoteEnv</code> 和当前 Secret 启动唯一的 code-server 进程。Feature 安装器引用随 Manager 发布固定，code-server 程序版本由 <code>runtime.web_ide.code_server_version</code> 选择明确语义版本；固定端口为 <code>13337</code>，<code>auth=none</code>、监听 <code>0.0.0.0</code>，并关闭遥测和自身更新检查。配置变化只作用于之后创建的环境，已有环境 resume 使用创建时保存的容器和 Feature digest，用户通过重建 Codespace 完成升级。<code>customizations.vscode.settings</code> 写入 code-server 用户目录，扩展按配置安装；单个扩展安装失败记录警告，不阻止 shell 和已有 Web IDE 启动。code-server 不建立第二层登录，因为 Gateway 已负责 Open Code、Cookie、会话和持续权限复检。**设计如此：**平台需要在每次启动时注入当前 Secret 并打开真实 workspace，若同时执行 Feature 自带入口，会先在默认目录启动另一个进程并占用端口；把安装和启动职责分开后，程序版本仍由 Feature 固定，进程环境则由当前运行轮次统一决定。</p>
+<p>平台始终加入固定引用的 Coder code-server Feature。Feature 只负责把指定版本的程序安装进镜像，不接管容器 entrypoint；Manager 在容器启动后按实际 remote user、workspace、<code>remoteEnv</code> 和当前 Secret 启动唯一的 code-server 进程。Feature 安装器引用随 Manager 发布固定，code-server 程序版本由 <code>runtime.web_ide.code_server_version</code> 选择明确语义版本；固定端口为 <code>13337</code>，<code>auth=none</code>、监听 <code>0.0.0.0</code>，并关闭遥测和自身更新检查。配置变化只作用于之后创建的环境，已有环境 resume 使用创建时保存的容器和 Feature digest，用户通过重建 Codespace 完成升级。<code>customizations.vscode.settings</code> 写入 code-server 用户目录，扩展按配置安装；全部扩展共用一个日志分组，单个扩展安装失败在该分组中记录 warning，不阻止 shell 和已有 Web IDE 启动。code-server 不建立第二层登录，因为 Gateway 已负责 Open Code、Cookie、会话和持续权限复检。**设计如此：**扩展输出需要能够整体折叠，但按每个扩展建立小分组会增加浏览负担；一个阶段分组既保留诊断正文，也能让创建日志保持紧凑。平台需要在每次启动时注入当前 Secret 并打开真实 workspace，若同时执行 Feature 自带入口，会先在默认目录启动另一个进程并占用端口；把安装和启动职责分开后，程序版本仍由 Feature 固定，进程环境则由当前运行轮次统一决定。</p>
 <h3 id="实现验收点-19"><a class="header" href="#实现验收点-19">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
-Feature 通过 OCI API 拉取，依赖顺序、用户选项和摘要进入同一创建结果。</li>
+OCI、HTTPS 归档和仓库内 Feature 使用同一依赖、选项、安装与环境合并流程。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 基础镜像元数据、Feature 元数据和仓库配置按固定顺序合并，私有镜像使用 Docker 凭据。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-Feature 锁文件使用官方路径和字段并校验 digest，只记录仓库声明的 Feature，不记录平台 Web IDE Feature。</li>
+Feature 锁文件使用官方路径和字段并校验摘要，只记录仓库声明的 OCI 与 HTTPS Feature，不记录本地或平台 Web IDE Feature。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 平台 Web IDE 作为带来源的 Feature 注入；与仓库相同配置时去重，不同配置返回明确冲突。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -1987,6 +1993,8 @@ resume 使用已保存环境，不重新解析仓库文件或修改 workspace HE
 image/build 创建与删除不调用 Compose；Compose 清理先确认项目资源存在，并覆盖容器、网络和卷。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Endpoint 默认清单在首次 lifecycle 前完成初始化，resume 不重新生成清单。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+shell 和 <code>env -0</code> 等内部环境探测只返回结构化结果，不写入用户日志；非交互命令在展示流中补齐最后一行边界且不改变返回的原始字节，后续日志分组保持完整；VS Code 扩展安装使用一个整体分组并以 warning 表达单项失败。</li>
 </ul>
 <h2 id="凭据与-secret"><a class="header" href="#凭据与-secret">凭据与 Secret</a></h2>
 <p>Manager 在 bootstrap 前将本轮 Gitea Token、Codespace Git SSH 私钥、公钥和 known_hosts 写入 root seed。bootstrap 创建最终 helper 和只读凭据目录，Dev Container 只读挂载这些文件；HTTP(S) remote 使用 credential helper，SSH remote 使用包装命令和严格 Host Key 校验。Git 用户名和隐私邮箱只在首次创建时写入 Dev Container 用户的 Git 配置，之后 resume 不根据 Gitea 账户变化覆盖用户设置。</p>
@@ -2007,7 +2015,7 @@ Git identity 只在首次 create 配置，resume 保留用户在 workspace 中�
 <h2 id="gateway-接入"><a class="header" href="#gateway-接入">Gateway 接入</a></h2>
 <p>SSH shell/exec 通过 Incus exec 启动隐藏的 <code>runtime exec</code>，再由 Docker API进入主 Dev Container；PTY、窗口 resize、signal、退出码和非交互 stdout/stderr 保持独立语义。SFTP 继续使用 Incus 文件 API，以外层 UID/GID和 workspace 作为默认目录，文件系统范围保持 Incus SFTP 的原生能力。</p>
 <p>Web IDE、普通 HTTP Endpoint 和 SSH <code>direct-tcpip</code> 都通过 Incus exec 启动 <code>runtime tcp</code>，再在主 Dev Container 内连接 <code>localhost</code>、<code>127.0.0.1</code> 或 <code>::1</code>。外部请求仍经过 Gateway 的 Gitea认证、会话、限流和持续权限复检；容器不开放 Manager 控制端口，也不需要内部 sshd或 direct 网络地址。Dev Container 的 <code>forwardPorts</code> 和 <code>appPort</code> 在 create 时生成初始 Endpoint manifest；文件使用实际运行用户和 <code>0600</code> 权限，resume 保留用户后续修改。容器内可直接从 <code>PATH</code> 使用 <code>gitea-codespace-endpoint list</code>、<code>set &lt;port&gt; [--label ...] [--protocol http|https] [--public]</code> 和 <code>delete &lt;port&gt;</code> 管理入口。普通 Endpoint ID 固定由端口生成 <code>port-&lt;port&gt;</code>，默认标签为 <code>Port &lt;port&gt;</code>、协议为 HTTP、访问方式为私有。**设计如此：**用户实际管理的是主 Dev Container 的端口；固定 ID 能让重复 set 成为更新同一入口，端点清单作为唯一运行事实又能在 stop/resume 后保留公开选择，无需 Gitea 增加第二份可写状态。</p>
-<p><code>portsAttributes</code> 先匹配准确端口，再匹配范围最小的端口段，最后使用 <code>otherPortsAttributes</code>。<code>label</code> 和 <code>protocol=http|https</code> 进入 Endpoint；<code>onAutoForward=ignore</code> 表示该端口不生成 Gateway 路由，其余自动打开方式都生成可访问入口。Gateway 为每个入口分配远程 URL，因此 <code>requireLocalPort</code> 和 <code>elevateIfNeeded</code> 作为本地客户端端口分配提示无需改变服务端路由。**设计如此：**仓库仍使用标准端口声明，服务端只解释与远程 Gateway 有实际对应关系的部分，不模拟本地编辑器的端口占用行为。</p>
+<p><code>portsAttributes</code> 先匹配准确端口，再匹配范围最小的端口段；调用方能够取得监听进程命令行时再匹配进程正则，最后使用 <code>otherPortsAttributes</code>。<code>label</code> 和 <code>protocol=http|https</code> 进入 Endpoint；<code>onAutoForward=ignore</code> 表示该端口不生成 Gateway 路由，其余自动打开方式都生成可访问入口。数值 <code>0</code> 是合法的动态端口声明，但在真实端口确定前不生成固定 Endpoint；应用或编辑器取得端口后通过 Endpoint helper 登记。Gateway 为每个入口分配远程 URL，因此 <code>requireLocalPort</code> 和 <code>elevateIfNeeded</code> 作为本地客户端端口分配提示无需改变服务端路由。**设计如此：**仓库仍使用标准端口声明，服务端只解释与远程 Gateway 有实际对应关系的部分，不模拟本地编辑器的端口占用行为。</p>
 <h3 id="实现验收点-22"><a class="header" href="#实现验收点-22">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -2017,7 +2025,7 @@ Web IDE 与 Endpoint 通过 Incus exec和 Docker API连接容器 localhost，不
 <li><input disabled="" type="checkbox" checked=""/>
 <code>localhost</code>、<code>127.0.0.1</code> 和 <code>::1</code> 的转发行为一致。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-端口属性支持准确端口、范围和默认值；<code>ignore</code> 不发布 Endpoint，HTTP/HTTPS 和 label 进入路由。</li>
+端口属性支持准确端口、范围、进程正则和默认值；数值零不生成错误的固定路由，<code>ignore</code> 不发布 Endpoint，HTTP/HTTPS 和 label 进入路由。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Endpoint helper 位于 Dev Container 的 <code>PATH</code>，按端口完成 list、set 和 delete，并能明确选择私有或公共入口。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -2027,7 +2035,7 @@ Runtime 内没有访问 Manager 控制端口的路径，所有外部接入先经
 </ul>
 <h2 id="部署与测试"><a class="header" href="#部署与测试">部署与测试</a></h2>
 <p>Incus 系统容器和虚拟机都需要可用 agent、受支持的 Linux 用户管理工具、Git、证书和 Docker Engine。Manager 可执行文件必须能在实例架构和 libc 环境中运行；推荐发布同架构的静态 Go 二进制。虚拟机强制以 agent 可用作为启动前提，不提供无 agent 的降级路径。</p>
-<p>真实 E2E 分为两层。<code>test-devcontainer-e2e-required</code> 直接连接 Docker Engine：Compose 用例使用 Dev Containers 官方基础镜像和官方 <code>common-utils</code> Feature，验证多服务、image metadata 合并、Feature 安装、remote user 的 UID/GID、生命周期命令和同一容器的 stop/resume；单镜像用例验证 image 来源、标量端口、<code>remoteEnv</code> 删除语义和无 Compose 清理警告。这层用于快速定位通用 Engine 的行为。<code>test-e2e-runtime-required</code> 在真实 Incus 实例内安装并使用 Docker Engine，写入同一份标准夹具，再经过 Manager 构建出的真实可执行文件完成 workspace、create、stop 和 resume；这层用于验证部署链路。该入口在测试实例内放置临时本地 Git 仓库，clone、checkout 和摘要校验仍按生产流程执行，官方镜像和 Feature 仍从真实仓库拉取。**设计如此：**自包含 Git 仓库避免示例仓库网络波动掩盖运行时结果；两层使用相同输入和断言，可以区分 Dev Container 实现错误与 Incus 部署错误，同时避免把官方 CLI 当作生产依赖。</p>
+<p>真实 E2E 分为两层。<code>test-devcontainer-e2e-required</code> 直接连接 Docker Engine：Compose 用例使用 Dev Containers 官方基础镜像和官方 <code>common-utils</code> Feature，验证多服务、image metadata 合并、Feature 安装、remote user 的 UID/GID、生命周期命令和同一容器的 stop/resume；单镜像和 Dockerfile 用例验证 image 来源、本地 Feature、<code>runArgs</code>、<code>build.options</code>、端口、<code>remoteEnv</code> 删除语义和无 Compose 清理警告。这层用于快速定位通用 Engine 的行为。<code>test-e2e-runtime-required</code> 在真实 Incus 实例内安装并使用 Docker Engine，写入同一份标准夹具，再经过 Manager 构建出的真实可执行文件完成 workspace、create、stop 和 resume；这层用于验证部署链路。该入口在测试实例内放置临时本地 Git 仓库，clone、checkout 和摘要校验仍按生产流程执行，官方镜像和 Feature 仍从真实仓库拉取。**设计如此：**自包含 Git 仓库避免示例仓库网络波动掩盖运行时结果；两层使用相同输入和断言，可以区分 Dev Container 实现错误与 Incus 部署错误，同时避免把官方 CLI 当作生产依赖。</p>
 <p>完整 Manager E2E 继续分别覆盖 system container 和 VM，并验证 Web IDE、SSH/PTY、TCP 和 SFTP。单个实例 CPU 为 1、内存上限不超过 1 GiB。需要测试外部仓库时，<code>CODESPACE_E2E_REPO_CLONE_HTTP_URL</code> 指向实例可访问的测试仓库，并由 <code>CODESPACE_E2E_REPO_COMMIT_SHA</code> 固定实际提交。普通测试在未检测到 Incus 或未显式启用镜像拉取型 E2E 时跳过；required 入口把缺少 Incus、Docker、仓库或镜像条件作为失败返回。这样日常单元测试保持稳定，发布验收仍会真实拉取官方资产并执行容器行为。</p>
 <h3 id="实现验收点-23"><a class="header" href="#实现验收点-23">实现验收点</a></h3>
 <ul>
@@ -2041,6 +2049,8 @@ Docker 直测与 Incus 运行时 E2E 使用同一份标准夹具，并真实拉�
 标准夹具验证 Compose、image metadata、Feature、UID/GID、lifecycle 和 stop/resume 后容器身份不变。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Docker 直测包含真实单镜像创建，验证端口、远程环境和按来源清理行为。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Docker 直测覆盖本地 Feature、<code>runArgs</code> 与 Dockerfile <code>build.options</code> 的真实创建结果。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Incus 运行时 E2E 使用自包含 Git 仓库完成真实 clone、分支 tracking 和摘要校验，仓库网络不影响容器运行时判定。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -3101,7 +3111,7 @@ operation_status=running
 </code></pre>
 <p>首次 final 在写入前直接检查 <code>operation_deadline_unix</code>。该字段已由固定总执行期限封顶；handler 发现当前版本 <code>now &gt;= deadline</code> 且 Cron 尚未处理，就在 Codespace lock 内按 operation 类型执行 timeout State Finalization，随后保持已经成立的 timeout 结果并返回普通成功。该判断与 Fetch 批量续租和 Cron 使用相同条件更新，先成功的 final、续租或 timeout 生效，后到请求不覆盖当前状态。Manager 的 online、recovering 或 offline 状态不改变该 deadline 判断。</p>
 <p>功能启用时按正常规则接受 final。站点在 operation 领取后进入排空时，stop/delete 仍按正常规则完成；create/resume 只允许追加清理日志和提交 <code>final failed</code>，Fetch 不再续租而是返回 abort。create 删除本轮新建的 Incus 实例后进入 failed；resume 确认本轮启动的实例已经停止后回到 stopped，保留实例根存储。该规则停止站点新增运行工作，同时不把可恢复 workspace 误标为破坏性失败，也不阻塞已有实例的 stop/delete。</p>
-<p>final 必须携带 Manager 本地保存的原始 <code>operation_type</code>。active operation 仍存在时该类型必须与数据库一致；当前版本匹配但有效类型不同、版本已经被替换或主状态已经变化时，Gitea 不写入旧结果并返回普通成功，Manager 结束该 worker 的本地上下文。<code>UNSPECIFIED</code> 和未知枚举返回 <code>invalid_argument</code>。active operation 已清空后，Gitea 只能按相同版本和请求映射出的目标主状态判断幂等，不能再证明原类型。create/resume done 映射 running，resume failed 和 stop done 映射 stopped，create/stop/delete failed 映射 failed；该目标状态幂等语义使设计不需要保存 operation 历史。abort create/resume 仍分别携带本地原始类型。**设计如此：**final 表示 Manager 已经结束本地动作；旧结果不能覆盖服务端当前状态，也不值得驱动 Manager 重试。只有 Codespace 已物理删除需要 <code>resource_absent=true</code>，以便立即触发完整 inventory。</p>
+<p>final 必须携带 Manager 本地保存的原始 <code>operation_type</code>。active operation 仍存在时该类型必须与数据库一致；当前版本匹配但有效类型不同、版本已经被替换或主状态已经变化时，Gitea 不写入旧结果并返回普通成功，Manager 结束该 worker 的本地上下文。<code>UNSPECIFIED</code> 和未知枚举返回 <code>invalid_argument</code>。active operation 已清空后，数据库已经没有足够信息恢复原操作类型，因此 Gitea 保留当前主状态并返回普通成功。abort create/resume 仍分别携带本地原始类型。**设计如此：**final 表示 Manager 已经结束本地动作；旧结果不能覆盖服务端当前状态，也不值得仅为区分重复结果而保存 operation 历史。只有 Codespace 已物理删除需要 <code>resource_absent=true</code>，以便立即触发完整 inventory。</p>
 <p>create/resume final done 都要求当前 operation 版本的 Runtime Metadata 已为 <code>ready</code> 且 Codespace Token 行完整。Manager 在 ready 前校验实际 workspace remote 的本地配置：HTTP(S) helper 必须读取当前 Gitea Token 文件，SSH 必须已经通过 <code>RequestRuntimeAccess</code> 确认同一公钥并写入可信 known_hosts。Gitea 不保存实际 remote 的第二份字段，也不根据首选 <code>git_protocol</code> 猜测，因此 final 不重复检查协议或 SSH Key；SSH 命令只有存在有效公钥关系时才能进入专用鉴权。任一步失败都仍由 active operation 的 lease、重试和 final failed 处理。这样 final done 提交后即可清除 operation，<code>running</code> 同时表示本次启动的本地凭据配置和交互入口已经就绪，不需要另一个跨重启的后置任务。</p>
 <p>状态写入：</p>
 <div class="table-wrapper"><table><thead><tr><th>operation</th><th>done</th><th>failed</th></tr></thead><tbody>
@@ -3114,18 +3124,18 @@ operation_status=running
 <p>resume failed 只在 Manager 已确认本轮启动的 Incus 实例停止后上报，因此 operation 事务先保留实例根存储并写回 stopped。主状态事务提交后，Gitea 尽力清除本次 resume 的 Runtime Metadata；Manager 清除本轮 boot 发布上下文，不恢复历史 ready。普通可恢复失败允许下一次 resume 使用更高 operation 版本重建；实例根存储损坏、Git SSH 密钥材料矛盾或 Gitea 公钥绑定冲突时，Manager 已持久化的 <code>unrecoverable_failed</code> boot 终态会在 final failed 后驱动现有 <code>ReportRuntimeTransition(failed)</code>。进程重启继续该报告；如果新 resume 已先创建，Manager 领取后直接 final failed，再次上报 failed。详细原因仍留在 Manager 日志，final 协议保持现有 done/failed 两值。</p>
 <p>Manager 负责报告 Gitea-issued operation 的动作结果，Gitea 负责把结果写成主状态、开发凭据生命周期绑定和日志追加窗口。State Finalization 在同一事务内完成这些写入，保证用户看到一致的生命周期结果。operation 完成后不保留 <code>done|failed</code> 状态，失败诊断从 Codespace 日志读取。</p>
 <p>State Finalization 首次完成 final、timeout、missing 或 transition 处理时写 <code>updated_unix=now</code>；queued resume/stop timeout 或 queued idle stop 取消即使保持原稳定主状态，也因 active operation 首次结束而更新时间。创建或替换 active operation 同样更新该字段。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、未取消 operation 的 open/SSH/继续运行/设置变更和相同结果的幂等重试不更新它，repository 删除仅把 <code>repo_id</code> 写为 0 时也不更新。这样 <code>updated_unix</code> 可以稳定表达生命周期变化，并作为 failed retention 起点，而不会被调度或普通交互活动延后。</p>
-<p>State Finalization 主事务提交后，仍保留 Codespace 记录的结果通过日志专用锁尽力追加内部状态摘要。摘要由独立的 DBFS 追加事务保证内容与日志元数据共同提交；摘要失败只记录服务端告警，不回滚主状态。delete done 已经物理删除记录和日志，直接跳过摘要；force/account/Manager delete 与 retention 清理同样不能重新创建日志。</p>
+<p>State Finalization 主事务提交后，timeout、missing 和 Runtime 状态报告等由 Gitea 独立判定的异常通过日志专用锁尽力追加内部状态摘要。摘要由独立的 DBFS 追加事务保证内容与日志元数据共同提交；摘要失败只记录服务端告警，不回滚主状态。正常 final 和 Manager 已报告的失败使用已有 operation 分组及页面主状态表达，不再追加分组外的重复结果。delete done 已经物理删除记录和日志，直接跳过摘要；force/account/Manager delete 与 retention 清理同样不能重新创建日志。</p>
 <p>实现验收点：</p>
 <ul>
 <li>lease 只由 Fetch observed 批量续租；FinalizeOperation 不包含续租分支。boot stage 由 Runtime Metadata 和日志表达。</li>
 <li>final result 触发一次 State Finalization。</li>
 <li>首次接受、相同结果重复提交、过期 operation 版本或当前主状态不再接受旧结果时都返回 <code>resource_absent=false</code>；只有 Codespace 记录不存在时返回 <code>resource_absent=true</code>。</li>
-<li>final 的有效 operation 类型与当前同版本 active operation 不一致时不写入生命周期结果，Manager 清除旧上下文；非法枚举返回 invalid argument。active 已清空时只按相同版本和请求目标主状态判断是否已经成立，不声称恢复原类型。</li>
+<li>final 的有效 operation 类型与当前同版本 active operation 不一致时不写入生命周期结果，Manager 清除旧上下文；非法枚举返回 invalid argument。active 已清空时保留当前主状态并返回普通成功，不声称恢复原类型。</li>
 <li>State Finalization 同事务处理主状态、包括来源在内的 active operation 清空，以及彼此独立的 Codespace Token 与 Git SSH Key 生命周期；active operation 清空后日志追加窗口关闭。</li>
 <li>create/resume 的 final done 在当前 operation 版本 ready metadata 或 Token 行缺失时被拒绝，active operation 保持可重试；实际 remote 的本地凭据配置由 Manager 在 ready 前验证，Gitea final 不增加协议分支，成功后不再存在凭据刷新任务。</li>
 <li>resume failed、timeout 和 abort 在状态结果成立后尽力清除本次启动 metadata；迟到的同版本上报不能在无 active resume 时重新写入。</li>
 <li><code>updated_unix</code> 在创建记录、创建或替换 active operation，以及首次 final/timeout/missing/transition/queued idle stop 取消时更新；未改变 active operation 的交互或设置、claim、续租、metadata、日志、token 修复、幂等结果和 <code>repo_id</code> 置 0 不刷新该字段。</li>
-<li>保留 Codespace 记录的结果在主事务提交后通过日志专用锁单独追加内部摘要；物理删除跳过摘要，摘要失败不回滚已经接受的 final。</li>
+<li>timeout、missing 和 Runtime 状态报告等独立控制面判定在主事务提交后通过日志专用锁追加内部摘要；final 不重复写结果，物理删除不创建摘要。</li>
 <li>deadline 到期后的 final 在请求路径立即触发按 operation 类型定义的 timeout，并返回普通成功；Manager runtime state 不延长 deadline，且与 Fetch/Cron 并发时只有一个条件更新生效。</li>
 <li>codespace 已物理删除时返回 <code>outcome.resource_absent</code>；worker 清除本地 operation 上下文、结束该 operation 的上报并触发完整 inventory。<code>resource_absent</code> 本身不授权删除 Runtime；当前 inventory 查询明确无记录时再返回 <code>cleanup_local_runtime</code>。UUID 不复用，也不保存 operation 历史或 tombstone。</li>
 <li>站点排空后已领取的 create/resume 只能 final failed，已领取或新领取的 stop/delete 可以正常完成。</li>
@@ -3133,7 +3143,7 @@ operation_status=running
 <h3 id="updatelog"><a class="header" href="#updatelog">UpdateLog</a></h3>
 <ul>
 <li>写入 DBFS 路径 <code>codespace_log/{codespace_uuid}.log</code>。</li>
-<li>Gitea 服务层可为完整 failed 对象和 operation 最终状态通过内部入口写入失败或 warning 摘要；Manager operation payload 携带当前 <code>log_offset</code>。</li>
+<li>Gitea 服务层可为 timeout、missing runtime 和主动 Runtime 状态变化通过内部入口写入诊断摘要；Manager operation payload 携带当前 <code>log_offset</code>。</li>
 <li>request 使用结构化 <code>LogLine(timestamp_unix_nano, message)</code>；Gitea 脱敏后统一编码为 UTF-8 <code>[RFC3339Nano] message\n</code>，offset 按编码后的完整字节计算。</li>
 <li>校验 <code>codespace_uuid + operation_rversion + manager_id</code> 匹配当前 running operation。</li>
 <li>offset 等于当前日志大小时追加。</li>
@@ -3143,11 +3153,11 @@ operation_status=running
 <li>只允许当前 <code>operation_rversion</code> 对应的 running operation 追加日志。</li>
 <li>active operation 清空后，日志进入封闭状态。</li>
 <li>单行最大长度由 Gitea 内部保护值控制，保证异常大行不会放大单次写入和页面读取。</li>
-<li>日志总大小由 <code>LOG_MAX_SIZE</code> 控制。普通日志可用上限为 <code>LOG_MAX_SIZE</code> 减去内部最终摘要预留空间，超过后返回 log size exceeded 分类并写入明确截断摘要。</li>
-<li>服务端固定预留最终摘要空间；达到普通日志上限后拒绝原始行，但内部最终摘要仍可写入预留空间。</li>
-<li>keyed lock 内发现普通 batch 将使当前文件首次跨过普通日志上限时，只写一条截断摘要；文件已经达到上限后的普通行直接返回 <code>log_size_exceeded</code>，不再写摘要。截断摘要和最终摘要共同受 <code>LOG_MAX_SIZE</code> 硬上限约束。</li>
+<li>日志总大小由 <code>LOG_MAX_SIZE</code> 控制。普通日志可用上限为 <code>LOG_MAX_SIZE</code> 减去内部状态摘要预留空间，超过后返回 log size exceeded 分类并写入明确截断摘要。</li>
+<li>服务端固定预留内部状态摘要空间；达到普通日志上限后拒绝原始行，但 timeout、missing runtime 等控制面诊断仍可写入预留空间。</li>
+<li>keyed lock 内发现普通 batch 将使当前文件首次跨过普通日志上限时，只写一条截断摘要；文件已经达到上限后的普通行直接返回 <code>log_size_exceeded</code>，不再写摘要。截断摘要和内部状态摘要共同受 <code>LOG_MAX_SIZE</code> 硬上限约束。</li>
 <li>Manager 收到 <code>log_size_exceeded</code> 后停止对应生命周期 sink 的普通日志上传并继续执行 operation。这样日志上限同时限制存储和后续控制面请求，不会让已经明确截断的输出持续占用 RPC 与数据库事务。</li>
-<li>Manager 在 final 前先上传 operation 最终摘要。对于仍保留 Codespace 记录的结果，Gitea 在 State Finalization 主事务提交后，通过日志专用锁使用剩余预留空间尽力追加内部状态摘要；该 DBFS 追加事务失败或预留耗尽时只记录服务端告警，不回滚生命周期状态。物理删除路径跳过摘要并删除整份日志。</li>
+<li>Manager 在 final 前关闭 operation 日志分组并上传剩余日志。final 结果由该分组中的执行结果和页面主状态共同表达；Gitea 只在独立判定 timeout、missing runtime 或 Runtime 状态变化时使用预留空间追加诊断摘要。该 DBFS 追加事务失败或预留耗尽时只记录服务端告警，不回滚生命周期状态。物理删除路径删除整份日志。</li>
 <li>成功追加和内容一致的幂等重放都返回服务端当前 <code>next_offset</code>；该值是脱敏和规范化编码后的真实文件末尾。</li>
 <li>offset conflict/gap 返回 <code>FailureDetail</code> 和 <code>LogOffsetDetail(current_offset)</code>；Manager 从服务端位置恢复，不根据本地原始 message 估算 offset。</li>
 </ul>
@@ -3157,8 +3167,8 @@ operation_status=running
 <li>成功追加和相同内容幂等重放都返回真实 <code>next_offset</code>。</li>
 <li>服务端脱敏改变字节数时，Manager 下一次追加仍使用 response offset 并成功连续写入。</li>
 <li>offset conflict/gap 携带 <code>LogOffsetDetail.current_offset</code>，且不产生不连续文件。</li>
-<li>达到普通日志上限后只写一条截断摘要，重复请求不消耗最终摘要预留空间。</li>
-<li>达到普通日志上限后，Manager 不再为当前 sink 发送后续普通行；生命周期命令继续运行，最终状态摘要仍可写入预留空间。</li>
+<li>达到普通日志上限后只写一条截断摘要，重复请求不消耗内部状态摘要预留空间。</li>
+<li>达到普通日志上限后，Manager 不再为当前 sink 发送后续普通行；生命周期命令继续运行，timeout、missing runtime 等内部状态摘要仍可写入预留空间。</li>
 <li>部分重叠的重放不会补写尾部；内部状态摘要写入失败不回滚已经提交的 State Finalization，物理删除不会重新创建日志。</li>
 </ul>
 <h3 id="reportruntimemetadata"><a class="header" href="#reportruntimemetadata">ReportRuntimeMetadata</a></h3>
@@ -3536,6 +3546,7 @@ missing = expected - reported
   "offset": 0,
   "next_offset": 128,
   "eof": false,
+  "operation_active": true,
   "lines": [
     {"timestamp": 1785037200, "message": "first line"},
     {"timestamp": 1785037201, "message": "second line"}
@@ -3553,18 +3564,23 @@ missing = expected - reported
 <li>如果第一条完整物理行本身超过请求 <code>limit</code>，服务端仍单独返回该行并推进 offset，避免客户端无法分页前进；该例外一次只返回这一行，且仍受内部日志读取分页大小约束。</li>
 <li><code>next_offset</code> 是下一次轮询起点。</li>
 <li><code>eof=false</code> 表示仍可继续读取。</li>
+<li><code>operation_active=true</code> 表示 Codespace 仍有 queued 或 running operation，当前 EOF 后仍可能产生新日志；active operation 已清空时返回 false。字段名直接说明它描述生命周期操作，避免与页面请求或日志读取状态混淆。</li>
 <li><code>truncated=true</code> 表示本次响应达到读取上限，客户端继续使用 <code>next_offset</code> 拉取。</li>
 <li>delete done 和其他物理删除路径删除 DBFS 日志；<code>dbfs.Remove</code> 返回 <code>fs.ErrNotExist</code> 时作为幂等成功，其他错误使当前本地删除事务失败。</li>
 <li><code>failed</code> 状态日志保留到用户 delete，或 <code>reconcile_codespaces</code> 按 <code>OLDER_THAN</code> 到期清理。</li>
 <li>日志接口只允许 Codespace 创建者访问；对象不存在和创建者权限不足都沿用创建者对象路由的 404 语义，不由日志分页错误覆盖。</li>
 </ul>
-<p>日志在 Codespace 存续期间始终保留在 DBFS，并在物理删除时一起清理。纯文本下载按同一内部格式逐页还原时间与正文，因此下载、页面和追加共享一份内容，同时下载所需内存只与单个读取页相关。尚未产生任何日志的 Codespace 可能没有 DBFS 文件，因此删除不存在文件表示目标结果已经成立。DBFS 已满足运行中追加、页面读取和同事务日志元数据更新，不需要增加归档状态、存储类型字段或传输任务。</p>
+<p>日志在 Codespace 存续期间始终保留在 DBFS，并在物理删除时一起清理。纯文本下载按同一内部格式逐页还原时间与正文，因此下载、页面和追加共享一份内容，同时下载所需内存只与单个读取页相关。页面把历史追赶和实时轮询分开：<code>eof=false</code> 且 offset 前进时连续读取下一页，批次之间让浏览器完成绘制；到达 EOF 后，仅在 <code>operation_active=true</code> 时继续按状态间隔轮询。<code>operation_active=false</code> 时页面使用相同 EOF 再确认一次后停止，原因是 timeout、missing runtime 等控制面判定会先提交状态事务，再通过日志锁尽力追加诊断摘要；二次确认可以读取这类摘要，又不需要新增持久化关闭字段。尚未产生任何日志的 Codespace 可能没有 DBFS 文件，因此删除不存在文件表示目标结果已经成立。DBFS 已满足运行中追加、页面读取和同事务日志元数据更新，不需要增加归档状态、存储类型字段或传输任务。</p>
 <p>**设计如此：Web 响应采用结构化时间与正文，内部存储继续使用单文件文本和 byte offset。**页面需要独立展示时间列，而 Gitea 的幂等追加与分页需要稳定的物理字节位置；两者在读取边界转换即可闭环，不需要修改 Proto 或增加第二份日志存储。</p>
 <p>**设计理由：物理删除把“日志文件不存在”视为成功，而不是数据损坏。**创建后立即失败、从未被领取或内部摘要写入失败都可能合法地没有日志文件；让该情况阻断 Codespace、owner 或 Manager 删除会把诊断文件错误提升为资源生命周期前置条件。</p>
 <p>实现验收点：</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 日志读取按 byte offset 稳定分页，<code>next_offset</code> 可直接用于下一次请求。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+多页历史日志连续追赶，到达 EOF 后才进入实时轮询；inactive EOF 经一次确认后停止请求。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+大页日志分批渲染并保留跨页日志组、行号、错误标记和用户滚动位置。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>lines</code> 分别返回 Unix 时间和无前缀正文；非法参数返回 400，超过 EOF 的 offset 返回 409 和可恢复的 <code>current_offset</code>。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -3805,9 +3821,9 @@ OLDER_THAN = 8760h
 <li><code>AUTO_STOP_DEFAULT_TIMEOUT</code> 是 <code>auto_stop_mode=default</code> 的有效空闲时长；<code>AUTO_STOP_MIN_TIMEOUT</code> 与 <code>AUTO_STOP_MAX_TIMEOUT</code> 校验之后提交的新自定义值。范围变化不重写或截断已经保存的正数自定义值，Codespace 创建者可在自己的详情页看到原值并主动修改；这样站点配置调整不会让现有 Codespace 在未操作时突然改变超时。<code>never</code> 由模式明确表达，不使用超时 0 表达。站点默认值变化通过下一次 inventory 下发，无需批量更新对象记录。</li>
 <li><code>DEVCONTAINER_CONFIG_MAX_SIZE</code> 限制单份 <code>devcontainer.json</code> 的读取大小，避免创建确认变成大文件解析路径。</li>
 <li><code>LOG_MAX_SIZE</code> 限制单个 codespace 日志总量，避免异常 bootstrap、构建或 lifecycle 持续输出导致 DBFS 无限增长。</li>
-<li>Gitea 使用内部默认值限制单条日志行、单次日志读取响应和最终状态摘要预留空间。**设计如此：**管理员通常只需要决定每个 Codespace 最多保存多少日志；行大小、分页大小和摘要预留是保护 DBFS 与页面读取稳定性的实现参数，公开成配置会增加相互约束和错误组合。默认值保证普通日志分页和最终摘要可以闭环，异常输出达到上限时用明确截断摘要收敛。</li>
+<li>Gitea 使用内部默认值限制单条日志行、单次日志读取响应和内部状态摘要预留空间。**设计如此：**管理员通常只需要决定每个 Codespace 最多保存多少日志；行大小、分页大小和摘要预留是保护 DBFS 与页面读取稳定性的实现参数，公开成配置会增加相互约束和错误组合。默认值保证普通日志分页和控制面异常摘要可以闭环，异常输出达到上限时用明确截断摘要收敛。</li>
 <li><code>RUNTIME_METADATA_MAX_SIZE</code> 限制规范化 Runtime Metadata typed snapshot 的编码大小，避免 Endpoint 声明或资源指标无限放大 cache 和 RPC。**设计如此：**控制面协议使用 proto typed fields，Gitea 可以用生成类型计算最坏合法消息；缓存内部如何序列化不改变协议大小边界。
-配置在启动时完成关系校验。timeout、TTL、lease、queue timeout、大小和 retention 都必须大于 0；<code>OPERATION_LEASE_TIMEOUT</code> 必须能精确转换为大于 0 的整数毫秒，<code>OPERATION_MAX_DURATION</code>、<code>MANAGER_OFFLINE_TIMEOUT</code>、<code>QUEUE_TIMEOUT</code>、<code>OPEN_TOKEN_EXPIRE</code>、<code>AUTO_STOP_DEFAULT_TIMEOUT</code>、<code>AUTO_STOP_MIN_TIMEOUT</code> 和 <code>AUTO_STOP_MAX_TIMEOUT</code> 必须能精确转换为大于 0 的整数秒，并且 <code>OPERATION_MAX_DURATION &gt; OPERATION_LEASE_TIMEOUT</code>；<code>CONTROL_PLANE_TIMEOUT</code> 必须小于或等于 <code>floor(MANAGER_OFFLINE_TIMEOUT/4)</code>，使一次达到处理上限的 Declare 仍能在离线边界内重试；自动暂停满足 <code>AUTO_STOP_MIN_TIMEOUT &lt;= AUTO_STOP_DEFAULT_TIMEOUT &lt;= AUTO_STOP_MAX_TIMEOUT</code>；<code>LOG_MAX_SIZE</code> 必须大于内部日志分页大小和最终摘要预留空间。</li>
+配置在启动时完成关系校验。timeout、TTL、lease、queue timeout、大小和 retention 都必须大于 0；<code>OPERATION_LEASE_TIMEOUT</code> 必须能精确转换为大于 0 的整数毫秒，<code>OPERATION_MAX_DURATION</code>、<code>MANAGER_OFFLINE_TIMEOUT</code>、<code>QUEUE_TIMEOUT</code>、<code>OPEN_TOKEN_EXPIRE</code>、<code>AUTO_STOP_DEFAULT_TIMEOUT</code>、<code>AUTO_STOP_MIN_TIMEOUT</code> 和 <code>AUTO_STOP_MAX_TIMEOUT</code> 必须能精确转换为大于 0 的整数秒，并且 <code>OPERATION_MAX_DURATION &gt; OPERATION_LEASE_TIMEOUT</code>；<code>CONTROL_PLANE_TIMEOUT</code> 必须小于或等于 <code>floor(MANAGER_OFFLINE_TIMEOUT/4)</code>，使一次达到处理上限的 Declare 仍能在离线边界内重试；自动暂停满足 <code>AUTO_STOP_MIN_TIMEOUT &lt;= AUTO_STOP_DEFAULT_TIMEOUT &lt;= AUTO_STOP_MAX_TIMEOUT</code>；<code>LOG_MAX_SIZE</code> 必须大于内部日志分页大小和状态摘要预留空间。</li>
 </ul>
 <p>控制面消息下限由协议允许的最大不可拆分消息计算，覆盖 10000 条完整 inventory、10000 条 observed operation、10000 条设置与差异响应、256 条 operation payload、10000 条续租响应、一份最大 Runtime Metadata 和一条最大日志物理行。实现使用生成的 protobuf 类型和 Gitea 现有字段长度上限构造各类最坏合法消息，并以 <code>proto.Size</code> 计算所需字节数；测试把该结果与数量和字段上限绑定，<code>CONTROL_PLANE_MAX_MESSAGE_SIZE</code> 必须大于或等于其中最大值。<code>RUNTIME_METADATA_MAX_SIZE</code> 和内部日志行大小参与对应 request/response 计算；Dev Container 正文不进入控制面消息，因此其文件大小只约束 Gitea 创建确认时的仓库读取。Web 日志读取响应使用内部分页大小，不参与控制面消息下限。非法 Codespace 配置会禁用本进程的 Codespace 功能并记录错误，错误显示配置值、最低字节数和决定下限的消息类型，使管理员能直接修正配置。<strong>设计如此：Codespace 是可选功能，其配置错误不应使代码托管、Issue 或其他无关功能不可用；禁用后的行为与 <code>ENABLED=false</code> 的排空边界一致。</strong></p>
 <p>日志是唯一按消息大小拆分的控制面数据，Manager 使用 <code>proto.Size</code> 形成不超过 Declare 返回上限的批次；单条最大日志物理行已由启动校验保证可独立提交。inventory、observed operation 和 Runtime Metadata 保持完整提交。超限请求在进入业务 handler 前返回 Connect <code>ResourceExhausted</code>；协议字段或本地数据违反既有限制而导致不可拆分消息超限时，Manager 保持 recovering，后续 Fetch 提交两类零可用槽位，并报告具体消息类型和大小，不截断清单或推测缺失实例。</p>
@@ -3825,7 +3841,7 @@ OLDER_THAN = 8760h
 <li><code>ENABLED=false</code> 时可以关闭 HTTP Git 或 SSH，并继续执行 stop、delete、inventory 收敛和管理清理；再次启用前恢复存量 Codespace 所需的接入面。</li>
 <li>启用 Codespace 时只有一个活动 Gitea 进程；memory、twoqueue、Redis、memcache cache adapter 和 memory、Redis global lock backend 均沿用 Gitea 现有配置，不据此提供多实例能力。</li>
 <li>重新启用不迁移或重建数据库状态，现有对象按当前持久状态继续。</li>
-<li>配置项与实际 cron、lease、queue、open code、日志总量限制一一对应；非法值或相互矛盾的大小关系在启动时拒绝。日志行大小、读取分页和最终摘要预留使用内部默认值，并通过 <code>LOG_MAX_SIZE</code> 的关系校验保证可用。</li>
+<li>配置项与实际 cron、lease、queue、open code、日志总量限制一一对应；非法值或相互矛盾的大小关系在启动时拒绝。日志行大小、读取分页和内部状态摘要预留使用内部默认值，并通过 <code>LOG_MAX_SIZE</code> 的关系校验保证可用。</li>
 <li>消息大小配置同时覆盖 request 和 response；启动测试使用 protobuf 实际编码大小验证全部最大不可拆分消息，低于最低值时错误指出实际值、要求值和消息类型。</li>
 <li>Manager 使用 Declare 返回的消息上限分批日志；完整 inventory、完整 observed operation 和 Runtime Metadata 不分页、不截断，超限输入在业务事务前返回 <code>ResourceExhausted</code>。</li>
 <li>lease 配置可精确表示为正整数毫秒，Manager 离线、queue、Open Code 和自动暂停配置可精确表示为正整数秒；其他精度的值在启动时指出对应配置项。</li>
@@ -4376,7 +4392,7 @@ Fetch request 使用本地计算出的 <code>startup_capacity_available</code> �
 <li>bootstrap 和原生运行时 exec 都绑定当前 worker context。lease 截止、abort、进程关闭或更高版本 operation 会取消对应 Incus operation；Manager 重启时先终止遗留运行时进程并停止 active create/resume 实例，取得同版本新 lease 后才继续。这样实例内工作不会越过当前 Gitea 授权，也不需要另一份持久 deadline 或 pulse 协议。</li>
 <li>到达 <code>local_worker_deadline</code> 且尚未收到带新相对时长的 Fetch 响应或 final outcome 时，Manager 取消在途 Incus exec 与原生运行时请求。create/resume 还要停止实例并把本地 worker 原子保存为 <code>lease_paused</code>，保留当前 operation 上下文且不提交 final；stop/delete 以实际资源状态等待续租或 inventory 判断。协议不返回服务端绝对截止时间，Manager 也不在本地保存该值。<strong>设计如此：取消工作和停止 create/resume 实例只收缩本地执行，不能继续初始化；Manager 与 Gitea 不需要时钟同步。</strong></li>
 <li>Manager 重启后原单调时钟基线已经丢失，因此先终止遗留运行时进程，停止 active create/resume 实例，全部恢复 worker 保持 <code>lease_paused</code>。上下文完整的 operation 提交同版本 observed，只有成功 Fetch 续租并取得新的相对有效时长后才重新启动实例；仍然有效的持久结果可以复用，本次 operation 需要的环境恢复和连通校验必须重做。上下文缺失、Gitea 已按原 deadline 超时或 RPC 暂时不可用时均保持暂停。站点排空下 create/resume 的 abort 相对时长为 0，只立即清理本轮工作并提交 <code>final failed</code>，不恢复普通启动步骤。</li>
-<li>站点排空后，已声明 observed 的 running stop/delete 使用普通 command；running create/resume 只在 deadline 未到期时接受 <code>abort_create|abort_resume</code>，不恢复初始化或启动流程。<code>abort_create</code> 删除本轮新建的 Incus 实例并提交 <code>final failed</code>；<code>abort_resume</code> 停止本轮启动的实例、确认根存储保留且实例为 stopped 后提交 <code>final failed</code>。Gitea 分别映射到 failed 和 stopped。两类 abort 都上传摘要且不续租；服务端已经 timeout 时不再启动 abort worker。</li>
+<li>站点排空后，已声明 observed 的 running stop/delete 使用普通 command；running create/resume 只在 deadline 未到期时接受 <code>abort_create|abort_resume</code>，不恢复初始化或启动流程。<code>abort_create</code> 删除本轮新建的 Incus 实例并提交 <code>final failed</code>；<code>abort_resume</code> 停止本轮启动的实例、确认根存储保留且实例为 stopped 后提交 <code>final failed</code>。Gitea 分别映射到 failed 和 stopped。两类 abort 都在 operation 分组中记录取消原因且不续租；服务端已经 timeout 时不再启动 abort worker。</li>
 <li><code>FinalizeOperation</code> 的响应是当前 worker 的处理依据：</li>
 </ul>
 <div class="table-wrapper"><table><thead><tr><th>response</th><th>Manager 行为</th></tr></thead><tbody>
@@ -5243,7 +5259,7 @@ SSH 认证限流缓存最多保存 65536 个有期限键；容量已满时已有
 <li>active operation 清空后，Gitea 日志进入封闭状态。</li>
 <li>stop/resume/delete 创建新的 operation 版本后，日志继续追加到同一文件。</li>
 <li>Manager 以 <code>FetchOperations</code> 返回的 <code>log_offset</code> 初始化当前 operation 的上传 offset；成功追加使用 response <code>next_offset</code>，遇到 offset conflict/gap 时使用 <code>LogOffsetDetail.current_offset</code> 恢复，不从 0 覆盖已有内容。</li>
-<li>Gitea 返回 <code>log_size_exceeded</code> 后，当前生命周期日志 sink 停止普通日志上传并继续读取命令输出，避免实例进程因管道阻塞；少量 operation 摘要也把该结果视为日志已经明确截断，不阻止 stop、resume、delete 或最终状态提交。Gitea 使用预留空间写入最终状态摘要，因此达到日志上限不会丢失 operation 结果。</li>
+<li>Gitea 返回 <code>log_size_exceeded</code> 后，当前生命周期日志 sink 停止普通日志上传并继续读取命令输出，避免实例进程因管道阻塞；日志截断不阻止 stop、resume、delete 或最终状态提交，operation 结果仍由数据库主状态表达。Gitea 使用预留空间写入 timeout、missing runtime 等控制面诊断，因此普通输出达到上限后仍能说明独立状态变化。</li>
 <li>只有当前 <code>operation_status=running</code> 且 <code>operation_rversion</code> 匹配时才能追加 Gitea 日志。</li>
 </ul>
 <p>**设计如此：Docker 镜像拉取进度保存聚合状态，而不是保存 Docker 终端进度条的每次刷新。**拉取帧表达同一镜像层不断变化的当前值，把每帧变成永久日志会放大日志、RPC、数据库写入和页面节点，却不会增加诊断信息；镜像构建和 Feature 脚本的正文代表实际执行步骤，仍按完整行保存。追加式日志协议已经能够表达低频进度，不需要增加单独的进度服务或可变日志记录。</p>
@@ -5267,7 +5283,7 @@ SSH 认证限流缓存最多保存 65536 个有期限键；容量已满时已有
 <li>bootstrap、构建、Feature 和 lifecycle 运行期间的 stdout/stderr 完整正文行按有界批次实时追加到 Gitea 日志，剩余半行和未满批次在命令结束时追加；正文不带人工通道前缀，页面无需等待整个环境创建结束。</li>
 <li>镜像拉取日志包含开始、完成和低频聚合进度；同一层的大量 Docker 进度刷新不会形成等量持久化日志，拉取错误仍进入 operation 失败日志。</li>
 <li>Gitea 返回日志大小已达上限后，Manager 不再为当前 sink 发送普通日志，仍持续排空命令输出并完成生命周期和最终状态提交。</li>
-<li>Manager 在 final 前上传最终摘要；Gitea 只为仍保留 Codespace 记录的结果在主事务提交后尝试写内部摘要，失败或预留空间不足不回滚生命周期结果，物理删除路径不重新创建日志。</li>
+<li>Manager 在 final 前关闭并上传完整 operation 分组；Gitea 只为 timeout、missing runtime 和主动 Runtime 状态变化等独立控制面判定写内部摘要，失败或预留空间不足不回滚生命周期结果，物理删除路径不重新创建日志。</li>
 <li>token、Authorization header、cookie、query string 和完整 user agent 不进入 codespace 日志或 Manager/Gateway 本地诊断日志。</li>
 <li>active stop 恢复不调用 <code>RequestRuntimeAccess</code>；Manager 只能从 Runtime 的固定 Gitea Token 文件重建 mask，读取或格式校验失败时丢弃无法确认安全的缓冲日志。</li>
 <li>codespace 日志用于生命周期诊断；连接失败只进入 Manager/Gateway 本地日志，不生成成功访问审计。</li>
@@ -5979,7 +5995,7 @@ User、Deploy 和 Codespace 公钥创建在各自数据库事务前取得同一�
 <div style="break-before: page; page-break-before: always;"></div><h1 id="实施"><a class="header" href="#实施">实施</a></h1>
 <h2 id="代码边界"><a class="header" href="#代码边界">代码边界</a></h2>
 <p>Gitea 负责用户页面、权限、数据库状态、ManagerService 和审计日志。相关代码按现有 Gitea 分层放在 <code>routers</code>、<code>services/codespace</code>、<code>models/codespace</code> 与 <code>modules/codespace</code>，Web handler 和 ManagerService handler 分别位于 Web 与 API/Connect 入口。路由层处理输入、认证和响应，服务层推进事务，模型层保存数据结构与查询。</p>
-<p><code>codespace</code> Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。公开的 <code>devcontainer</code> 包处理配置、合并、锁文件与结构化环境，<code>devcontainer/docker</code> 使用 Docker、Compose 和 OCI API 创建并恢复环境；<code>internal/devcontainerruntime</code> 注入 Codespace 的 Git、Web IDE、运行时挂载和 Endpoint 策略；<code>internal/provisioner</code> 只处理 Incus 实例与文件/exec API；<code>internal/runtimecmd</code> 提供实例内隐藏子命令；<code>internal/app</code> 组织控制面 worker、Gateway 与状态持久化。</p>
+<p><code>codespace</code> Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。公开的 <code>devcontainer</code> 包处理配置、合并、锁文件与结构化环境，<code>devcontainer/docker</code> 使用 Docker、Compose 和 Feature API 创建并恢复环境；<code>internal/devcontainerruntime</code> 注入 Codespace 的 Git、Web IDE、运行时挂载和 Endpoint 策略；<code>internal/provisioner</code> 只处理 Incus 实例与文件/exec API；<code>internal/runtimecmd</code> 提供实例内隐藏子命令；<code>internal/app</code> 组织控制面 worker、Gateway 与状态持久化。</p>
 <p>Runtime Endpoint manifest 是实例内文件协议。Manager 读取并更新本地路由，Runtime 不向 Manager 端口发请求，Gitea 也不解析该文件。这样控制面、运行后端和用户接入各自只有一个数据来源。</p>
 <h3 id="实现验收点-24"><a class="header" href="#实现验收点-24">实现验收点</a></h3>
 <ul>
@@ -6054,14 +6070,14 @@ make lint-frontend
 <li>测试使用现有 Gitea fixture 与辅助函数，不为测试写生产临时代码。</li>
 </ul>
 <h2 id="manager-测试"><a class="header" href="#manager-测试">Manager 测试</a></h2>
-<p>Manager 普通 Go 测试覆盖 JSONC、配置选择与摘要、Compose 合并、Feature 顺序、lifecycle、环境校验、state 原子持久化、Gateway 认证与路由、operation lease 和恢复。Docker 集成测试覆盖 image、Dockerfile、Feature、Compose 多服务以及 stop/resume；需要镜像下载的测试使用显式入口，普通单元测试不隐式拉取镜像。</p>
+<p>Manager 普通 Go 测试覆盖 JSONC、配置选择与摘要、变量命名空间、Compose 合并、Feature 顺序、lifecycle、端口属性、环境校验、state 原子持久化、Gateway 认证与路由、operation lease 和恢复。Docker 集成测试覆盖 image、Dockerfile、OCI 与本地 Feature、<code>runArgs</code>、<code>build.options</code>、Compose 多服务以及 stop/resume；需要镜像下载的测试使用显式入口，普通单元测试不隐式拉取镜像。</p>
 <p>Incus 真实 E2E 使用专门入口并串行执行。启动时识别本地 unix socket 或远程 Incus endpoint、信任、project、storage、managed bridge、image、profile 和 agent。可选入口在环境未准备时说明缺失条件并跳过；required 入口把缺失条件作为失败。container 与 VM 都使用真实 <code>gitea-codespace</code> 可执行文件和同一原生运行时，按 create、stop、resume、delete 验证实例事实、完整环境、workspace、SSH/PTY、Web IDE、TCP 与 SFTP。Dev Container 运行时另以官方基础镜像、官方 Feature 和 Compose 标准夹具验证 image metadata、UID/GID、lifecycle 与恢复行为；同一夹具同时用于 Docker 直测和 Incus 整链路测试，便于判断问题属于通用 Engine 还是部署集成。</p>
 <p>真实测试一次只创建一个实例，CPU 为 1，内存上限为 <code>1GiB</code>。镜像包管理、外部仓库和 OCI Feature 可能依赖出网，因此与不拉取镜像的基础 Incus 生命周期入口分开。这样本地快速验证不会受镜像源影响，部署验收仍能覆盖真实网络与安装链路。</p>
 <h3 id="实现验收点-28"><a class="header" href="#实现验收点-28">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 普通 Go 测试覆盖原生运行时的纯逻辑和 Manager 状态边界。</li>
-<li>Docker 集成入口验证单容器、Compose、Feature 与 stop/resume，不由普通测试隐式拉取镜像。</li>
+<li>Docker 集成入口验证单容器、Dockerfile、Compose、Feature、Docker 参数与 stop/resume，不由普通测试隐式拉取镜像。</li>
 <li>container 与 VM 的 Incus E2E 使用真实二进制、同一网络模型和完整生命周期。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Dev Container 标准夹具由 Docker 与 Incus 两个显式入口共享，并使用官方镜像和官方 Feature。</li>
