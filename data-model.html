@@ -164,7 +164,7 @@
 <tr><td><code>user_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>创建者 user ID；有效 codespace 创建时必须大于 0，用户删除流程会物理删除关联记录</td></tr>
 <tr><td><code>repo_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>大于 0 时表示源仓库；源仓库权限由创建用户当前权限自动派生，repository 删除 pre-cleanup 时写为 0</td></tr>
 <tr><td><code>ref_type</code></td><td><code>VARCHAR(16) NOT NULL DEFAULT ''</code></td><td>有效记录只允许 <code>branch</code> / <code>tag</code> / <code>commit</code> / <code>pull</code></td></tr>
-<tr><td><code>ref_name</code></td><td><code>TEXT NOT NULL</code></td><td>branch/tag/commit 标识或规范化 PR ref 路径</td></tr>
+<tr><td><code>ref_name</code></td><td><code>TEXT NOT NULL</code></td><td>branch/tag/commit 标识或基仓库中的规范 PR ref 路径；普通 PR 的来源仓库和分支由当前 PR 关系读取</td></tr>
 <tr><td><code>environment_tag</code></td><td><code>VARCHAR(64) NOT NULL</code></td><td>用户创建时显式选择并经 Gitea 复检的运行环境键，用于 Manager claim；仓库配置不参与基础设施调度</td></tr>
 <tr><td><code>commit_sha</code></td><td><code>VARCHAR(64) NOT NULL DEFAULT ''</code></td><td>create 前置校验完成后必须为完整锁定 commit SHA</td></tr>
 <tr><td><code>dev_container_path</code></td><td><code>VARCHAR(512) NOT NULL DEFAULT ''</code></td><td>仓库配置相对路径；平台默认来源为空</td></tr>
@@ -298,7 +298,7 @@
 <tr><td><code>updated_unix</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>最近降权或撤销时间</td></tr>
 </tbody></table>
 </div>
-<p>同一用户可以保留多条历史授权。创建新 Codespace 时，只有未撤销且所有规则仍保持原确认级别的相同 <code>request_hash</code> 才可复用；用户已经降权的授权不会被新创建流程静默恢复，而是由本次确认创建新的授权记录。这样权限提升始终对应一次明确确认，降权和撤销又能立即影响仍引用旧授权的 Codespace。</p>
+<p>同一用户可以保留多条历史授权。创建新 Codespace 时，只有未撤销且所有规则仍保持原确认级别的相同 <code>request_hash</code> 才可复用；用户已经降权的授权不会被新创建流程静默恢复，而是由本次确认创建新的授权记录。普通 fork Pull Request 把来源仓库 Code 写能力作为创建来源所需的授权上限，用户不能在确认表单中降低它；实际能力仍取用户当前权限和 Gitea 业务规则的最低结果。这样来源分支能够使用同一套 HTTP、SSH 和 API 鉴权，权限提升始终对应明确的创建确认，降权和撤销又能立即影响仍引用旧授权的 Codespace。</p>
 <h3 id="codespace_permission_repository"><a class="header" href="#codespace_permission_repository">codespace_permission_repository</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td>设置页面操作单条规则时使用</td></tr>
@@ -318,6 +318,7 @@
 <li>用户整体撤销授权或把单条规则降为较低级别后，引用该授权的 Codespace 下一次请求立即使用新结果。</li>
 <li>用户、源仓库或目标仓库删除时，相关授权关系和规则在删除事务中清理，残留行不能继续提供仓库能力。</li>
 <li>Dev Container 仓库来源的路径、提交和摘要与创建确认一致；operation 不从移动中的 branch 重新选择配置，也不携带原始正文。</li>
+<li>普通 fork Pull Request 的来源仓库 Code 规则按 write 上限进入授权与请求哈希；同仓库 PR 和 AGit 不创建重复规则，用户当前权限与分支保护仍可拒绝具体写入。</li>
 </ul>
 <h3 id="codespace_ssh_key"><a class="header" href="#codespace_ssh_key">codespace_ssh_key</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>

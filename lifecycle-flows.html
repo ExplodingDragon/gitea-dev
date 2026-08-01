@@ -158,28 +158,32 @@
                         <h1 id="codespace-生命周期流程"><a class="header" href="#codespace-生命周期流程">Codespace 生命周期流程</a></h1>
 <h2 id="创建流程"><a class="header" href="#创建流程">创建流程</a></h2>
 <h3 id="ref-与-dev-container-选择"><a class="header" href="#ref-与-dev-container-选择">Ref 与 Dev Container 选择</a></h3>
-<p>用户从 repository 代码页或个人 Codespace 页发起创建。Gitea 先用 repository 的默认分支、明确分支、Tag 或 commit 解析一个完整 commit SHA，再从该提交扫描以下配置候选：</p>
+<p>用户从 repository 代码页、Commit 页或开放的 Pull Request 页发起创建。Gitea 先用 repository 的默认分支、明确分支、Tag、commit 或 PR 内部引用解析一个完整 commit SHA，再从该提交扫描以下配置候选：</p>
 <pre><code class="language-text">.devcontainer/devcontainer.json
 .devcontainer.json
 .devcontainer/*/devcontainer.json
 </code></pre>
-<p>根配置优先作为默认候选；一级子目录中的配置分别作为独立环境，不相互融合。仓库没有配置时仍提供平台默认项，它只包含创建时的 <code>DEVCONTAINER_DEFAULT_IMAGE</code>。用户确认页展示所选来源、ref、配置名称、Secret 建议和附加仓库权限；Gitea 保存来源、路径、完整提交和原始文件 SHA256，RPC 不携带 JSONC 正文。</p>
-<p>仓库配置中的 <code>customizations.gitea.repositories</code> 只声明希望附加访问的仓库和单元权限。Gitea 在确认页按当前用户权限展开并让用户确认，最终授权保存在 Gitea；Manager 只解释标准 Dev Container 字段，不取得授权规则。顶层 <code>secrets</code> 只提供名称和说明，Secret 值仍由用户设置中的所有仓库范围或指定仓库关系决定。</p>
+<p>根配置优先作为默认候选；一级子目录中的配置分别作为独立环境，不相互融合。仓库没有配置时仍提供平台默认项，它只包含创建时的 <code>DEVCONTAINER_DEFAULT_IMAGE</code>。用户确认页展示所选来源、ref、运行环境、配置名称、当前可用 Secret 名称、尚未满足的 Secret 建议和附加仓库权限；Gitea 保存来源、路径、完整提交和原始文件 SHA256，RPC 不携带 JSONC 正文。</p>
+<p>仓库配置中的 <code>customizations.gitea.repositories</code> 只声明希望附加访问的仓库和单元权限。Gitea 在确认页按当前用户权限展开并让用户确认，最终授权保存在 Gitea；Manager 只解释标准 Dev Container 字段，不取得授权规则。顶层 <code>secrets</code> 只提供名称和说明，Secret 值仍由用户设置中的所有仓库范围或指定仓库关系决定。确认页只展示当前计划且不读取已有值，create 和 resume 会按当时的代码写权限与范围重新解析；普通 fork Pull Request 的配置来自贡献者分支，因此不向该环境提供用户 Secret。</p>
 <p>**设计如此：**配置正文来自锁定提交，Gitea 只解释自己负责的权限扩展，Manager 原生运行时解释开发环境。两侧各自只有一个权威来源，也不会因分支后来移动而改变已经创建的环境。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 ref 在创建前解析为完整 commit，解析失败不产生 Codespace 记录。</li>
 <li><input disabled="" type="checkbox" checked=""/>
+Pull Request 页面提交十进制编号，数据库保存基仓库规范内部 ref；关闭、来源仓库不可读或来源分支缺失时不产生 Codespace 记录。</li>
+<li><input disabled="" type="checkbox" checked=""/>
 多个 Dev Container 文件作为候选单选，仓库没有配置时可选择平台默认项。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 创建确认和持久数据包含配置来源、路径、提交和 SHA256，不保存原始正文。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Secret 和附加仓库权限由 Gitea 确认，Manager 不形成第二份授权状态；所有仓库 Secret 与指定当前仓库的 Secret 在 create/resume 时按当前代码写权限解析。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+确认页列出当前可用 Secret 名称和未满足的建议项，不返回已有值；普通 fork Pull Request 不展示、写入或注入用户 Secret。</li>
 </ul>
 <h3 id="manager-匹配与-operation-创建"><a class="header" href="#manager-匹配与-operation-创建">Manager 匹配与 operation 创建</a></h3>
 <p>Gitea 把用户在确认页显式选择的 <code>environment_tag</code> 写入 Codespace。成功 Declare 同名 tag 的站点全局 Manager 与当前用户个人 Manager 都可参与领取；Manager online、具有启动容量、接受 create，且本轮 <code>accepted_create_tags</code> 包含该 tag 时可以 claim。tag 表示部署管理员定义的基础设施环境，不是仓库配置、Incus profile 或实例类型。暂时没有 Manager 当前可接单时 Codespace 保持 queued create；Fetch 按稳定顺序领取，并在数据库事务中绑定 <code>manager_id</code>、写入 running operation、版本、开始时间和 deadline。</p>
-<p>create payload 使用领取时重新读取的 repository 名称生成 HTTP(S)、SSH 和 Web URL。<code>git_protocol</code> 只表示首次 clone 的首选协议；不可用协议的 URL 为空。<code>start_ref</code> 使用完整 Git ref：分支为 <code>refs/heads/&lt;name&gt;</code>，Tag 为 <code>refs/tags/&lt;name&gt;</code>，Pull Request 为 <code>refs/pull/&lt;index&gt;/head</code>，直接 commit 为空。Manager 不从 Fetch 请求 Host 推导外部地址。**设计如此：**完整 ref 让 bootstrap 能区分分支与标签并精确 fetch，<code>commit_sha</code> 继续锁定实际内容，因此分支既保持可正常提交和推送的 tracking 状态，也不会因远端随后移动而改变首次工作区。</p>
+<p>create payload 使用领取时重新读取的 repository 关系生成 HTTP(S)、SSH 和 Web URL。<code>git_protocol</code> 只表示首次 clone 的首选协议；不可用协议的 URL 为空。分支使用 <code>refs/heads/&lt;name&gt;</code>，Tag 使用 <code>refs/tags/&lt;name&gt;</code>，直接 commit 使用空 ref。普通 Pull Request 以数据库中的基仓库内部 ref 锁定审阅内容，领取时再使用来源仓库 clone URL 和 <code>refs/heads/&lt;head_branch&gt;</code>；AGit 没有独立来源仓库分支，使用基仓库 clone URL 和 <code>refs/pull/&lt;index&gt;/head</code>。Manager 不从 Fetch 请求 Host 推导外部地址。**设计如此：**普通 PR 同时需要审阅快照的稳定身份和开发分支的正常提交、推送语义；基仓库内部 ref 与锁定 <code>commit_sha</code> 负责前者，来源仓库和 heads ref 负责后者。AGit 只有内部 ref，因此明确作为固定快照处理。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -191,7 +195,7 @@ claim 事务同时绑定 Manager 和 operation 版本，重复 Fetch 不会产�
 <li><input disabled="" type="checkbox" checked=""/>
 payload URL 来自 Gitea 规范地址生成器，首选协议始终对应非空 clone URL。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-payload 的分支、Tag、Pull Request 使用完整 Git ref，直接 commit 使用空 ref，且全部由同一 <code>commit_sha</code> 锁定。</li>
+普通 Pull Request payload 使用来源仓库与来源 heads ref，AGit 使用基仓库内部 ref；分支、Tag、PR 和直接 commit 全部由同一 <code>commit_sha</code> 锁定。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 queued create 由 queue timeout 收敛，不通过 Manager 本地猜测改写状态。</li>
 </ul>
@@ -216,9 +220,9 @@ queued create 由 queue timeout 收敛，不通过 Manager 本地猜测改写状
     M-&gt;&gt;G: ReportRuntimeMetadata(ready)
     M-&gt;&gt;G: FinalizeOperation(done)
 </pre>
-<p>bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 <code>--no-checkout</code>，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支精确 fetch 到 <code>origin/&lt;branch&gt;</code>，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。</p>
+<p>bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 <code>--no-checkout</code>，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支和普通 Pull Request 来源分支精确 fetch 到 <code>origin/&lt;branch&gt;</code>，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、AGit Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。</p>
 <p>原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；Feature 通过 OCI API解析并固定 digest，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server <code>/healthz</code> 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。</p>
-<p>**设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。普通分支保持开发者熟悉的 branch/upstream 语义，Tag、Pull Request 和直接 commit 则保持锁定提交语义；create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会接管其他对象。</p>
+<p>**设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。普通分支和普通 Pull Request 保持开发者熟悉的 branch/upstream 语义，Tag、AGit Pull Request 和直接 commit 保持锁定提交语义；create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会接管其他对象。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -228,7 +232,7 @@ operation 使用顶层日志分组，启动流程按运行时访问、系统与 
 <li><input disabled="" type="checkbox" checked=""/>
 workspace 在临时目录校验 commit 后原子提交，协议回退最多一次。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-普通分支检出同名本地分支并跟踪 <code>origin/&lt;branch&gt;</code>；Tag、Pull Request 和直接 commit 使用 detached HEAD，最终 HEAD 都等于锁定提交。</li>
+普通分支和普通 Pull Request 检出同名本地分支并跟踪 <code>origin/&lt;branch&gt;</code>；Tag、AGit Pull Request 和直接 commit 使用 detached HEAD，最终 HEAD 都等于锁定提交。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 create 重试对已有 workspace 使用同一 ref 检出与 commit 校验流程。</li>
 <li><input disabled="" type="checkbox" checked=""/>
