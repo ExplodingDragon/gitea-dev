@@ -299,7 +299,7 @@ Runtime Metadata cache丢失后可由 Manager完整重报，不影响数据库�
 <tr><td><code>environment_tag</code></td><td><code>VARCHAR(64) NOT NULL</code></td><td>用户创建时显式选择并经 Gitea 复检的运行环境键，用于 Manager claim；仓库配置不参与基础设施调度</td></tr>
 <tr><td><code>commit_sha</code></td><td><code>VARCHAR(64) NOT NULL DEFAULT ''</code></td><td>create 前置校验完成后必须为完整锁定 commit SHA</td></tr>
 <tr><td><code>dev_container_path</code></td><td><code>VARCHAR(512) NOT NULL DEFAULT ''</code></td><td>仓库配置相对路径；平台默认来源为空</td></tr>
-<tr><td><code>dev_container_content_sha256</code></td><td><code>CHAR(64) NOT NULL DEFAULT ''</code></td><td>仓库原始 JSONC 的 SHA256；平台默认来源为空</td></tr>
+<tr><td><code>dev_container_content_sha256</code></td><td><code>VARCHAR(64) NOT NULL DEFAULT ''</code></td><td>仓库原始 JSONC 的 SHA256；平台默认来源为空</td></tr>
 <tr><td><code>dev_container_default_image</code></td><td><code>VARCHAR(512) NOT NULL DEFAULT ''</code></td><td>平台默认来源使用的站点镜像；仓库来源为空</td></tr>
 <tr><td><code>permission_authorization_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>0 表示配置未申请附加仓库权限；正数引用创建时确认的授权记录</td></tr>
 <tr><td><code>manager_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>create 被领取前为 0，领取后固定</td></tr>
@@ -327,7 +327,7 @@ Runtime Metadata cache丢失后可由 Manager完整重报，不影响数据库�
 <p><code>operation_rversion</code>、<code>runtime_generation</code>、<code>inventory_generation</code> 和 <code>interaction_generation</code> 的 0 值只是尚未产生版本的持久化初始值，首个有效值为 1。服务层和 Manager 递增这些有符号 <code>BIGINT</code> 时使用 checked increment，不回绕到 0 或负数。任一版本无法递增时返回不可重试的 <code>version_exhausted</code>，不写主状态、active operation、交互结果或本地快照的部分结果。Codespace 的 operation 或交互版本耗尽后由管理员 force delete；单 Codespace 的 runtime/metadata 版本耗尽由 Manager 按 Incus 归属字段清理该对象；Manager inventory 版本耗尽后删除 Manager、清理部署侧资源并重新注册。该情况需要超过 <code>int64</code> 可表达次数，继续为计数设计自动恢复没有实际收益，因此按影响范围使用现有删除路径收敛。<code>runtime_generation</code> 仅保存当前值；相同 generation 的幂等以状态报告的目标主状态是否已成立判定，不需要再增加历史状态报告类型字段。</p>
 <p>**设计如此：数据库版本与 Manager 观察值是两个独立字段。**数据库 <code>codespace.operation_rversion=0</code> 只表示 Gitea 从未为该 Codespace 创建 operation。inventory 中的 <code>RuntimeInstance.observed_operation_rversion=0</code> 表示 Manager 当前没有可继续的完整 active operation 上下文，即使数据库已经保留正数版本也可以上报 0；该观察值只参与本次对账，数据库版本继续由 Gitea 生命周期事务维护。Manager 持有完整上下文时上报对应的正数版本，operation-bound RPC 和状态报告始终使用正数版本。</p>
 <p><code>environment_tag</code> 是用户在 Gitea 创建确认页显式选择的运行环境键。可选值来自站点全局 Manager 和当前用户个人 Manager 已成功 Declare 的环境声明，最终提交在事务内重新校验后保存。仓库 Dev Container 文件只描述内部开发环境，不选择 Incus 主机、实例类型或 Manager tag。**设计如此：**用户能够明确选择部署管理员提供的基础设施能力，仓库代码仍不能借配置文件改变调度范围。create 被领取后，stop、resume 和 delete 只使用已经绑定的 <code>manager_id</code> 与 Manager 本地环境快照。</p>
-<p>三个 <code>dev_container_*</code> 字段共同保存创建确认时的不可变选择，不保存 JSONC 正文。仓库来源使用非空路径和原始字节摘要，平台默认来源使用非空默认镜像，两种形态互斥；配置所在提交直接使用同一行的 <code>commit_sha</code>。**设计如此：创建时解析配置和锁定源码使用同一个提交，来源又能由互斥字段无歧义地判断，重复保存来源枚举和提交会形成可能不一致的第二份状态。**Manager clone 后从锁定提交校验所选文件，站点默认镜像之后变化也不会改变已创建对象。</p>
+<p>三个 <code>dev_container_*</code> 字段共同保存创建确认时的不可变选择，不保存 JSONC 正文。仓库来源使用非空路径和原始字节摘要，平台默认来源使用非空默认镜像，两种形态互斥；配置所在提交直接使用同一行的 <code>commit_sha</code>。内容摘要使用 <code>VARCHAR(64)</code>，因为平台默认来源需要把它准确保存为空字符串；PostgreSQL 和 MSSQL 会对定长 <code>CHAR</code> 补空格，读取后将不再满足互斥字段的空值语义。UUID 和始终完整生成的请求摘要继续使用定长字段。**设计如此：创建时解析配置和锁定源码使用同一个提交，来源又能由互斥字段无歧义地判断，重复保存来源枚举和提交会形成可能不一致的第二份状态；按字段是否允许为空选择变长或定长类型，可以让各支持数据库得到相同判断结果。**Manager clone 后从锁定提交校验所选文件，站点默认镜像之后变化也不会改变已创建对象。</p>
 <p>Git clone 首选协议不进入 <code>codespace</code> 表。Gitea 在 create 记录创建时校验站点 Git 传输配置可用，在 Manager 领取 create 并构造 payload 时再次读取当前配置，生成 <code>git_protocol</code>、HTTP(S) clone URL 和 SSH clone URL；禁用协议字段为空，首选协议必须指向非空 URL。**设计如此：协议是站点当前接入能力，不是 Codespace 生命周期事实。**对象一旦初始化完成，resume 以 workspace 实际 remote 为准，不需要 Gitea 保存或重放旧协议；这样修改站点 Git 接入配置不会要求批量改历史 Codespace，也不会让 resume 误用过期外部 SSH Host Key 信息。</p>
 <p><code>auto_stop_mode</code> 保存用户选择而不是保存解析后的布尔结果。<code>default</code> 在每次下发和空闲停止授权时读取站点当前默认值，<code>custom</code> 使用对象保存的秒数，<code>never</code> 明确表示该对象不因空闲而自动暂停。Gitea 解析 <code>auto_stop_enabled + idle_timeout_seconds</code> 后直接下发实际运行值；default 与 custom 当前得到相同有效超时时使用相同运行侧基线，模式仍保留在数据库中决定未来站点默认值变化是否影响该对象。Manager 收到延迟快照最多暂时提前或延后本地计时，<code>RequestIdleStop</code> 会直接比较当前有效值和交互版本，过期快照不能创建 stop。<code>last_active_unix</code> 只用于页面展示，自动暂停使用 Manager/Gateway 的实时连接索引和本地单调计时，不从数据库时间戳推导空闲时长。</p>
 <p><code>updated_unix</code> 只表示数据库中的生命周期结果发生变化。创建记录时与 <code>created_unix</code> 同值；创建或替换 active operation、首次 final/timeout/missing/transition 写入结果时更新为当前时间。queued resume/stop timeout 或 queued idle stop 取消即使保持原稳定主状态，也因 active operation 首次结束而更新时间；相同结果的幂等重试不刷新。claim、lease 续租、日志、Runtime Metadata、开发凭据读取、登记或修复、未取消 operation 的 open/SSH/继续运行/设置变更，以及 repository 删除时仅把 <code>repo_id</code> 写为 0，都不更新该字段。这样 failed retention 有稳定起点，调度和普通交互活动不会被误解为生命周期变化；用户活动分别更新 <code>interaction_generation</code>，并尽力写入仅供展示的 <code>last_active_unix</code>。</p>
@@ -356,23 +356,35 @@ Runtime Metadata cache丢失后可由 Manager完整重报，不影响数据库�
 <p>Manager 删除由服务层先按 <code>codespace.manager_id</code> 收集并删除绑定 Codespace，再删除 Manager row。提交完成后，数据库只包含 Gitea 当前仍管理的对象；运行侧残留由部署运维处理，不参与 Gitea 删除结果，因此数据表只需保存当前 Manager 记录。</p>
 <h3 id="codespace_manager_address"><a class="header" href="#codespace_manager_address">codespace_manager_address</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
-<tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td>地址记录 ID</td></tr>
-<tr><td><code>manager_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>Manager ID</td></tr>
-<tr><td><code>kind</code></td><td><code>VARCHAR(16) NOT NULL DEFAULT ''</code></td><td>只允许 <code>gateway</code> / <code>ssh</code></td></tr>
+<tr><td><code>manager_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code>，联合主键</td><td>Manager ID</td></tr>
+<tr><td><code>kind</code></td><td><code>VARCHAR(16) NOT NULL DEFAULT ''</code>，联合主键</td><td>只允许 <code>gateway</code> / <code>ssh</code></td></tr>
 <tr><td><code>address</code></td><td><code>VARCHAR(512) NOT NULL DEFAULT ''</code></td><td>对应类型的规范化地址</td></tr>
 </tbody></table>
 </div>
 <p>同一 Manager、同一类型最多一行，同一类型的规范化地址在全部 Manager 中唯一。Manager 注册后、首次成功 Declare 前没有地址行；Declare 在 Manager lock 内校验完整声明，并在同一事务中插入或替换 <code>gateway</code> 和 <code>ssh</code> 两行。Manager 删除在最终事务中删除其地址行。</p>
 <p>独立地址表保存实际参与路由和认证的当前值，Manager 表的类型化声明字段保存展示与诊断信息。这样数据库唯一约束就是地址冲突判定的权威来源，首次 Declare 前也不需要用空字符串或可空唯一列表达“尚未声明”。</p>
+<p>**设计理由：<code>manager_id + kind</code> 直接表示一条地址记录。**地址没有独立生命周期，所有读取、替换和删除都从 Manager 与地址类型出发；使用联合主键同时表达所属关系和每种类型最多一条，不需要另设一个不参与查询的编号。</p>
+<p>实现验收点：</p>
+<ul>
+<li><code>(manager_id, kind)</code> 是主键，Declare 可以在同一事务中完整替换 Manager 的地址集合。</li>
+<li><code>(kind, address)</code> 保持唯一，并发声明同类同地址时只有一个 Manager 可以提交成功。</li>
+<li>Manager 地址读取、冲突检查和删除均按业务列完成。</li>
+</ul>
 <h3 id="codespace_manager_token"><a class="header" href="#codespace_manager_token">codespace_manager_token</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
-<tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td></td></tr>
 <tr><td><code>token</code></td><td><code>VARCHAR(64) NOT NULL</code>，唯一索引</td><td>32 随机字节的 hex 编码明文</td></tr>
-<tr><td><code>user_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code>，唯一索引</td><td>0 表示站点入口；正数表示个人用户入口，每个入口最多一行</td></tr>
+<tr><td><code>user_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code>，主键</td><td>0 表示站点入口；正数表示个人用户入口，每个入口最多一行</td></tr>
 </tbody></table>
 </div>
 <p>Registration Token 明文存储并可复用，支持站点或同一个人用户用当前 token 注册多个 Manager。<code>user_id=0</code> 是站点管理员维护的全局入口，正数必须对应 <code>type=individual</code> 的个人用户。settings 页面进入时通过 GetOrCreate 确保当前行存在；重置原地替换随机 token；用户删除物理删除个人入口。组织不创建 registration token，也不注册 Manager。</p>
 <p>**设计理由：Registration Token 表示站点或个人用户当前有效的注册入口。**每个入口最多保存一行；重置原地替换。认证只需按记录是否存在判断当前入口，失败诊断写入服务端日志，因此数据表无需保存 inactive、软删除或轮换历史。</p>
+<p>**设计如此：<code>user_id</code> 是 Registration Token 的记录身份。**站点入口使用 0，个人入口使用用户 ID，读取、重置和用户删除都使用这一列；主键直接保证每个入口只有当前一条 Token，随机 <code>token</code> 的唯一索引用于认证查找。</p>
+<p>实现验收点：</p>
+<ul>
+<li><code>user_id=0</code> 可以创建和重置站点 Token，个人用户 ID 可以创建和重置各自 Token。</li>
+<li>重置按 <code>user_id</code> 原地更新，不改变入口身份；旧 Token 随事务提交立即失效。</li>
+<li><code>token</code> 唯一索引阻止两个入口持有相同 Token。</li>
+</ul>
 <h3 id="codespace_gitea_token"><a class="header" href="#codespace_gitea_token">codespace_gitea_token</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>codespace_uuid</code></td><td><code>CHAR(36)</code>，主键</td><td>当前 Token 所属 Codespace；每个 Codespace 最多一行</td></tr>
@@ -401,17 +413,18 @@ Runtime Metadata cache丢失后可由 Manager完整重报，不影响数据库�
 <p>Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境变量格式；值必须是非空 UTF-8 文本，单个值最多 48 KiB。每个用户最多保存 100 个 Codespace Secret。值与仓库访问范围分别更新，因此用户可以先保存 Secret，再决定它适用于所有仓库、部分仓库或暂不用于任何仓库。页面只展示名称、范围摘要和更新时间，创建后不回显明文；替换值会覆盖同一条记录并更新时间。</p>
 <h3 id="codespace_user_secret_repository"><a class="header" href="#codespace_user_secret_repository">codespace_user_secret_repository</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
-<tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td>选择关系 ID</td></tr>
-<tr><td><code>secret_id</code></td><td><code>BIGINT NOT NULL</code></td><td>所属 Codespace Secret</td></tr>
-<tr><td><code>repo_id</code></td><td><code>BIGINT NOT NULL</code></td><td>指定仓库模式中被选择的仓库</td></tr>
+<tr><td><code>secret_id</code></td><td><code>BIGINT NOT NULL</code>，联合主键</td><td>所属 Codespace Secret</td></tr>
+<tr><td><code>repo_id</code></td><td><code>BIGINT NOT NULL</code>，联合主键</td><td>指定仓库模式中被选择的仓库</td></tr>
 </tbody></table>
 </div>
 <p><code>secret_id + repo_id</code> 唯一。<code>all_repositories=false</code> 时，表中关系是该 Secret 的完整指定仓库集合，集合可以为空；<code>all_repositories=true</code> 时不保存展开后的仓库关系。用户只能选择自己当前具有代码写权限的仓库。创建或恢复某个 Codespace 时，Gitea 合并该用户名下的所有仓库 Secret 和选择了当前源仓库的 Secret，并再次确认用户仍具有代码写权限。单个仓库实际注入的当前用户 Secret 值总量最多 512 KiB。仓库删除会清理指定关系，用户删除会清理其 Secret 和全部指定关系。</p>
 <p>**设计如此：所有仓库模式表达动态权限范围，不展开成关系行。**用户以后新建或新获得写权限的仓库可以直接使用该 Secret，失去写权限的仓库会在下一次 create 或 resume 时自动失去使用资格。指定仓库模式用于更小范围，也允许空集合，使保存 Secret 不等同于立即授权仓库。两种模式都只保存一份密文；Secret 不绑定具体 Codespace，因为一个用户为同一仓库创建多个环境时应得到相同配置，值的更新在下一次 create 或 resume 时生效。</p>
+<p>**设计理由：<code>secret_id + repo_id</code> 就是仓库选择关系的完整身份。**关系行没有独立属性或生命周期，联合主键可以直接阻止重复选择；主键左侧同时支持按 Secret 读取和清理，独立的 <code>repo_id</code> 索引支持仓库删除时反向清理。</p>
 <p>实现验收点：</p>
 <ul>
-<li><code>v344</code> 在创建现有 Codespace 表的同一次迁移中创建 Secret 与仓库选择表；迁移数量不因本功能增加。</li>
+<li><code>v346</code> 在创建现有 Codespace 表的同一次迁移中创建 Secret 与仓库选择表；迁移数量不因本功能增加。</li>
 <li>同一用户不能保存两个同名 Secret，同一 Secret 不能重复选择同一仓库。</li>
+<li>仓库选择表以 <code>(secret_id, repo_id)</code> 为主键；按 Secret 和按仓库的查询都能使用对应索引。</li>
 <li>Secret 明文不出现在数据库、列表页或查看响应中；替换值后只更新时间和密文。</li>
 <li>所有仓库模式不产生仓库关系行；指定仓库模式可以一次替换为任意可写仓库集合，也可以替换为空集合。</li>
 <li>创建或恢复时只返回当前用户所有仓库范围或指定当前源仓库的 Secret，并按名称稳定排序；当前代码写权限和外部 fork 拉取请求保护仍在运行时复核。</li>
@@ -432,21 +445,22 @@ Runtime Metadata cache丢失后可由 Manager完整重报，不影响数据库�
 <p>同一用户可以保留多条历史授权。创建新 Codespace 时，只有未撤销且所有规则仍保持原确认级别的相同 <code>request_hash</code> 才可复用；用户已经降权的授权不会被新创建流程静默恢复，而是由本次确认创建新的授权记录。普通 fork Pull Request 把来源仓库 Code 写能力作为创建来源所需的授权上限，用户不能在确认表单中降低它；实际能力仍取用户当前权限和 Gitea 业务规则的最低结果。这样来源分支能够使用同一套 HTTP、SSH 和 API 鉴权，权限提升始终对应明确的创建确认，降权和撤销又能立即影响仍引用旧授权的 Codespace。</p>
 <h3 id="codespace_permission_repository"><a class="header" href="#codespace_permission_repository">codespace_permission_repository</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
-<tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td>设置页面操作单条规则时使用</td></tr>
-<tr><td><code>authorization_id</code></td><td><code>BIGINT NOT NULL</code></td><td>所属授权记录</td></tr>
-<tr><td><code>target_repo_id</code></td><td><code>BIGINT NOT NULL</code></td><td>精确附加仓库，不接受通配符</td></tr>
-<tr><td><code>unit_type</code></td><td><code>INTEGER NOT NULL</code></td><td>复用 Gitea <code>unit.Type</code>；只允许 Code、Issues、Pull Requests、Wiki、Releases、Actions</td></tr>
+<tr><td><code>authorization_id</code></td><td><code>BIGINT NOT NULL</code>，联合主键</td><td>所属授权记录</td></tr>
+<tr><td><code>target_repo_id</code></td><td><code>BIGINT NOT NULL</code>，联合主键</td><td>精确附加仓库，不接受通配符</td></tr>
+<tr><td><code>unit_type</code></td><td><code>INTEGER NOT NULL</code>，联合主键</td><td>复用 Gitea <code>unit.Type</code>；只允许 Code、Issues、Pull Requests、Wiki、Releases、Actions</td></tr>
 <tr><td><code>requested_mode</code></td><td><code>INTEGER NOT NULL</code></td><td>配置申请的 <code>read</code> 或 <code>write</code></td></tr>
 <tr><td><code>granted_mode</code></td><td><code>INTEGER NOT NULL</code></td><td>用户当前保留的 <code>none</code>、<code>read</code> 或 <code>write</code>，不得高于申请值</td></tr>
 </tbody></table>
 </div>
 <p><code>authorization_id + target_repo_id + unit_type</code> 唯一。每次请求的最终能力取配置申请、用户当前保留授权和创建用户当前仓库权限三者的最低值；仓库单元关闭、用户失权或授权撤销都会使后续请求立即失败。仓库管理、设置、凭据、删除、转移、账户、组织、Package 和 Notification 不在可申请单元中，因此不需要额外的拒绝字段。</p>
+<p>**设计理由：授权、目标仓库和仓库单元共同确定一条权限规则。**设置页面提交这三个值，服务端先确认授权属于当前用户，再按完整主键读取规则；降权更新同时比较旧的 <code>granted_mode</code>，因此联合主键不会削弱所有权校验或并发更新保护。规则没有独立于授权存在的生命周期，无需额外编号。</p>
 <p>**设计如此：授权保存在 Gitea，而不是 Manager 或 Runtime。**Gitea 已经拥有用户、仓库和单元权限的权威数据，也负责 HTTP、SSH、LFS 和 API 入口；Manager 只接收 Dev Container 的不可变选择，不解释或扩大权限。把规则放入 RPC 会形成第二份权限状态，并使不同传输入口难以得到相同结果。</p>
 <p>实现验收点：</p>
 <ul>
-<li>数据库迁移只使用当前尚未发布的 <code>v344</code> 创建 Codespace 主表、授权表、规则表、用户 Secret 表和仓库选择表；目标 schema 的调整直接落在同一迁移中。</li>
+<li>数据库迁移只使用当前尚未发布的 <code>v346</code> 创建 Codespace 主表、授权表、规则表、用户 Secret 表和仓库选择表；目标 schema 的调整直接落在同一迁移中。</li>
 <li>一个 Codespace 最多引用一条授权；没有附加仓库申请时 <code>permission_authorization_id=0</code>。</li>
 <li>用户整体撤销授权或把单条规则降为较低级别后，引用该授权的 Codespace 下一次请求立即使用新结果。</li>
+<li>权限规则以 <code>(authorization_id, target_repo_id, unit_type)</code> 为主键；设置页面和服务使用完整主键定位规则，并在当前用户授权范围内完成降权。</li>
 <li>用户、源仓库或目标仓库删除时，相关授权关系和规则在删除事务中清理，残留行不能继续提供仓库能力。</li>
 <li>Dev Container 仓库来源的路径、提交和摘要与创建确认一致；operation 不从移动中的 branch 重新选择配置，也不携带原始正文。</li>
 <li>普通 fork Pull Request 的来源仓库 Code 规则按 write 上限进入授权与请求哈希；同仓库 PR 和 AGit 不创建重复规则，用户当前权限与分支保护仍可拒绝具体写入。</li>
@@ -490,6 +504,8 @@ active operation 完成后 operation 字段清空，<code>operation_rversion</co
 <code>environment_tag</code> 是用户显式选择并由 Gitea 复检的持久调度键；索引和 create claim 使用该列，仓库文件不能修改它，没有可见或有效环境时不创建数据库记录。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Dev Container 仓库路径与摘要和平台默认镜像按两种形态互斥保存；来源由字段形态派生，配置提交统一使用 <code>commit_sha</code>，数据库不保存原始 JSONC 正文。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+平台默认来源的配置路径和内容摘要经过 SQLite、MySQL、PostgreSQL 与 MSSQL 写入再读取后仍为空字符串；仓库来源的内容摘要保持完整 64 字符，Fetch 对各数据库使用相同的来源判断。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Fetch create payload 直接使用持久 Dev Container 选择，不重新读取移动中的 branch 或站点当前默认镜像。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -603,17 +619,18 @@ Declare 的固定字段经过类型校验后覆盖写入对应数据库列。</l
 <tr><td>codespace</td><td><code>(operation_status, operation_deadline_unix, uuid)</code>，用于 running operation 当前 deadline 超时 keyset 扫描</td></tr>
 <tr><td>codespace</td><td><code>(status, updated_unix, uuid)</code>，用于 failed retention keyset 清理；<code>updated_unix</code> 在进入 failed 时写入</td></tr>
 <tr><td>codespace_manager</td><td><code>(user_id)</code>，用于个人 Manager 查询和用户删除清理</td></tr>
-<tr><td>codespace_manager_address</td><td><code>(manager_id, kind)</code>（唯一）</td></tr>
+<tr><td>codespace_manager_address</td><td><code>(manager_id, kind)</code>（主键）</td></tr>
 <tr><td>codespace_manager_address</td><td><code>(kind, address)</code>（唯一）</td></tr>
 <tr><td>codespace_manager_token</td><td><code>token</code>（唯一）</td></tr>
-<tr><td>codespace_manager_token</td><td><code>user_id</code>（唯一）</td></tr>
+<tr><td>codespace_manager_token</td><td><code>user_id</code>（主键）</td></tr>
 <tr><td>codespace_gitea_token</td><td><code>codespace_uuid</code>（主键）</td></tr>
 <tr><td>codespace_gitea_token</td><td><code>token_hash</code>（唯一）</td></tr>
 <tr><td>codespace_gitea_token</td><td><code>token_last_eight</code></td></tr>
 <tr><td>codespace_user_secret</td><td><code>(user_id, name)</code>（唯一）</td></tr>
-<tr><td>codespace_user_secret_repository</td><td><code>(secret_id, repo_id)</code>（唯一）</td></tr>
-<tr><td>codespace_user_secret_repository</td><td><code>secret_id</code></td></tr>
+<tr><td>codespace_user_secret_repository</td><td><code>(secret_id, repo_id)</code>（主键）</td></tr>
 <tr><td>codespace_user_secret_repository</td><td><code>repo_id</code></td></tr>
+<tr><td>codespace_permission_repository</td><td><code>(authorization_id, target_repo_id, unit_type)</code>（主键）</td></tr>
+<tr><td>codespace_permission_repository</td><td><code>target_repo_id</code></td></tr>
 <tr><td>codespace_ssh_key</td><td><code>codespace_uuid</code>（主键）</td></tr>
 <tr><td>codespace_ssh_key</td><td><code>key_id</code>（唯一）</td></tr>
 </tbody></table>
@@ -626,12 +643,13 @@ queued create 和已绑定 operation 查询使用对应复合索引，不依赖 
 <li><input disabled="" type="checkbox" checked=""/>
 个人与仓库列表、Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-<code>codespace_manager_token.token</code> 唯一索引和 Codespace UUID 主键阻止对应重复记录。</li>
+<code>codespace_manager_token.user_id</code> 主键、<code>token</code> 唯一索引和 Codespace UUID 主键阻止对应重复记录。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Manager 地址唯一性由数据库约束保证；并发冲突不会产生两个持有同一 Gateway 或 SSH 地址的 Manager。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 每个 Codespace 最多存在一个 Gitea Token，Token hash 不重复，末八位只用于缩小候选范围。</li>
-<li>每个用户的 Secret 名称和每个 Secret 的仓库选择都由数据库唯一索引保证；按 Secret 清理和按仓库解析分别使用 <code>secret_id</code>、<code>repo_id</code> 索引。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+每个用户的 Secret 名称由唯一索引保证，Secret 仓库选择和权限规则由联合主键保证；联合主键左侧支持按所属实体清理，<code>repo_id</code> 或 <code>target_repo_id</code> 索引支持仓库反向清理。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 每个 Codespace 最多存在一个 Git SSH Key binding，每个 key ID 最多属于一个 Codespace。</li>
 </ul>
@@ -4122,7 +4140,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <ul>
 <li>registration token 存放在 <code>codespace_manager_token</code> 表。</li>
 <li>页面进入 Codespace 管理界面时，Gitea 按当前 scope 取得当前 registration token；当前 scope 没有记录时创建新 token 并展示给管理员。</li>
-<li>数据库保存明文 <code>token</code> 和唯一 <code>user_id</code>；token 也使用唯一索引，使 <code>RegisterManager</code> 可以直接定位当前入口。</li>
+<li>数据库保存明文 <code>token</code>，以 <code>user_id</code> 作为当前入口的主键；token 使用唯一索引，使 <code>RegisterManager</code> 可以直接定位当前入口。</li>
 <li>registration token 行存在且提交明文匹配时有效，可用于注册多个 Manager。</li>
 <li>registration token 负责创建 Manager 身份，manager secret 负责证明已注册 Manager 身份。</li>
 <li>settings 页面提供和 Actions runner 一致的复制与重置入口。重置在同一行原地替换随机 token，旧 token 立即失效；已经注册的 Manager secret 不受影响。</li>
@@ -4136,7 +4154,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>站点 Codespace 管理页读取或创建 <code>user_id=0</code> 的当前 token。</li>
 <li>用户 Codespace 管理页读取或创建 <code>user_id=ctx.Doer.ID</code> 的当前 token。</li>
 <li>组织设置没有 Codespace registration token 或 Manager 入口。</li>
-<li><code>codespace_manager_token.token</code> 和 <code>user_id</code> 分别具备唯一索引。</li>
+<li><code>codespace_manager_token.user_id</code> 是主键，<code>token</code> 具备唯一索引。</li>
 <li>使用站点 token 注册出的 Manager 记录 <code>user_id=0</code>。</li>
 <li>使用用户 token 注册出的 Manager 记录 <code>user_id=该用户 user.id</code>，且该用户必须是个人用户。</li>
 <li>注册成功后返回一次性明文 <code>manager_secret</code>。</li>
