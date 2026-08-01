@@ -385,7 +385,7 @@ Incus 端到端测试通过独立入口运行。测试启动时先识别当前�
 - bootstrap 成功后必须返回实际非 root UID/GID；`/var/lib/gitea-codespace/git` 与 `runtime` 子目录归该身份所有且权限为 `0700`。
 - create 以 root 执行 `bootstrap -> apply create`；resume 以 root 执行 `apply resume`。后续 Gateway shell/exec 进入 Dev Container，SFTP 使用外层实际身份和 workspace。create 校验锁定 SHA，resume 保留用户 HEAD。
 - create 完成 workspace 初始化时持久化其绝对路径；resume 从本地结构化环境读取同一 workspace，不依赖 repository 记录、名称或 payload 重新推导路径。
-- create payload 提供首选协议和当前可用协议的规范 clone URL；禁用协议字段为空。固定 bootstrap 按首选顺序尝试非空 URL。Manager 在 Go 侧按本地配置生成 Git SSH 密钥对并始终上报公钥，SSH 失败后改用 HTTP(S) 时允许保留已登记公钥，但 ready 只校验实际 remote 对应的本地凭据。Manager 不把私钥写入本地 state 或 Gitea，Git SSH 连接使用专用 known_hosts 和严格 Host Key 校验。
+- create payload 提供首选协议和当前可用协议的规范 clone URL；禁用协议字段为空。固定 bootstrap 按首选顺序尝试非空 URL。普通分支和普通 Pull Request 来源分支使用 heads ref，在锁定提交建立同名 tracking branch；Tag、AGit Pull Request 和直接 commit 使用固定快照。Manager 在 Go 侧按本地配置生成 Git SSH 密钥对并始终上报公钥，SSH 失败后改用 HTTP(S) 时允许保留已登记公钥，但 ready 只校验实际 remote 对应的本地凭据。Manager 不把私钥写入本地 state 或 Gitea，Git SSH 连接使用专用 known_hosts 和严格 Host Key 校验。
 - Manager 验证 bootstrap 返回的 workspace、原生运行时返回的完整环境、Git 本地配置、Incus exec/file 探针和实际 Endpoint 路由；Gateway 只读取同一类型化环境状态。
 - stop 在正常关机超时后强制停止；delete 和 cleanup 只有在 Incus 全量枚举确认实例不存在后才删除本地快照。
 - create 名称冲突且归属不匹配时保留原实例并返回固定硬错误；同归属实例按已持久化 operation 阶段幂等继续。
@@ -1406,8 +1406,8 @@ codespace 日志是生命周期操作的诊断输出，单文件连续追加。�
 - `::add-mask::value` 由 Manager 本地消费并加入 mask set，mask 指令原文仅存在于 Manager 本地内存。
 - Manager 重启后继续处理同一 operation 时，从实例中的当前凭据文件重建 mask set；普通重启不轮换 Gitea Token。active create、active resume 和无 active operation 的 running 恢复可通过 `RequestRuntimeAccess` 取得 Gitea Token。active stop 不调用该 RPC，而是优先读取自己管理的固定 Gitea Token 文件；文件不可读取或内容无法通过当前凭据格式校验时，不把未知值加入 mask set，并按下一条规则丢弃无法确认安全的缓冲日志。这样 stop 和站点排空都不依赖服务端重新交付凭据。
 - 重启前尚未上传且无法用当前 mask set 确认安全的本地缓冲日志直接丢弃，Manager 追加固定的“重启期间部分日志已丢弃”警告后继续当前生命周期；日志恢复本身不把 operation 标记为 failed。无法确认安全的原始内容始终不上传。
-- Gitea 入库前只做防御性清理，例如控制字符过滤、单行长度限制、URL userinfo 和 Authorization header 模式替换。
-- Manager 持有 Gitea Token 明文，使用完整凭据执行精确脱敏。Gitea 再执行控制字符过滤、单行长度限制以及常见 URL token/Authorization header 模式替换。安全性以 Manager 上传前脱敏为准；前端隐藏和 Gitea 过滤用于降低意外展示风险。
+- Gitea 入库前执行防御性清理：限制原始行和清理后行的长度，过滤控制字符，并替换 `gcs_` Token、URL userinfo、常见 URL query token、Authorization header 及 bearer/basic token 形式。
+- Manager 持有 Gitea Token 和用户 Secret 明文，使用完整凭据执行精确脱敏。Gitea 不持有 Manager 内全部运行时敏感值，因此它只按可可靠识别的格式再次清理。安全性以 Manager 上传前脱敏为准；Gitea 的防御性清理用于降低 Manager 漏掉常见凭据格式时的入库风险，前端不承担脱敏责任。
 - 下载日志和 UI 日志使用同一份脱敏内容。
 - 错误摘要必须在 final `FinalizeOperation` 前上传。
 - active operation 清空后，Gitea 日志进入封闭状态。
@@ -1427,6 +1427,7 @@ Manager 上报的 `LogLine` 只包含采集时间和正文。Gitea 页面使用�
 实现验收点：
 
 - Manager 上报的 message 等于脱敏后的命令正文，不包含人工添加的 stdout/stderr 前缀。
+- Gitea 入库前过滤控制字符，并替换 `gcs_` Token、URL userinfo、URL query token、Authorization header 和常见 bearer/basic token；offset 重放使用同一份清理后字节，不重复追加日志。
 - Gitea Web 响应把时间和正文作为独立字段，页面默认展示行号与正文，可以切换时间列、全屏并下载。
 - 日志分页和下载继续使用同一份 DBFS 单文件，浏览器只按服务端 `next_offset` 前进。
 

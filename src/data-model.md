@@ -12,7 +12,7 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、创
 | `user_id` | `BIGINT NOT NULL DEFAULT 0` | 创建者 user ID；有效 codespace 创建时必须大于 0，用户删除流程会物理删除关联记录 |
 | `repo_id` | `BIGINT NOT NULL DEFAULT 0` | 大于 0 时表示源仓库；源仓库权限由创建用户当前权限自动派生，repository 删除 pre-cleanup 时写为 0 |
 | `ref_type` | `VARCHAR(16) NOT NULL DEFAULT ''` | 有效记录只允许 `branch` / `tag` / `commit` / `pull` |
-| `ref_name` | `TEXT NOT NULL` | branch/tag/commit 标识或规范化 PR ref 路径 |
+| `ref_name` | `TEXT NOT NULL` | branch/tag/commit 标识或基仓库中的规范 PR ref 路径；普通 PR 的来源仓库和分支由当前 PR 关系读取 |
 | `environment_tag` | `VARCHAR(64) NOT NULL` | 用户创建时显式选择并经 Gitea 复检的运行环境键，用于 Manager claim；仓库配置不参与基础设施调度 |
 | `commit_sha` | `VARCHAR(64) NOT NULL DEFAULT ''` | create 前置校验完成后必须为完整锁定 commit SHA |
 | `dev_container_path` | `VARCHAR(512) NOT NULL DEFAULT ''` | 仓库配置相对路径；平台默认来源为空 |
@@ -178,7 +178,7 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 | `created_unix` | `BIGINT NOT NULL DEFAULT 0` | 首次确认时间 |
 | `updated_unix` | `BIGINT NOT NULL DEFAULT 0` | 最近降权或撤销时间 |
 
-同一用户可以保留多条历史授权。创建新 Codespace 时，只有未撤销且所有规则仍保持原确认级别的相同 `request_hash` 才可复用；用户已经降权的授权不会被新创建流程静默恢复，而是由本次确认创建新的授权记录。这样权限提升始终对应一次明确确认，降权和撤销又能立即影响仍引用旧授权的 Codespace。
+同一用户可以保留多条历史授权。创建新 Codespace 时，只有未撤销且所有规则仍保持原确认级别的相同 `request_hash` 才可复用；用户已经降权的授权不会被新创建流程静默恢复，而是由本次确认创建新的授权记录。普通 fork Pull Request 把来源仓库 Code 写能力作为创建来源所需的授权上限，用户不能在确认表单中降低它；实际能力仍取用户当前权限和 Gitea 业务规则的最低结果。这样来源分支能够使用同一套 HTTP、SSH 和 API 鉴权，权限提升始终对应明确的创建确认，降权和撤销又能立即影响仍引用旧授权的 Codespace。
 
 ### codespace_permission_repository
 
@@ -202,6 +202,7 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 - 用户整体撤销授权或把单条规则降为较低级别后，引用该授权的 Codespace 下一次请求立即使用新结果。
 - 用户、源仓库或目标仓库删除时，相关授权关系和规则在删除事务中清理，残留行不能继续提供仓库能力。
 - Dev Container 仓库来源的路径、提交和摘要与创建确认一致；operation 不从移动中的 branch 重新选择配置，也不携带原始正文。
+- 普通 fork Pull Request 的来源仓库 Code 规则按 write 上限进入授权与请求哈希；同仓库 PR 和 AGit 不创建重复规则，用户当前权限与分支保护仍可拒绝具体写入。
 
 ### codespace_ssh_key
 
