@@ -16,7 +16,7 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、创
 | `environment_tag` | `VARCHAR(64) NOT NULL` | 用户创建时显式选择并经 Gitea 复检的运行环境键，用于 Manager claim；仓库配置不参与基础设施调度 |
 | `commit_sha` | `VARCHAR(64) NOT NULL DEFAULT ''` | create 前置校验完成后必须为完整锁定 commit SHA |
 | `dev_container_path` | `VARCHAR(512) NOT NULL DEFAULT ''` | 仓库配置相对路径；平台默认来源为空 |
-| `dev_container_content_sha256` | `CHAR(64) NOT NULL DEFAULT ''` | 仓库原始 JSONC 的 SHA256；平台默认来源为空 |
+| `dev_container_content_sha256` | `VARCHAR(64) NOT NULL DEFAULT ''` | 仓库原始 JSONC 的 SHA256；平台默认来源为空 |
 | `dev_container_default_image` | `VARCHAR(512) NOT NULL DEFAULT ''` | 平台默认来源使用的站点镜像；仓库来源为空 |
 | `permission_authorization_id` | `BIGINT NOT NULL DEFAULT 0` | 0 表示配置未申请附加仓库权限；正数引用创建时确认的授权记录 |
 | `manager_id` | `BIGINT NOT NULL DEFAULT 0` | create 被领取前为 0，领取后固定 |
@@ -49,7 +49,7 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 `environment_tag` 是用户在 Gitea 创建确认页显式选择的运行环境键。可选值来自站点全局 Manager 和当前用户个人 Manager 已成功 Declare 的环境声明，最终提交在事务内重新校验后保存。仓库 Dev Container 文件只描述内部开发环境，不选择 Incus 主机、实例类型或 Manager tag。**设计如此：**用户能够明确选择部署管理员提供的基础设施能力，仓库代码仍不能借配置文件改变调度范围。create 被领取后，stop、resume 和 delete 只使用已经绑定的 `manager_id` 与 Manager 本地环境快照。
 
-三个 `dev_container_*` 字段共同保存创建确认时的不可变选择，不保存 JSONC 正文。仓库来源使用非空路径和原始字节摘要，平台默认来源使用非空默认镜像，两种形态互斥；配置所在提交直接使用同一行的 `commit_sha`。**设计如此：创建时解析配置和锁定源码使用同一个提交，来源又能由互斥字段无歧义地判断，重复保存来源枚举和提交会形成可能不一致的第二份状态。**Manager clone 后从锁定提交校验所选文件，站点默认镜像之后变化也不会改变已创建对象。
+三个 `dev_container_*` 字段共同保存创建确认时的不可变选择，不保存 JSONC 正文。仓库来源使用非空路径和原始字节摘要，平台默认来源使用非空默认镜像，两种形态互斥；配置所在提交直接使用同一行的 `commit_sha`。内容摘要使用 `VARCHAR(64)`，因为平台默认来源需要把它准确保存为空字符串；PostgreSQL 和 MSSQL 会对定长 `CHAR` 补空格，读取后将不再满足互斥字段的空值语义。UUID 和始终完整生成的请求摘要继续使用定长字段。**设计如此：创建时解析配置和锁定源码使用同一个提交，来源又能由互斥字段无歧义地判断，重复保存来源枚举和提交会形成可能不一致的第二份状态；按字段是否允许为空选择变长或定长类型，可以让各支持数据库得到相同判断结果。**Manager clone 后从锁定提交校验所选文件，站点默认镜像之后变化也不会改变已创建对象。
 
 Git clone 首选协议不进入 `codespace` 表。Gitea 在 create 记录创建时校验站点 Git 传输配置可用，在 Manager 领取 create 并构造 payload 时再次读取当前配置，生成 `git_protocol`、HTTP(S) clone URL 和 SSH clone URL；禁用协议字段为空，首选协议必须指向非空 URL。**设计如此：协议是站点当前接入能力，不是 Codespace 生命周期事实。**对象一旦初始化完成，resume 以 workspace 实际 remote 为准，不需要 Gitea 保存或重放旧协议；这样修改站点 Git 接入配置不会要求批量改历史 Codespace，也不会让 resume 误用过期外部 SSH Host Key 信息。
 
@@ -90,26 +90,40 @@ Manager 删除由服务层先按 `codespace.manager_id` 收集并删除绑定 Co
 
 | 字段 | 类型说明 | 备注 |
 | --- | --- | --- |
-| `id` | `BIGINT` 自增主键 | 地址记录 ID |
-| `manager_id` | `BIGINT NOT NULL DEFAULT 0` | Manager ID |
-| `kind` | `VARCHAR(16) NOT NULL DEFAULT ''` | 只允许 `gateway` / `ssh` |
+| `manager_id` | `BIGINT NOT NULL DEFAULT 0`，联合主键 | Manager ID |
+| `kind` | `VARCHAR(16) NOT NULL DEFAULT ''`，联合主键 | 只允许 `gateway` / `ssh` |
 | `address` | `VARCHAR(512) NOT NULL DEFAULT ''` | 对应类型的规范化地址 |
 
 同一 Manager、同一类型最多一行，同一类型的规范化地址在全部 Manager 中唯一。Manager 注册后、首次成功 Declare 前没有地址行；Declare 在 Manager lock 内校验完整声明，并在同一事务中插入或替换 `gateway` 和 `ssh` 两行。Manager 删除在最终事务中删除其地址行。
 
 独立地址表保存实际参与路由和认证的当前值，Manager 表的类型化声明字段保存展示与诊断信息。这样数据库唯一约束就是地址冲突判定的权威来源，首次 Declare 前也不需要用空字符串或可空唯一列表达“尚未声明”。
 
+**设计理由：`manager_id + kind` 直接表示一条地址记录。**地址没有独立生命周期，所有读取、替换和删除都从 Manager 与地址类型出发；使用联合主键同时表达所属关系和每种类型最多一条，不需要另设一个不参与查询的编号。
+
+实现验收点：
+
+- `(manager_id, kind)` 是主键，Declare 可以在同一事务中完整替换 Manager 的地址集合。
+- `(kind, address)` 保持唯一，并发声明同类同地址时只有一个 Manager 可以提交成功。
+- Manager 地址读取、冲突检查和删除均按业务列完成。
+
 ### codespace_manager_token
 
 | 字段 | 类型说明 | 备注 |
 | --- | --- | --- |
-| `id` | `BIGINT` 自增主键 | |
 | `token` | `VARCHAR(64) NOT NULL`，唯一索引 | 32 随机字节的 hex 编码明文 |
-| `user_id` | `BIGINT NOT NULL DEFAULT 0`，唯一索引 | 0 表示站点入口；正数表示个人用户入口，每个入口最多一行 |
+| `user_id` | `BIGINT NOT NULL DEFAULT 0`，主键 | 0 表示站点入口；正数表示个人用户入口，每个入口最多一行 |
 
 Registration Token 明文存储并可复用，支持站点或同一个人用户用当前 token 注册多个 Manager。`user_id=0` 是站点管理员维护的全局入口，正数必须对应 `type=individual` 的个人用户。settings 页面进入时通过 GetOrCreate 确保当前行存在；重置原地替换随机 token；用户删除物理删除个人入口。组织不创建 registration token，也不注册 Manager。
 
 **设计理由：Registration Token 表示站点或个人用户当前有效的注册入口。**每个入口最多保存一行；重置原地替换。认证只需按记录是否存在判断当前入口，失败诊断写入服务端日志，因此数据表无需保存 inactive、软删除或轮换历史。
+
+**设计如此：`user_id` 是 Registration Token 的记录身份。**站点入口使用 0，个人入口使用用户 ID，读取、重置和用户删除都使用这一列；主键直接保证每个入口只有当前一条 Token，随机 `token` 的唯一索引用于认证查找。
+
+实现验收点：
+
+- `user_id=0` 可以创建和重置站点 Token，个人用户 ID 可以创建和重置各自 Token。
+- 重置按 `user_id` 原地更新，不改变入口身份；旧 Token 随事务提交立即失效。
+- `token` 唯一索引阻止两个入口持有相同 Token。
 
 ### codespace_gitea_token
 
@@ -148,18 +162,20 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 
 | 字段 | 类型说明 | 备注 |
 | --- | --- | --- |
-| `id` | `BIGINT` 自增主键 | 选择关系 ID |
-| `secret_id` | `BIGINT NOT NULL` | 所属 Codespace Secret |
-| `repo_id` | `BIGINT NOT NULL` | 指定仓库模式中被选择的仓库 |
+| `secret_id` | `BIGINT NOT NULL`，联合主键 | 所属 Codespace Secret |
+| `repo_id` | `BIGINT NOT NULL`，联合主键 | 指定仓库模式中被选择的仓库 |
 
 `secret_id + repo_id` 唯一。`all_repositories=false` 时，表中关系是该 Secret 的完整指定仓库集合，集合可以为空；`all_repositories=true` 时不保存展开后的仓库关系。用户只能选择自己当前具有代码写权限的仓库。创建或恢复某个 Codespace 时，Gitea 合并该用户名下的所有仓库 Secret 和选择了当前源仓库的 Secret，并再次确认用户仍具有代码写权限。单个仓库实际注入的当前用户 Secret 值总量最多 512 KiB。仓库删除会清理指定关系，用户删除会清理其 Secret 和全部指定关系。
 
 **设计如此：所有仓库模式表达动态权限范围，不展开成关系行。**用户以后新建或新获得写权限的仓库可以直接使用该 Secret，失去写权限的仓库会在下一次 create 或 resume 时自动失去使用资格。指定仓库模式用于更小范围，也允许空集合，使保存 Secret 不等同于立即授权仓库。两种模式都只保存一份密文；Secret 不绑定具体 Codespace，因为一个用户为同一仓库创建多个环境时应得到相同配置，值的更新在下一次 create 或 resume 时生效。
 
+**设计理由：`secret_id + repo_id` 就是仓库选择关系的完整身份。**关系行没有独立属性或生命周期，联合主键可以直接阻止重复选择；主键左侧同时支持按 Secret 读取和清理，独立的 `repo_id` 索引支持仓库删除时反向清理。
+
 实现验收点：
 
-- `v344` 在创建现有 Codespace 表的同一次迁移中创建 Secret 与仓库选择表；迁移数量不因本功能增加。
+- `v346` 在创建现有 Codespace 表的同一次迁移中创建 Secret 与仓库选择表；迁移数量不因本功能增加。
 - 同一用户不能保存两个同名 Secret，同一 Secret 不能重复选择同一仓库。
+- 仓库选择表以 `(secret_id, repo_id)` 为主键；按 Secret 和按仓库的查询都能使用对应索引。
 - Secret 明文不出现在数据库、列表页或查看响应中；替换值后只更新时间和密文。
 - 所有仓库模式不产生仓库关系行；指定仓库模式可以一次替换为任意可写仓库集合，也可以替换为空集合。
 - 创建或恢复时只返回当前用户所有仓库范围或指定当前源仓库的 Secret，并按名称稳定排序；当前代码写权限和外部 fork 拉取请求保护仍在运行时复核。
@@ -184,22 +200,24 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 
 | 字段 | 类型说明 | 备注 |
 | --- | --- | --- |
-| `id` | `BIGINT` 自增主键 | 设置页面操作单条规则时使用 |
-| `authorization_id` | `BIGINT NOT NULL` | 所属授权记录 |
-| `target_repo_id` | `BIGINT NOT NULL` | 精确附加仓库，不接受通配符 |
-| `unit_type` | `INTEGER NOT NULL` | 复用 Gitea `unit.Type`；只允许 Code、Issues、Pull Requests、Wiki、Releases、Actions |
+| `authorization_id` | `BIGINT NOT NULL`，联合主键 | 所属授权记录 |
+| `target_repo_id` | `BIGINT NOT NULL`，联合主键 | 精确附加仓库，不接受通配符 |
+| `unit_type` | `INTEGER NOT NULL`，联合主键 | 复用 Gitea `unit.Type`；只允许 Code、Issues、Pull Requests、Wiki、Releases、Actions |
 | `requested_mode` | `INTEGER NOT NULL` | 配置申请的 `read` 或 `write` |
 | `granted_mode` | `INTEGER NOT NULL` | 用户当前保留的 `none`、`read` 或 `write`，不得高于申请值 |
 
 `authorization_id + target_repo_id + unit_type` 唯一。每次请求的最终能力取配置申请、用户当前保留授权和创建用户当前仓库权限三者的最低值；仓库单元关闭、用户失权或授权撤销都会使后续请求立即失败。仓库管理、设置、凭据、删除、转移、账户、组织、Package 和 Notification 不在可申请单元中，因此不需要额外的拒绝字段。
 
+**设计理由：授权、目标仓库和仓库单元共同确定一条权限规则。**设置页面提交这三个值，服务端先确认授权属于当前用户，再按完整主键读取规则；降权更新同时比较旧的 `granted_mode`，因此联合主键不会削弱所有权校验或并发更新保护。规则没有独立于授权存在的生命周期，无需额外编号。
+
 **设计如此：授权保存在 Gitea，而不是 Manager 或 Runtime。**Gitea 已经拥有用户、仓库和单元权限的权威数据，也负责 HTTP、SSH、LFS 和 API 入口；Manager 只接收 Dev Container 的不可变选择，不解释或扩大权限。把规则放入 RPC 会形成第二份权限状态，并使不同传输入口难以得到相同结果。
 
 实现验收点：
 
-- 数据库迁移只使用当前尚未发布的 `v344` 创建 Codespace 主表、授权表、规则表、用户 Secret 表和仓库选择表；目标 schema 的调整直接落在同一迁移中。
+- 数据库迁移只使用当前尚未发布的 `v346` 创建 Codespace 主表、授权表、规则表、用户 Secret 表和仓库选择表；目标 schema 的调整直接落在同一迁移中。
 - 一个 Codespace 最多引用一条授权；没有附加仓库申请时 `permission_authorization_id=0`。
 - 用户整体撤销授权或把单条规则降为较低级别后，引用该授权的 Codespace 下一次请求立即使用新结果。
+- 权限规则以 `(authorization_id, target_repo_id, unit_type)` 为主键；设置页面和服务使用完整主键定位规则，并在当前用户授权范围内完成降权。
 - 用户、源仓库或目标仓库删除时，相关授权关系和规则在删除事务中清理，残留行不能继续提供仓库能力。
 - Dev Container 仓库来源的路径、提交和摘要与创建确认一致；operation 不从移动中的 branch 重新选择配置，也不携带原始正文。
 - 普通 fork Pull Request 的来源仓库 Code 规则按 write 上限进入授权与请求哈希；同仓库 PR 和 AGit 不创建重复规则，用户当前权限与分支保护仍可拒绝具体写入。
@@ -248,6 +266,7 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] 每个 active operation 都保存 `user` 或 `idle` 来源，完成、超时、取消或物理删除时与其他 active operation 字段一同清空。
 - [x] `environment_tag` 是用户显式选择并由 Gitea 复检的持久调度键；索引和 create claim 使用该列，仓库文件不能修改它，没有可见或有效环境时不创建数据库记录。
 - [x] Dev Container 仓库路径与摘要和平台默认镜像按两种形态互斥保存；来源由字段形态派生，配置提交统一使用 `commit_sha`，数据库不保存原始 JSONC 正文。
+- [x] 平台默认来源的配置路径和内容摘要经过 SQLite、MySQL、PostgreSQL 与 MSSQL 写入再读取后仍为空字符串；仓库来源的内容摘要保持完整 64 字符，Fetch 对各数据库使用相同的来源判断。
 - [x] Fetch create payload 直接使用持久 Dev Container 选择，不重新读取移动中的 branch 或站点当前默认镜像。
 - [x] `git_protocol` 不存在于 Codespace 表；create payload 按 Manager 领取时的站点配置计算首选协议和可用 clone URL，resume payload 不携带协议。
 - [x] 数据库 operation 与 generation 的 0 值只用于尚未产生版本，有效版本从 1 开始，递增不会溢出回绕；inventory 的 observed operation 为 0 时只表达 Manager 缺少完整 active operation 上下文，数据库版本继续采用当前持久值。
@@ -323,17 +342,18 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 | codespace | `(operation_status, operation_deadline_unix, uuid)`，用于 running operation 当前 deadline 超时 keyset 扫描 |
 | codespace | `(status, updated_unix, uuid)`，用于 failed retention keyset 清理；`updated_unix` 在进入 failed 时写入 |
 | codespace_manager | `(user_id)`，用于个人 Manager 查询和用户删除清理 |
-| codespace_manager_address | `(manager_id, kind)`（唯一） |
+| codespace_manager_address | `(manager_id, kind)`（主键） |
 | codespace_manager_address | `(kind, address)`（唯一） |
 | codespace_manager_token | `token`（唯一） |
-| codespace_manager_token | `user_id`（唯一） |
+| codespace_manager_token | `user_id`（主键） |
 | codespace_gitea_token | `codespace_uuid`（主键） |
 | codespace_gitea_token | `token_hash`（唯一） |
 | codespace_gitea_token | `token_last_eight` |
 | codespace_user_secret | `(user_id, name)`（唯一） |
-| codespace_user_secret_repository | `(secret_id, repo_id)`（唯一） |
-| codespace_user_secret_repository | `secret_id` |
+| codespace_user_secret_repository | `(secret_id, repo_id)`（主键） |
 | codespace_user_secret_repository | `repo_id` |
+| codespace_permission_repository | `(authorization_id, target_repo_id, unit_type)`（主键） |
+| codespace_permission_repository | `target_repo_id` |
 | codespace_ssh_key | `codespace_uuid`（主键） |
 | codespace_ssh_key | `key_id`（唯一） |
 
@@ -343,10 +363,10 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 
 - [x] queued create 和已绑定 operation 查询使用对应复合索引，不依赖 JSON SQL 匹配。
 - [x] 个人与仓库列表、Fetch、operation 超时和 failed retention 的过滤、排序与索引列顺序一致；相同时间戳记录使用 UUID 稳定翻页，不重复、不遗漏。
-- [x] `codespace_manager_token.token` 唯一索引和 Codespace UUID 主键阻止对应重复记录。
+- [x] `codespace_manager_token.user_id` 主键、`token` 唯一索引和 Codespace UUID 主键阻止对应重复记录。
 - [x] Manager 地址唯一性由数据库约束保证；并发冲突不会产生两个持有同一 Gateway 或 SSH 地址的 Manager。
 - [x] 每个 Codespace 最多存在一个 Gitea Token，Token hash 不重复，末八位只用于缩小候选范围。
-- 每个用户的 Secret 名称和每个 Secret 的仓库选择都由数据库唯一索引保证；按 Secret 清理和按仓库解析分别使用 `secret_id`、`repo_id` 索引。
+- [x] 每个用户的 Secret 名称由唯一索引保证，Secret 仓库选择和权限规则由联合主键保证；联合主键左侧支持按所属实体清理，`repo_id` 或 `target_repo_id` 索引支持仓库反向清理。
 - [x] 每个 Codespace 最多存在一个 Git SSH Key binding，每个 key ID 最多属于一个 Codespace。
 
 ## Gitea 缓存与对象锁

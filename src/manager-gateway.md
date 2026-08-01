@@ -142,7 +142,7 @@ registration token 设计：
 
 - registration token 存放在 `codespace_manager_token` 表。
 - 页面进入 Codespace 管理界面时，Gitea 按当前 scope 取得当前 registration token；当前 scope 没有记录时创建新 token 并展示给管理员。
-- 数据库保存明文 `token` 和唯一 `user_id`；token 也使用唯一索引，使 `RegisterManager` 可以直接定位当前入口。
+- 数据库保存明文 `token`，以 `user_id` 作为当前入口的主键；token 使用唯一索引，使 `RegisterManager` 可以直接定位当前入口。
 - registration token 行存在且提交明文匹配时有效，可用于注册多个 Manager。
 - registration token 负责创建 Manager 身份，manager secret 负责证明已注册 Manager 身份。
 - settings 页面提供和 Actions runner 一致的复制与重置入口。重置在同一行原地替换随机 token，旧 token 立即失效；已经注册的 Manager secret 不受影响。
@@ -158,7 +158,7 @@ Registration Token 明文保存——它是管理员复制给 Manager 完成首�
 - 站点 Codespace 管理页读取或创建 `user_id=0` 的当前 token。
 - 用户 Codespace 管理页读取或创建 `user_id=ctx.Doer.ID` 的当前 token。
 - 组织设置没有 Codespace registration token 或 Manager 入口。
-- `codespace_manager_token.token` 和 `user_id` 分别具备唯一索引。
+- `codespace_manager_token.user_id` 是主键，`token` 具备唯一索引。
 - 使用站点 token 注册出的 Manager 记录 `user_id=0`。
 - 使用用户 token 注册出的 Manager 记录 `user_id=该用户 user.id`，且该用户必须是个人用户。
 - 注册成功后返回一次性明文 `manager_secret`。
