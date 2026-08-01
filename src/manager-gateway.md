@@ -452,7 +452,7 @@ Manager 只有在以下条件同时成立时才在本地开放新 session：Gite
 - bootstrap 和原生运行时 exec 都绑定当前 worker context。lease 截止、abort、进程关闭或更高版本 operation 会取消对应 Incus operation；Manager 重启时先终止遗留运行时进程并停止 active create/resume 实例，取得同版本新 lease 后才继续。这样实例内工作不会越过当前 Gitea 授权，也不需要另一份持久 deadline 或 pulse 协议。
 - 到达 `local_worker_deadline` 且尚未收到带新相对时长的 Fetch 响应或 final outcome 时，Manager 取消在途 Incus exec 与原生运行时请求。create/resume 还要停止实例并把本地 worker 原子保存为 `lease_paused`，保留当前 operation 上下文且不提交 final；stop/delete 以实际资源状态等待续租或 inventory 判断。协议不返回服务端绝对截止时间，Manager 也不在本地保存该值。**设计如此：取消工作和停止 create/resume 实例只收缩本地执行，不能继续初始化；Manager 与 Gitea 不需要时钟同步。**
 - Manager 重启后原单调时钟基线已经丢失，因此先终止遗留运行时进程，停止 active create/resume 实例，全部恢复 worker 保持 `lease_paused`。上下文完整的 operation 提交同版本 observed，只有成功 Fetch 续租并取得新的相对有效时长后才重新启动实例；仍然有效的持久结果可以复用，本次 operation 需要的环境恢复和连通校验必须重做。上下文缺失、Gitea 已按原 deadline 超时或 RPC 暂时不可用时均保持暂停。站点排空下 create/resume 的 abort 相对时长为 0，只立即清理本轮工作并提交 `final failed`，不恢复普通启动步骤。
-- 站点排空后，已声明 observed 的 running stop/delete 使用普通 command；running create/resume 只在 deadline 未到期时接受 `abort_create|abort_resume`，不恢复初始化或启动流程。`abort_create` 删除本轮新建的 Incus 实例并提交 `final failed`；`abort_resume` 停止本轮启动的实例、确认根存储保留且实例为 stopped 后提交 `final failed`。Gitea 分别映射到 failed 和 stopped。两类 abort 都上传摘要且不续租；服务端已经 timeout 时不再启动 abort worker。
+- 站点排空后，已声明 observed 的 running stop/delete 使用普通 command；running create/resume 只在 deadline 未到期时接受 `abort_create|abort_resume`，不恢复初始化或启动流程。`abort_create` 删除本轮新建的 Incus 实例并提交 `final failed`；`abort_resume` 停止本轮启动的实例、确认根存储保留且实例为 stopped 后提交 `final failed`。Gitea 分别映射到 failed 和 stopped。两类 abort 都在 operation 分组中记录取消原因且不续租；服务端已经 timeout 时不再启动 abort worker。
 - `FinalizeOperation` 的响应是当前 worker 的处理依据：
 
 | response | Manager 行为 |
@@ -1413,7 +1413,7 @@ codespace 日志是生命周期操作的诊断输出，单文件连续追加。�
 - active operation 清空后，Gitea 日志进入封闭状态。
 - stop/resume/delete 创建新的 operation 版本后，日志继续追加到同一文件。
 - Manager 以 `FetchOperations` 返回的 `log_offset` 初始化当前 operation 的上传 offset；成功追加使用 response `next_offset`，遇到 offset conflict/gap 时使用 `LogOffsetDetail.current_offset` 恢复，不从 0 覆盖已有内容。
-- Gitea 返回 `log_size_exceeded` 后，当前生命周期日志 sink 停止普通日志上传并继续读取命令输出，避免实例进程因管道阻塞；少量 operation 摘要也把该结果视为日志已经明确截断，不阻止 stop、resume、delete 或最终状态提交。Gitea 使用预留空间写入最终状态摘要，因此达到日志上限不会丢失 operation 结果。
+- Gitea 返回 `log_size_exceeded` 后，当前生命周期日志 sink 停止普通日志上传并继续读取命令输出，避免实例进程因管道阻塞；日志截断不阻止 stop、resume、delete 或最终状态提交，operation 结果仍由数据库主状态表达。Gitea 使用预留空间写入 timeout、missing runtime 等控制面诊断，因此普通输出达到上限后仍能说明独立状态变化。
 - 只有当前 `operation_status=running` 且 `operation_rversion` 匹配时才能追加 Gitea 日志。
 
 **设计如此：Docker 镜像拉取进度保存聚合状态，而不是保存 Docker 终端进度条的每次刷新。**拉取帧表达同一镜像层不断变化的当前值，把每帧变成永久日志会放大日志、RPC、数据库写入和页面节点，却不会增加诊断信息；镜像构建和 Feature 脚本的正文代表实际执行步骤，仍按完整行保存。追加式日志协议已经能够表达低频进度，不需要增加单独的进度服务或可变日志记录。
@@ -1444,7 +1444,7 @@ Manager/Gateway 不建立连接访问审计或成功会话流水。Endpoint/SSH 
 - bootstrap、构建、Feature 和 lifecycle 运行期间的 stdout/stderr 完整正文行按有界批次实时追加到 Gitea 日志，剩余半行和未满批次在命令结束时追加；正文不带人工通道前缀，页面无需等待整个环境创建结束。
 - 镜像拉取日志包含开始、完成和低频聚合进度；同一层的大量 Docker 进度刷新不会形成等量持久化日志，拉取错误仍进入 operation 失败日志。
 - Gitea 返回日志大小已达上限后，Manager 不再为当前 sink 发送普通日志，仍持续排空命令输出并完成生命周期和最终状态提交。
-- Manager 在 final 前上传最终摘要；Gitea 只为仍保留 Codespace 记录的结果在主事务提交后尝试写内部摘要，失败或预留空间不足不回滚生命周期结果，物理删除路径不重新创建日志。
+- Manager 在 final 前关闭并上传完整 operation 分组；Gitea 只为 timeout、missing runtime 和主动 Runtime 状态变化等独立控制面判定写内部摘要，失败或预留空间不足不回滚生命周期结果，物理删除路径不重新创建日志。
 - token、Authorization header、cookie、query string 和完整 user agent 不进入 codespace 日志或 Manager/Gateway 本地诊断日志。
 - active stop 恢复不调用 `RequestRuntimeAccess`；Manager 只能从 Runtime 的固定 Gitea Token 文件重建 mask，读取或格式校验失败时丢弃无法确认安全的缓冲日志。
 - codespace 日志用于生命周期诊断；连接失败只进入 Manager/Gateway 本地日志，不生成成功访问审计。

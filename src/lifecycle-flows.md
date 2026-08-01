@@ -69,14 +69,14 @@ sequenceDiagram
 
 bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 `--no-checkout`，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支和普通 Pull Request 来源分支精确 fetch 到 `origin/<branch>`，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、AGit Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。
 
-原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；Feature 通过 OCI API解析并固定 digest，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server `/healthz` 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。
+原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；OCI 与 HTTPS Feature 固定摘要，仓库内 Feature 由锁定提交固定，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server `/healthz` 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。
 
 **设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。普通分支和普通 Pull Request 保持开发者熟悉的 branch/upstream 语义，Tag、AGit Pull Request 和直接 commit 保持锁定提交语义；create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会接管其他对象。
 
 ### 实现验收点
 
-- [x] bootstrap、构建、Feature 和 lifecycle 的 stdout/stderr 按正文行实时写入同一 operation 日志。
-- [x] operation 使用顶层日志分组，启动流程按运行时访问、系统与 workspace、Dev Container 和 Endpoint 发布分组；错误分组保持展开，正文不因折叠而丢弃。
+- [x] bootstrap、构建、Feature 和 lifecycle 的 stdout/stderr 按正文行实时写入同一 operation 日志；用于解析 shell 与环境的内部探测只返回结果，不进入用户日志，命令末尾没有换行时展示流仍与下一条分组标记保持独立行。
+- [x] operation 使用顶层日志分组，启动流程按运行时访问、系统与 workspace、Dev Container 和 Endpoint 发布分组；lifecycle 与 VS Code 扩展安装使用阶段子分组，错误分组保持展开，正文不因折叠而丢弃。
 - [x] workspace 在临时目录校验 commit 后原子提交，协议回退最多一次。
 - [x] 普通分支和普通 Pull Request 检出同名本地分支并跟踪 `origin/<branch>`；Tag、AGit Pull Request 和直接 commit 使用 detached HEAD，最终 HEAD 都等于锁定提交。
 - [x] create 重试对已有 workspace 使用同一 ref 检出与 commit 校验流程。

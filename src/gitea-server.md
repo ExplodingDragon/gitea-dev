@@ -821,7 +821,7 @@ operation_status=running
 
 功能启用时按正常规则接受 final。站点在 operation 领取后进入排空时，stop/delete 仍按正常规则完成；create/resume 只允许追加清理日志和提交 `final failed`，Fetch 不再续租而是返回 abort。create 删除本轮新建的 Incus 实例后进入 failed；resume 确认本轮启动的实例已经停止后回到 stopped，保留实例根存储。该规则停止站点新增运行工作，同时不把可恢复 workspace 误标为破坏性失败，也不阻塞已有实例的 stop/delete。
 
-final 必须携带 Manager 本地保存的原始 `operation_type`。active operation 仍存在时该类型必须与数据库一致；当前版本匹配但有效类型不同、版本已经被替换或主状态已经变化时，Gitea 不写入旧结果并返回普通成功，Manager 结束该 worker 的本地上下文。`UNSPECIFIED` 和未知枚举返回 `invalid_argument`。active operation 已清空后，Gitea 只能按相同版本和请求映射出的目标主状态判断幂等，不能再证明原类型。create/resume done 映射 running，resume failed 和 stop done 映射 stopped，create/stop/delete failed 映射 failed；该目标状态幂等语义使设计不需要保存 operation 历史。abort create/resume 仍分别携带本地原始类型。**设计如此：**final 表示 Manager 已经结束本地动作；旧结果不能覆盖服务端当前状态，也不值得驱动 Manager 重试。只有 Codespace 已物理删除需要 `resource_absent=true`，以便立即触发完整 inventory。
+final 必须携带 Manager 本地保存的原始 `operation_type`。active operation 仍存在时该类型必须与数据库一致；当前版本匹配但有效类型不同、版本已经被替换或主状态已经变化时，Gitea 不写入旧结果并返回普通成功，Manager 结束该 worker 的本地上下文。`UNSPECIFIED` 和未知枚举返回 `invalid_argument`。active operation 已清空后，数据库已经没有足够信息恢复原操作类型，因此 Gitea 保留当前主状态并返回普通成功。abort create/resume 仍分别携带本地原始类型。**设计如此：**final 表示 Manager 已经结束本地动作；旧结果不能覆盖服务端当前状态，也不值得仅为区分重复结果而保存 operation 历史。只有 Codespace 已物理删除需要 `resource_absent=true`，以便立即触发完整 inventory。
 
 create/resume final done 都要求当前 operation 版本的 Runtime Metadata 已为 `ready` 且 Codespace Token 行完整。Manager 在 ready 前校验实际 workspace remote 的本地配置：HTTP(S) helper 必须读取当前 Gitea Token 文件，SSH 必须已经通过 `RequestRuntimeAccess` 确认同一公钥并写入可信 known_hosts。Gitea 不保存实际 remote 的第二份字段，也不根据首选 `git_protocol` 猜测，因此 final 不重复检查协议或 SSH Key；SSH 命令只有存在有效公钥关系时才能进入专用鉴权。任一步失败都仍由 active operation 的 lease、重试和 final failed 处理。这样 final done 提交后即可清除 operation，`running` 同时表示本次启动的本地凭据配置和交互入口已经就绪，不需要另一个跨重启的后置任务。
 
@@ -840,19 +840,19 @@ Manager 负责报告 Gitea-issued operation 的动作结果，Gitea 负责把结
 
 State Finalization 首次完成 final、timeout、missing 或 transition 处理时写 `updated_unix=now`；queued resume/stop timeout 或 queued idle stop 取消即使保持原稳定主状态，也因 active operation 首次结束而更新时间。创建或替换 active operation 同样更新该字段。claim、lease 续租、日志、Runtime Metadata、token 读取或修复、未取消 operation 的 open/SSH/继续运行/设置变更和相同结果的幂等重试不更新它，repository 删除仅把 `repo_id` 写为 0 时也不更新。这样 `updated_unix` 可以稳定表达生命周期变化，并作为 failed retention 起点，而不会被调度或普通交互活动延后。
 
-State Finalization 主事务提交后，仍保留 Codespace 记录的结果通过日志专用锁尽力追加内部状态摘要。摘要由独立的 DBFS 追加事务保证内容与日志元数据共同提交；摘要失败只记录服务端告警，不回滚主状态。delete done 已经物理删除记录和日志，直接跳过摘要；force/account/Manager delete 与 retention 清理同样不能重新创建日志。
+State Finalization 主事务提交后，timeout、missing 和 Runtime 状态报告等由 Gitea 独立判定的异常通过日志专用锁尽力追加内部状态摘要。摘要由独立的 DBFS 追加事务保证内容与日志元数据共同提交；摘要失败只记录服务端告警，不回滚主状态。正常 final 和 Manager 已报告的失败使用已有 operation 分组及页面主状态表达，不再追加分组外的重复结果。delete done 已经物理删除记录和日志，直接跳过摘要；force/account/Manager delete 与 retention 清理同样不能重新创建日志。
 
 实现验收点：
 
 - lease 只由 Fetch observed 批量续租；FinalizeOperation 不包含续租分支。boot stage 由 Runtime Metadata 和日志表达。
 - final result 触发一次 State Finalization。
 - 首次接受、相同结果重复提交、过期 operation 版本或当前主状态不再接受旧结果时都返回 `resource_absent=false`；只有 Codespace 记录不存在时返回 `resource_absent=true`。
-- final 的有效 operation 类型与当前同版本 active operation 不一致时不写入生命周期结果，Manager 清除旧上下文；非法枚举返回 invalid argument。active 已清空时只按相同版本和请求目标主状态判断是否已经成立，不声称恢复原类型。
+- final 的有效 operation 类型与当前同版本 active operation 不一致时不写入生命周期结果，Manager 清除旧上下文；非法枚举返回 invalid argument。active 已清空时保留当前主状态并返回普通成功，不声称恢复原类型。
 - State Finalization 同事务处理主状态、包括来源在内的 active operation 清空，以及彼此独立的 Codespace Token 与 Git SSH Key 生命周期；active operation 清空后日志追加窗口关闭。
 - create/resume 的 final done 在当前 operation 版本 ready metadata 或 Token 行缺失时被拒绝，active operation 保持可重试；实际 remote 的本地凭据配置由 Manager 在 ready 前验证，Gitea final 不增加协议分支，成功后不再存在凭据刷新任务。
 - resume failed、timeout 和 abort 在状态结果成立后尽力清除本次启动 metadata；迟到的同版本上报不能在无 active resume 时重新写入。
 - `updated_unix` 在创建记录、创建或替换 active operation，以及首次 final/timeout/missing/transition/queued idle stop 取消时更新；未改变 active operation 的交互或设置、claim、续租、metadata、日志、token 修复、幂等结果和 `repo_id` 置 0 不刷新该字段。
-- 保留 Codespace 记录的结果在主事务提交后通过日志专用锁单独追加内部摘要；物理删除跳过摘要，摘要失败不回滚已经接受的 final。
+- timeout、missing 和 Runtime 状态报告等独立控制面判定在主事务提交后通过日志专用锁追加内部摘要；final 不重复写结果，物理删除不创建摘要。
 - deadline 到期后的 final 在请求路径立即触发按 operation 类型定义的 timeout，并返回普通成功；Manager runtime state 不延长 deadline，且与 Fetch/Cron 并发时只有一个条件更新生效。
 - codespace 已物理删除时返回 `outcome.resource_absent`；worker 清除本地 operation 上下文、结束该 operation 的上报并触发完整 inventory。`resource_absent` 本身不授权删除 Runtime；当前 inventory 查询明确无记录时再返回 `cleanup_local_runtime`。UUID 不复用，也不保存 operation 历史或 tombstone。
 - 站点排空后已领取的 create/resume 只能 final failed，已领取或新领取的 stop/delete 可以正常完成。
@@ -860,7 +860,7 @@ State Finalization 主事务提交后，仍保留 Codespace 记录的结果通�
 ### UpdateLog
 
 - 写入 DBFS 路径 `codespace_log/{codespace_uuid}.log`。
-- Gitea 服务层可为完整 failed 对象和 operation 最终状态通过内部入口写入失败或 warning 摘要；Manager operation payload 携带当前 `log_offset`。
+- Gitea 服务层可为 timeout、missing runtime 和主动 Runtime 状态变化通过内部入口写入诊断摘要；Manager operation payload 携带当前 `log_offset`。
 - request 使用结构化 `LogLine(timestamp_unix_nano, message)`；Gitea 脱敏后统一编码为 UTF-8 `[RFC3339Nano] message\n`，offset 按编码后的完整字节计算。
 - 校验 `codespace_uuid + operation_rversion + manager_id` 匹配当前 running operation。
 - offset 等于当前日志大小时追加。
@@ -870,11 +870,11 @@ State Finalization 主事务提交后，仍保留 Codespace 记录的结果通�
 - 只允许当前 `operation_rversion` 对应的 running operation 追加日志。
 - active operation 清空后，日志进入封闭状态。
 - 单行最大长度由 Gitea 内部保护值控制，保证异常大行不会放大单次写入和页面读取。
-- 日志总大小由 `LOG_MAX_SIZE` 控制。普通日志可用上限为 `LOG_MAX_SIZE` 减去内部最终摘要预留空间，超过后返回 log size exceeded 分类并写入明确截断摘要。
-- 服务端固定预留最终摘要空间；达到普通日志上限后拒绝原始行，但内部最终摘要仍可写入预留空间。
-- keyed lock 内发现普通 batch 将使当前文件首次跨过普通日志上限时，只写一条截断摘要；文件已经达到上限后的普通行直接返回 `log_size_exceeded`，不再写摘要。截断摘要和最终摘要共同受 `LOG_MAX_SIZE` 硬上限约束。
+- 日志总大小由 `LOG_MAX_SIZE` 控制。普通日志可用上限为 `LOG_MAX_SIZE` 减去内部状态摘要预留空间，超过后返回 log size exceeded 分类并写入明确截断摘要。
+- 服务端固定预留内部状态摘要空间；达到普通日志上限后拒绝原始行，但 timeout、missing runtime 等控制面诊断仍可写入预留空间。
+- keyed lock 内发现普通 batch 将使当前文件首次跨过普通日志上限时，只写一条截断摘要；文件已经达到上限后的普通行直接返回 `log_size_exceeded`，不再写摘要。截断摘要和内部状态摘要共同受 `LOG_MAX_SIZE` 硬上限约束。
 - Manager 收到 `log_size_exceeded` 后停止对应生命周期 sink 的普通日志上传并继续执行 operation。这样日志上限同时限制存储和后续控制面请求，不会让已经明确截断的输出持续占用 RPC 与数据库事务。
-- Manager 在 final 前先上传 operation 最终摘要。对于仍保留 Codespace 记录的结果，Gitea 在 State Finalization 主事务提交后，通过日志专用锁使用剩余预留空间尽力追加内部状态摘要；该 DBFS 追加事务失败或预留耗尽时只记录服务端告警，不回滚生命周期状态。物理删除路径跳过摘要并删除整份日志。
+- Manager 在 final 前关闭 operation 日志分组并上传剩余日志。final 结果由该分组中的执行结果和页面主状态共同表达；Gitea 只在独立判定 timeout、missing runtime 或 Runtime 状态变化时使用预留空间追加诊断摘要。该 DBFS 追加事务失败或预留耗尽时只记录服务端告警，不回滚生命周期状态。物理删除路径删除整份日志。
 - 成功追加和内容一致的幂等重放都返回服务端当前 `next_offset`；该值是脱敏和规范化编码后的真实文件末尾。
 - offset conflict/gap 返回 `FailureDetail` 和 `LogOffsetDetail(current_offset)`；Manager 从服务端位置恢复，不根据本地原始 message 估算 offset。
 
@@ -885,8 +885,8 @@ State Finalization 主事务提交后，仍保留 Codespace 记录的结果通�
 - 成功追加和相同内容幂等重放都返回真实 `next_offset`。
 - 服务端脱敏改变字节数时，Manager 下一次追加仍使用 response offset 并成功连续写入。
 - offset conflict/gap 携带 `LogOffsetDetail.current_offset`，且不产生不连续文件。
-- 达到普通日志上限后只写一条截断摘要，重复请求不消耗最终摘要预留空间。
-- 达到普通日志上限后，Manager 不再为当前 sink 发送后续普通行；生命周期命令继续运行，最终状态摘要仍可写入预留空间。
+- 达到普通日志上限后只写一条截断摘要，重复请求不消耗内部状态摘要预留空间。
+- 达到普通日志上限后，Manager 不再为当前 sink 发送后续普通行；生命周期命令继续运行，timeout、missing runtime 等内部状态摘要仍可写入预留空间。
 - 部分重叠的重放不会补写尾部；内部状态摘要写入失败不回滚已经提交的 State Finalization，物理删除不会重新创建日志。
 
 ### ReportRuntimeMetadata
@@ -1331,6 +1331,7 @@ GET /-/codespaces/{uuid}/logs?offset=<byte_offset>&limit=<max_bytes>
   "offset": 0,
   "next_offset": 128,
   "eof": false,
+  "operation_active": true,
   "lines": [
     {"timestamp": 1785037200, "message": "first line"},
     {"timestamp": 1785037201, "message": "second line"}
@@ -1349,12 +1350,13 @@ GET /-/codespaces/{uuid}/logs?offset=<byte_offset>&limit=<max_bytes>
 - 如果第一条完整物理行本身超过请求 `limit`，服务端仍单独返回该行并推进 offset，避免客户端无法分页前进；该例外一次只返回这一行，且仍受内部日志读取分页大小约束。
 - `next_offset` 是下一次轮询起点。
 - `eof=false` 表示仍可继续读取。
+- `operation_active=true` 表示 Codespace 仍有 queued 或 running operation，当前 EOF 后仍可能产生新日志；active operation 已清空时返回 false。字段名直接说明它描述生命周期操作，避免与页面请求或日志读取状态混淆。
 - `truncated=true` 表示本次响应达到读取上限，客户端继续使用 `next_offset` 拉取。
 - delete done 和其他物理删除路径删除 DBFS 日志；`dbfs.Remove` 返回 `fs.ErrNotExist` 时作为幂等成功，其他错误使当前本地删除事务失败。
 - `failed` 状态日志保留到用户 delete，或 `reconcile_codespaces` 按 `OLDER_THAN` 到期清理。
 - 日志接口只允许 Codespace 创建者访问；对象不存在和创建者权限不足都沿用创建者对象路由的 404 语义，不由日志分页错误覆盖。
 
-日志在 Codespace 存续期间始终保留在 DBFS，并在物理删除时一起清理。纯文本下载按同一内部格式逐页还原时间与正文，因此下载、页面和追加共享一份内容，同时下载所需内存只与单个读取页相关。尚未产生任何日志的 Codespace 可能没有 DBFS 文件，因此删除不存在文件表示目标结果已经成立。DBFS 已满足运行中追加、页面读取和同事务日志元数据更新，不需要增加归档状态、存储类型字段或传输任务。
+日志在 Codespace 存续期间始终保留在 DBFS，并在物理删除时一起清理。纯文本下载按同一内部格式逐页还原时间与正文，因此下载、页面和追加共享一份内容，同时下载所需内存只与单个读取页相关。页面把历史追赶和实时轮询分开：`eof=false` 且 offset 前进时连续读取下一页，批次之间让浏览器完成绘制；到达 EOF 后，仅在 `operation_active=true` 时继续按状态间隔轮询。`operation_active=false` 时页面使用相同 EOF 再确认一次后停止，原因是 timeout、missing runtime 等控制面判定会先提交状态事务，再通过日志锁尽力追加诊断摘要；二次确认可以读取这类摘要，又不需要新增持久化关闭字段。尚未产生任何日志的 Codespace 可能没有 DBFS 文件，因此删除不存在文件表示目标结果已经成立。DBFS 已满足运行中追加、页面读取和同事务日志元数据更新，不需要增加归档状态、存储类型字段或传输任务。
 
 **设计如此：Web 响应采用结构化时间与正文，内部存储继续使用单文件文本和 byte offset。**页面需要独立展示时间列，而 Gitea 的幂等追加与分页需要稳定的物理字节位置；两者在读取边界转换即可闭环，不需要修改 Proto 或增加第二份日志存储。
 
@@ -1363,6 +1365,8 @@ GET /-/codespaces/{uuid}/logs?offset=<byte_offset>&limit=<max_bytes>
 实现验收点：
 
 - [x] 日志读取按 byte offset 稳定分页，`next_offset` 可直接用于下一次请求。
+- [x] 多页历史日志连续追赶，到达 EOF 后才进入实时轮询；inactive EOF 经一次确认后停止请求。
+- [x] 大页日志分批渲染并保留跨页日志组、行号、错误标记和用户滚动位置。
 - [x] `lines` 分别返回 Unix 时间和无前缀正文；非法参数返回 400，超过 EOF 的 offset 返回 409 和可恢复的 `current_offset`。
 - [x] 超过请求 limit 的单行可单独返回且不会造成无限重试。
 - [x] delete 和 failed retention 删除整份单文件日志，不按 operation 历史截断。
@@ -1652,9 +1656,9 @@ OLDER_THAN = 8760h
 - `AUTO_STOP_DEFAULT_TIMEOUT` 是 `auto_stop_mode=default` 的有效空闲时长；`AUTO_STOP_MIN_TIMEOUT` 与 `AUTO_STOP_MAX_TIMEOUT` 校验之后提交的新自定义值。范围变化不重写或截断已经保存的正数自定义值，Codespace 创建者可在自己的详情页看到原值并主动修改；这样站点配置调整不会让现有 Codespace 在未操作时突然改变超时。`never` 由模式明确表达，不使用超时 0 表达。站点默认值变化通过下一次 inventory 下发，无需批量更新对象记录。
 - `DEVCONTAINER_CONFIG_MAX_SIZE` 限制单份 `devcontainer.json` 的读取大小，避免创建确认变成大文件解析路径。
 - `LOG_MAX_SIZE` 限制单个 codespace 日志总量，避免异常 bootstrap、构建或 lifecycle 持续输出导致 DBFS 无限增长。
-- Gitea 使用内部默认值限制单条日志行、单次日志读取响应和最终状态摘要预留空间。**设计如此：**管理员通常只需要决定每个 Codespace 最多保存多少日志；行大小、分页大小和摘要预留是保护 DBFS 与页面读取稳定性的实现参数，公开成配置会增加相互约束和错误组合。默认值保证普通日志分页和最终摘要可以闭环，异常输出达到上限时用明确截断摘要收敛。
+- Gitea 使用内部默认值限制单条日志行、单次日志读取响应和内部状态摘要预留空间。**设计如此：**管理员通常只需要决定每个 Codespace 最多保存多少日志；行大小、分页大小和摘要预留是保护 DBFS 与页面读取稳定性的实现参数，公开成配置会增加相互约束和错误组合。默认值保证普通日志分页和控制面异常摘要可以闭环，异常输出达到上限时用明确截断摘要收敛。
 - `RUNTIME_METADATA_MAX_SIZE` 限制规范化 Runtime Metadata typed snapshot 的编码大小，避免 Endpoint 声明或资源指标无限放大 cache 和 RPC。**设计如此：**控制面协议使用 proto typed fields，Gitea 可以用生成类型计算最坏合法消息；缓存内部如何序列化不改变协议大小边界。
-配置在启动时完成关系校验。timeout、TTL、lease、queue timeout、大小和 retention 都必须大于 0；`OPERATION_LEASE_TIMEOUT` 必须能精确转换为大于 0 的整数毫秒，`OPERATION_MAX_DURATION`、`MANAGER_OFFLINE_TIMEOUT`、`QUEUE_TIMEOUT`、`OPEN_TOKEN_EXPIRE`、`AUTO_STOP_DEFAULT_TIMEOUT`、`AUTO_STOP_MIN_TIMEOUT` 和 `AUTO_STOP_MAX_TIMEOUT` 必须能精确转换为大于 0 的整数秒，并且 `OPERATION_MAX_DURATION > OPERATION_LEASE_TIMEOUT`；`CONTROL_PLANE_TIMEOUT` 必须小于或等于 `floor(MANAGER_OFFLINE_TIMEOUT/4)`，使一次达到处理上限的 Declare 仍能在离线边界内重试；自动暂停满足 `AUTO_STOP_MIN_TIMEOUT <= AUTO_STOP_DEFAULT_TIMEOUT <= AUTO_STOP_MAX_TIMEOUT`；`LOG_MAX_SIZE` 必须大于内部日志分页大小和最终摘要预留空间。
+配置在启动时完成关系校验。timeout、TTL、lease、queue timeout、大小和 retention 都必须大于 0；`OPERATION_LEASE_TIMEOUT` 必须能精确转换为大于 0 的整数毫秒，`OPERATION_MAX_DURATION`、`MANAGER_OFFLINE_TIMEOUT`、`QUEUE_TIMEOUT`、`OPEN_TOKEN_EXPIRE`、`AUTO_STOP_DEFAULT_TIMEOUT`、`AUTO_STOP_MIN_TIMEOUT` 和 `AUTO_STOP_MAX_TIMEOUT` 必须能精确转换为大于 0 的整数秒，并且 `OPERATION_MAX_DURATION > OPERATION_LEASE_TIMEOUT`；`CONTROL_PLANE_TIMEOUT` 必须小于或等于 `floor(MANAGER_OFFLINE_TIMEOUT/4)`，使一次达到处理上限的 Declare 仍能在离线边界内重试；自动暂停满足 `AUTO_STOP_MIN_TIMEOUT <= AUTO_STOP_DEFAULT_TIMEOUT <= AUTO_STOP_MAX_TIMEOUT`；`LOG_MAX_SIZE` 必须大于内部日志分页大小和状态摘要预留空间。
 
 控制面消息下限由协议允许的最大不可拆分消息计算，覆盖 10000 条完整 inventory、10000 条 observed operation、10000 条设置与差异响应、256 条 operation payload、10000 条续租响应、一份最大 Runtime Metadata 和一条最大日志物理行。实现使用生成的 protobuf 类型和 Gitea 现有字段长度上限构造各类最坏合法消息，并以 `proto.Size` 计算所需字节数；测试把该结果与数量和字段上限绑定，`CONTROL_PLANE_MAX_MESSAGE_SIZE` 必须大于或等于其中最大值。`RUNTIME_METADATA_MAX_SIZE` 和内部日志行大小参与对应 request/response 计算；Dev Container 正文不进入控制面消息，因此其文件大小只约束 Gitea 创建确认时的仓库读取。Web 日志读取响应使用内部分页大小，不参与控制面消息下限。非法 Codespace 配置会禁用本进程的 Codespace 功能并记录错误，错误显示配置值、最低字节数和决定下限的消息类型，使管理员能直接修正配置。**设计如此：Codespace 是可选功能，其配置错误不应使代码托管、Issue 或其他无关功能不可用；禁用后的行为与 `ENABLED=false` 的排空边界一致。**
 
@@ -1674,7 +1678,7 @@ OLDER_THAN = 8760h
 - `ENABLED=false` 时可以关闭 HTTP Git 或 SSH，并继续执行 stop、delete、inventory 收敛和管理清理；再次启用前恢复存量 Codespace 所需的接入面。
 - 启用 Codespace 时只有一个活动 Gitea 进程；memory、twoqueue、Redis、memcache cache adapter 和 memory、Redis global lock backend 均沿用 Gitea 现有配置，不据此提供多实例能力。
 - 重新启用不迁移或重建数据库状态，现有对象按当前持久状态继续。
-- 配置项与实际 cron、lease、queue、open code、日志总量限制一一对应；非法值或相互矛盾的大小关系在启动时拒绝。日志行大小、读取分页和最终摘要预留使用内部默认值，并通过 `LOG_MAX_SIZE` 的关系校验保证可用。
+- 配置项与实际 cron、lease、queue、open code、日志总量限制一一对应；非法值或相互矛盾的大小关系在启动时拒绝。日志行大小、读取分页和内部状态摘要预留使用内部默认值，并通过 `LOG_MAX_SIZE` 的关系校验保证可用。
 - 消息大小配置同时覆盖 request 和 response；启动测试使用 protobuf 实际编码大小验证全部最大不可拆分消息，低于最低值时错误指出实际值、要求值和消息类型。
 - Manager 使用 Declare 返回的消息上限分批日志；完整 inventory、完整 observed operation 和 Runtime Metadata 不分页、不截断，超限输入在业务事务前返回 `ResourceExhausted`。
 - lease 配置可精确表示为正整数毫秒，Manager 离线、queue、Open Code 和自动暂停配置可精确表示为正整数秒；其他精度的值在启动时指出对应配置项。

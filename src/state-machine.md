@@ -459,9 +459,9 @@ State Finalization 在同一事务内执行：
 7. 清空包括 `operation_trigger` 在内的 active operation 字段。
 8. 封闭当前运行中日志追加窗口。
 
-主事务提交后，如果 Codespace 记录仍然存在，final、timeout、missing 和 Runtime 状态报告会通过日志专用锁尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端告警，不回滚已经成立的生命周期结果。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，因此跳过内部摘要，不再创建日志。这样主状态写入不依赖诊断文本，也不会让高频日志路径绑定生命周期锁。
+主事务提交后，如果 Codespace 记录仍然存在，timeout、missing 和 Runtime 状态报告会通过日志专用锁尽力追加一条内部状态摘要。摘要使用独立的 DBFS 追加事务；写入失败只记录服务端告警，不回滚已经成立的生命周期结果。正常 final 和 Manager 已报告的失败不追加 Gitea 摘要，因为 operation 分组已经包含执行过程与错误，页面主状态也表达最终结果；重复写一条协议状态转换只会产生分组外噪声。delete done、force/account/Manager delete 和 retention 清理已经删除日志与记录，同样不再创建日志。这样主状态写入不依赖诊断文本，也不会让高频日志路径绑定生命周期锁。
 
-active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后不再声称能够验证已经删除的原类型，而是按相同 `operation_rversion` 和请求目标主状态判断是否已经完成；create/resume done 对应 running，resume failed 和 stop done 对应 stopped，create/stop/delete failed 对应 failed。Codespace 已物理删除时响应 `resource_absent=true`，其余首次接受、重复提交或当前状态已经不再接受旧结果的情况都返回空成功响应。Manager 对空成功响应统一结束该版本本地 operation；资源不存在时结束上下文并立即触发完整 inventory。
+active operation 仍存在时，Gitea 严格校验 final 的 operation 类型。active operation 已清空后，数据库已经没有足够信息恢复原类型，Gitea 保留当前主状态并返回空成功响应。Codespace 已物理删除时响应 `resource_absent=true`，其余首次接受、重复提交或当前状态已经不再接受旧结果的情况都返回空成功响应。Manager 对空成功响应统一结束该版本本地 operation；资源不存在时结束上下文并立即触发完整 inventory。
 
 active operation 仍存在且 final 携带的 `operation_rversion` 与当前值相同，但有效 `operation_type` 与当前类型不同时，Gitea 不写入生命周期结果并返回空成功响应。这表示该 Manager worker 已经完成它能执行的本地动作，继续保留旧上下文或重试不会产生新信息。`UNSPECIFIED` 或未知枚举仍属于 `invalid_argument`。
 
@@ -524,10 +524,10 @@ stateDiagram-v2
 - create/resume final done 要求当前版本 ready metadata 和 Token 行；Manager 在发布 ready 前验证实际 remote 对应的 HTTP helper 或完整 SSH Key 关系。Key 不携带 operation 版本。
 - final、timeout、取消和物理删除都清空 `operation_trigger`；该来源只供 Gitea 内部判定 queued idle stop 是否可取消。
 - `updated_unix` 仅在创建记录、创建或替换 active operation，以及首次 final/timeout/missing/transition/queued idle stop 取消时更新；未改变 active operation 的交互或设置、claim、续租和幂等结果不刷新该字段。
-- Gitea 只为仍保留记录的状态结果在主事务提交后，通过日志专用锁尝试写内部摘要；物理删除路径跳过摘要，摘要失败不回滚生命周期结果。
-- final 的 operation 类型与 active operation 不一致时拒绝；active 已清空时按相同版本和请求映射的目标主状态返回确定的幂等结果。
+- Gitea 只为 timeout、missing 和 Runtime 状态报告等独立控制面判定尝试写内部摘要；final 结果由 operation 分组和页面主状态表达，物理删除路径不创建摘要。
+- final 的 operation 类型与 active operation 不一致时拒绝；active 已清空时保留当前主状态并返回普通成功。
 - active operation 存在时，当前版本的 final 携带错误有效 operation 类型返回 `stale_operation`；Manager 停止该 worker 并从 observed 集合省略旧上下文，Gitea 按原 deadline 超时，随后由完整 inventory 收敛 Runtime 差异。active 已清空时直接由 inventory 处理当前差异。非法枚举始终返回 `invalid_argument`。
-- active operation 清空后的幂等只证明相同版本已经到达相同目标主状态，不再证明原 operation 类型仍可从数据库恢复。
+- active operation 清空后的响应只确认 Gitea 已经收敛到当前持久状态，不再证明原 operation 类型可从数据库恢复。
 - Fetch observed 续租刷新 deadline，final 重试返回明确幂等结果；boot stage 只通过 Runtime Metadata 和日志展示。
 - Manager 对四种 outcome 执行确定的本地处理；stale 不清除更高版本上下文，resource absent 触发完整 inventory 而不直接删除 Runtime。
 - delete final 物理删除后重复 final 返回 `resource_absent`；若 Incus 实例仍存在，下一次成功的完整 inventory 按无数据库记录返回 cleanup。
@@ -885,7 +885,7 @@ active operation 的当前 deadline 到期时使用统一处理：
 
 Manager 可用性和 operation 执行期限分别表达不同事实：online/recovering/offline 决定当前是否可以交互、领取或提交请求，`operation_deadline_unix` 决定已领取动作还能否继续。Fetch、final 和 Cron 都直接校验同一 deadline；第一个成功的条件更新成立后，其他请求按当前状态返回幂等或 stale 结果。**设计如此：Manager 重启、recovering 声明和成功续租都不会改变 `operation_started_unix`，因此不会创建额外总执行时间。**
 
-Manager 调用当前版本 `FinalizeOperation` 时，如果 handler 发现 `now >= operation_deadline_unix` 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization。随后按请求 final 映射出的目标主状态判断：目标已与 timeout 结果一致时作为重复成功处理，其他目标保持 timeout 结果；两种情况都返回 `resource_absent=false`，Manager 结束本地旧 operation。这样不增加 expired 响应分支，也不要求 Manager 根据已经稳定的服务端状态继续重试。
+Manager 调用当前版本 `FinalizeOperation` 时，如果 handler 发现 `now >= operation_deadline_unix` 且 Cron 尚未处理，handler 在同一 Codespace lock 内立即按上表执行 timeout State Finalization，并返回 `resource_absent=false`。Manager 结束本地旧 operation，timeout 已经成立的服务端状态不会再被迟到的 final 覆盖。这样不增加 expired 响应分支，也不要求 Manager 根据已经稳定的服务端状态继续重试。
 
 Manager 在发送 Fetch 前记录 `request_started_monotonic`，收到 operation payload 或续租回执后按 `local_worker_deadline = request_started_monotonic + lease_valid_for_milliseconds` 建立本地执行截止点。服务端授予 lease 晚于请求开始，因此把请求耗时计入已消耗时间会得到保守边界；两端墙上时钟不一致也不会延长本地授权。Manager 不接收或保存 Gitea 的绝对 Unix deadline。bootstrap、原生运行时和 Incus operation 都绑定该 worker context；截止、abort、进程关闭或更高版本 operation 会取消在途工作。
 

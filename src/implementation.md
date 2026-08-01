@@ -4,7 +4,7 @@
 
 Gitea 负责用户页面、权限、数据库状态、ManagerService 和审计日志。相关代码按现有 Gitea 分层放在 `routers`、`services/codespace`、`models/codespace` 与 `modules/codespace`，Web handler 和 ManagerService handler 分别位于 Web 与 API/Connect 入口。路由层处理输入、认证和响应，服务层推进事务，模型层保存数据结构与查询。
 
-`codespace` Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。公开的 `devcontainer` 包处理配置、合并、锁文件与结构化环境，`devcontainer/docker` 使用 Docker、Compose 和 OCI API 创建并恢复环境；`internal/devcontainerruntime` 注入 Codespace 的 Git、Web IDE、运行时挂载和 Endpoint 策略；`internal/provisioner` 只处理 Incus 实例与文件/exec API；`internal/runtimecmd` 提供实例内隐藏子命令；`internal/app` 组织控制面 worker、Gateway 与状态持久化。
+`codespace` Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。公开的 `devcontainer` 包处理配置、合并、锁文件与结构化环境，`devcontainer/docker` 使用 Docker、Compose 和 Feature API 创建并恢复环境；`internal/devcontainerruntime` 注入 Codespace 的 Git、Web IDE、运行时挂载和 Endpoint 策略；`internal/provisioner` 只处理 Incus 实例与文件/exec API；`internal/runtimecmd` 提供实例内隐藏子命令；`internal/app` 组织控制面 worker、Gateway 与状态持久化。
 
 Runtime Endpoint manifest 是实例内文件协议。Manager 读取并更新本地路由，Runtime 不向 Manager 端口发请求，Gitea 也不解析该文件。这样控制面、运行后端和用户接入各自只有一个数据来源。
 
@@ -79,7 +79,7 @@ make lint-frontend
 
 ## Manager 测试
 
-Manager 普通 Go 测试覆盖 JSONC、配置选择与摘要、Compose 合并、Feature 顺序、lifecycle、环境校验、state 原子持久化、Gateway 认证与路由、operation lease 和恢复。Docker 集成测试覆盖 image、Dockerfile、Feature、Compose 多服务以及 stop/resume；需要镜像下载的测试使用显式入口，普通单元测试不隐式拉取镜像。
+Manager 普通 Go 测试覆盖 JSONC、配置选择与摘要、变量命名空间、Compose 合并、Feature 顺序、lifecycle、端口属性、环境校验、state 原子持久化、Gateway 认证与路由、operation lease 和恢复。Docker 集成测试覆盖 image、Dockerfile、OCI 与本地 Feature、`runArgs`、`build.options`、Compose 多服务以及 stop/resume；需要镜像下载的测试使用显式入口，普通单元测试不隐式拉取镜像。
 
 Incus 真实 E2E 使用专门入口并串行执行。启动时识别本地 unix socket 或远程 Incus endpoint、信任、project、storage、managed bridge、image、profile 和 agent。可选入口在环境未准备时说明缺失条件并跳过；required 入口把缺失条件作为失败。container 与 VM 都使用真实 `gitea-codespace` 可执行文件和同一原生运行时，按 create、stop、resume、delete 验证实例事实、完整环境、workspace、SSH/PTY、Web IDE、TCP 与 SFTP。Dev Container 运行时另以官方基础镜像、官方 Feature 和 Compose 标准夹具验证 image metadata、UID/GID、lifecycle 与恢复行为；同一夹具同时用于 Docker 直测和 Incus 整链路测试，便于判断问题属于通用 Engine 还是部署集成。
 
@@ -88,7 +88,7 @@ Incus 真实 E2E 使用专门入口并串行执行。启动时识别本地 unix 
 ### 实现验收点
 
 - [x] 普通 Go 测试覆盖原生运行时的纯逻辑和 Manager 状态边界。
-- Docker 集成入口验证单容器、Compose、Feature 与 stop/resume，不由普通测试隐式拉取镜像。
+- Docker 集成入口验证单容器、Dockerfile、Compose、Feature、Docker 参数与 stop/resume，不由普通测试隐式拉取镜像。
 - container 与 VM 的 Incus E2E 使用真实二进制、同一网络模型和完整生命周期。
 - [x] Dev Container 标准夹具由 Docker 与 Incus 两个显式入口共享，并使用官方镜像和官方 Feature。
 - [x] 真实 E2E 串行执行并把单实例内存限制为 `1GiB`。

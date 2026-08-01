@@ -522,8 +522,8 @@ codespace_log/{codespace_uuid}.log
 - 日志使用 DBFS，表中无需保存固定值的 storage 类型；当前日志读写只涉及 DBFS 文件和表内日志元数据。
 - Gitea 单实例内使用按 `codespace_uuid` 分片的日志追加 keyed lock 串行化日志追加，key 为 `codespace_log_{codespace_uuid}`；锁内开启数据库事务，并使用该事务 context 打开和写入 DBFS，校验 operation 和 offset，让 DBFS 写入与 `log_size` 更新共同提交。DBFS 的 revision 字段本身不提供 compare-and-swap，不能代替该串行化边界。
 - **设计如此：日志追加使用专用锁，而不是复用交互和生命周期的 Codespace lock。**日志写入只修改 DBFS 文件和 `codespace` 行里的日志元数据，专用锁可以保证日志连续 offset 与元数据一致，同时避免高频日志上报阻塞 open、SSH、Token 和空闲停止等交互路径。生命周期结果仍通过 operation 版本、状态复读和物理删除事务与日志路径闭合。
-- 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE` 减内部最终摘要预留空间时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和最终状态摘要合计上限为 `LOG_MAX_SIZE`，最终摘要优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。
-- Manager 在 final 前写 operation 最终摘要。对于仍保留 Codespace 记录的 final、timeout、missing 和 Runtime 状态报告，Gitea 在状态主事务提交后，使用日志专用锁和独立 DBFS 事务尽力追加内部状态摘要；该摘要失败或空间耗尽时只记录服务端告警，不回滚已经提交的生命周期结果。delete done、Gitea 直接删除和 retention 清理跳过摘要，避免删除后重新创建日志。
+- 在 keyed lock 内，普通 batch 会让当前文件从普通日志上限以下跨过 `LOG_MAX_SIZE` 减内部状态摘要预留空间时，拒绝该 batch 并只写一条固定截断摘要；文件尾部已有固定截断摘要后，后续普通 batch 直接拒绝且不重复写摘要。截断摘要和内部状态摘要合计上限为 `LOG_MAX_SIZE`，控制面诊断优先使用剩余预留空间。现有大小和固定摘要尾部足以完成判断，不需要新增日志归档状态。
+- Manager 在 final 前关闭并上传 operation 日志分组，final 结果由分组内容与页面主状态表达。对于 timeout、missing 和 Runtime 状态报告等由 Gitea 独立判定的变化，Gitea 在状态主事务提交后使用日志专用锁和独立 DBFS 事务尽力追加内部状态摘要；该摘要失败或空间耗尽时只记录服务端告警，不回滚已经提交的生命周期结果。delete done、Gitea 直接删除和 retention 清理跳过摘要，避免删除后重新创建日志。
 
 日志存储在 DBFS 单文件中，`codespace` 行保存当前日志元数据。只有当前 `operation_status=running` 且 `operation_rversion` 匹配时允许追加日志。DBFS 写入与生命周期事务边界明确，日志归档状态不会进入 Codespace 状态机。
 
@@ -535,7 +535,7 @@ codespace_log/{codespace_uuid}.log
 - [x] offset 按服务端规范化编码后的完整字节计算，客户端使用 `next_offset` 连续读取。
 - [x] 超过请求 limit 的物理行可以单独分页返回，超过 EOF 的 offset 返回服务端当前 EOF，响应仍遵守服务端读取硬上限。
 - [x] 达到普通日志上限后只出现一条截断摘要，普通 batch 被拒绝，最终文件大小不超过 `LOG_MAX_SIZE`。
-- [x] 内部状态摘要只为仍保留 Codespace 记录的结果在主事务提交后尝试；摘要事务失败时主状态和 active operation 结果保持已提交，物理删除后日志保持不存在。
+- [x] 内部状态摘要只用于 timeout、missing 和 Runtime 状态报告等独立控制面判定；final 不重复追加结果，摘要事务失败时主状态保持已提交，物理删除后日志保持不存在。
 - [x] codespace 日志按单文件连续 offset 追加，并随 codespace 物理删除或 failed retention 清理。
 - [x] 物理删除调用 DBFS Remove 时把 `fs.ErrNotExist` 视为幂等成功；其他 DBFS 错误回滚当前本地删除事务。尚未写入日志的合法 Codespace 因此不会阻塞资源清理。
 - [x] offset conflict/gap 返回服务端当前 offset，Manager 不通过本地编码结果猜测恢复位置。
