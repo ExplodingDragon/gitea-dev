@@ -173,7 +173,7 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 
 实现验收点：
 
-- `v346` 在创建现有 Codespace 表的同一次迁移中创建 Secret 与仓库选择表；迁移数量不因本功能增加。
+- `v347` 在创建现有 Codespace 表的同一次迁移中创建 Secret 与仓库选择表；迁移数量不因本功能增加。
 - 同一用户不能保存两个同名 Secret，同一 Secret 不能重复选择同一仓库。
 - 仓库选择表以 `(secret_id, repo_id)` 为主键；按 Secret 和按仓库的查询都能使用对应索引。
 - Secret 明文不出现在数据库、列表页或查看响应中；替换值后只更新时间和密文。
@@ -214,7 +214,7 @@ Secret 属于个人用户，与 Actions Secret 分开保存。名称采用环境
 
 实现验收点：
 
-- 数据库迁移只使用当前尚未发布的 `v346` 创建 Codespace 主表、授权表、规则表、用户 Secret 表和仓库选择表；目标 schema 的调整直接落在同一迁移中。
+- 数据库迁移只使用当前尚未发布的 `v347` 创建 Codespace 主表、授权表、规则表、用户 Secret 表和仓库选择表；目标 schema 的调整直接落在同一迁移中。
 - 一个 Codespace 最多引用一条授权；没有附加仓库申请时 `permission_authorization_id=0`。
 - 用户整体撤销授权或把单条规则降为较低级别后，引用该授权的 Codespace 下一次请求立即使用新结果。
 - 权限规则以 `(authorization_id, target_repo_id, unit_type)` 为主键；设置页面和服务使用完整主键定位规则，并在当前用户授权范围内完成降权。
