@@ -520,7 +520,7 @@ Fetch request 使用本地计算出的 <code>startup_capacity_available</code> �
 <li>已领取的 operation 使用 <code>operation_rversion</code> 绑定后续 <code>FinalizeOperation</code> 和 <code>UpdateLog</code>。</li>
 <li>create/resume 使用启动槽位；stop/delete 和持久化的本地缩减动作使用清理槽位。</li>
 <li>operation 调度优先级为 <code>delete &gt; stop &gt; resume &gt; create</code>。</li>
-<li>同类型按 <code>operation_created_unix ASC, uuid ASC</code> keyset 分页处理；单次 request 最多返回 256 条，observed 列表最多 10000 条，DB 在稳定 scope/tag 筛选后合计最多检查 1024 条候选。</li>
+<li>同类型在稳定 scope/tag 筛选后按 <code>operation_created_unix ASC, id ASC</code> 读取有界候选；单次 request 最多返回 256 条，observed 列表最多 10000 条，DB 合计最多检查 1024 条候选。内部 ID 不进入 Manager 协议。</li>
 <li><code>startup_capacity_available</code> 根据空闲启动槽位、Fetch 预留、Incus 可用性、正在启动/恢复和 running 的实例数量计算；<code>cleanup_capacity_available</code> 根据空闲清理槽位、Fetch 预留和已有本地 pending 计算。</li>
 <li><code>accepted_operation_types</code> 声明本次是否接收 create/resume，<code>accepted_create_tags</code> 进一步限定 create；stop/delete 不使用这两个字段，只按清理容量领取。</li>
 <li>Fetch 周期不超过 <code>OPERATION_LEASE_TIMEOUT / 3</code>，同一个循环同时负责领取和全部 observed operation 续租。</li>
@@ -753,7 +753,7 @@ interaction_generation
 <li>idle stop payload 与用户 stop 使用同一个普通 stop worker 持久化和恢复路径，没有自动暂停专用接管阶段。</li>
 </ul>
 <h3 id="manager-直接删除"><a class="header" href="#manager-直接删除">Manager 直接删除</a></h3>
-<p>Manager delete 在 Gitea 保持 Codespace user relation lock 和 Manager lock，按 UUID keyset 分批、逐 Codespace 短事务删除 binding、开发凭据和日志，空集合复检后再删除 Manager。每个子事务提交并释放 Codespace lock 后尽力清理相关 cache；cache 清理失败只记录服务端日志，不改变已提交结果。delete 不读取 Manager runtime state，不发送 RPC，也不等待 Runtime 回收。Manager 的 Incus 实例和本地状态文件可以继续存在；Manager 记录删除后旧 secret 无法认证，相关 Codespace UUID 也已从 Gitea 消失，因此运行侧残留只能形成部署侧资源占用或连接失败，不会破坏 Gitea 数据。</p>
+<p>Manager delete 在 Gitea 保持 Codespace user relation lock 和 Manager lock，按内部 Codespace ID 顺序分批读取，并逐 Codespace 使用公开 UUID 取得对象锁，在短事务中删除 binding、开发凭据和日志，空集合复检后再删除 Manager。每个子事务提交并释放 Codespace lock 后尽力清理相关 cache；cache 清理失败只记录服务端日志，不改变已提交结果。delete 不读取 Manager runtime state，不发送 RPC，也不等待 Runtime 回收。Manager 的 Incus 实例和本地状态文件可以继续存在；Manager 记录删除后旧 secret 无法认证，相关 Codespace UUID 也已从 Gitea 消失，因此运行侧残留只能形成部署侧资源占用或连接失败，不会破坏 Gitea 数据。</p>
 <p>这是组件所有权的设计边界：Gitea 对自己的数据库、凭据和日志给出同步删除结果，内部短事务失败时保留 Manager 父记录，相同请求可继续清理剩余项；Manager 部署对 Incus 实例和本地快照负责。Manager 记录删除后原身份无法再提交 <code>ReportInstances</code>，因此无记录 UUID 的 inventory 清理规则不适用于该身份；本设计不为 Manager 身份删除增加远端确认、删除中状态、补偿队列或跨身份扫描。删除确认界面负责向用户展示绑定 Codespace 数量和运行侧可能残留资源，用户确认后即可提交 Gitea 本地删除。</p>
 <p>**设计选择：同步删除表示成功响应前 Manager 和绑定的 Gitea 资源已经清空，不表示内部只有一个数据库事务。**最多 10000 个 Runtime 的规模要求逐项短事务；失败时已提交子项不恢复，父记录保留并作为重试边界。</p>
 <p>Manager 需要暂时停止领取新 create/resume 时，在 <code>FetchOperations</code> 中上报 <code>startup_capacity_available=0</code> 或从 <code>accepted_operation_types</code> 移除对应类型；这只表达当前领取意愿，不改变 Manager 身份、已有 operation、Codespace 主状态、token 或用户会话。启动和恢复过程通过 Declare 上报 recovering，停止心跳后由 Gitea 派生 offline，永久撤销身份则使用 delete。</p>
