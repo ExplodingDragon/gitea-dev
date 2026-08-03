@@ -63,24 +63,31 @@ Dev Container 是仓库开发环境的唯一配置格式。Gitea 从规范位置
 
 ## OCI 镜像与构建缓存
 
-每个 Incus 实例继续运行独立 Docker daemon，停止后恢复同一实例时直接使用本地镜像和构建层。部署者可以通过 Manager 的 `runtime.cache` 为新实例增加两类跨实例缓存：`mirrors` 把原始 OCI registry 主机映射到镜像缓存的基础 URL，`registry` 指定 BuildKit 写入和读取缓存清单的 registry namespace。两项都省略时保持直接访问原始 registry 和实例本地构建，不需要额外基础设施。
+每个 Incus 实例继续运行独立 Docker daemon，停止后恢复同一实例时直接使用本地镜像和构建层。Manager 可以通过 `runtime.cache.registry` 启动内置 OCI registry cache，为新实例复用显式镜像下载、BuildKit 构建缓存和 Feature image artifact。该 registry 是 Manager 的运行时数据服务，只提供 OCI registry 协议；它不提供 Manager RPC、状态读取或控制接口。省略该配置时，每个 Runtime 只使用自身 Docker daemon 的本地缓存并直接访问原始 registry。
 
-镜像映射覆盖单镜像配置、Compose 实际启动服务的显式镜像和 OCI Feature。映射值可以带路径，例如把 `ghcr.io/owner/tool:1` 映射为 `cache.example.com/ghcr/owner/tool:1`；无路径的 Docker Hub mirror 还会合并到实例已有的 Docker daemon 配置，使 Dockerfile 中的 Docker Hub 基础镜像也能使用标准 mirror。Docker daemon 的其他配置和既有 mirror 会保留。带路径的 mirror 以及 Docker Hub 之外的 host 映射由运行时在显式拉取时完成，因为 Docker daemon 的 `registry-mirrors` 不能准确表达这两种关系。**设计如此：**镜像引用转换只承担能够证明语义一致的获取路径，不改写 Dockerfile，也不假设所有 registry 产品都实现同一种代理规则。
+内置 registry 使用现成 Docker Registry 实现作为存储和协议处理基础。Manager 为每次 create 生成短期 Docker registry 凭据，并把凭据写入 Runtime 内 root 用户的标准 Docker credential store。缓存路径按仓库生成稳定 hash namespace，鉴权仍按真实仓库身份判断；registry URL、日志和磁盘路径不展示明文仓库全名。`runtime.cache.registry.public_url` 表达 Runtime 访问内置 registry 的根地址，`upstreams` 只表达哪些原始 registry host 和 image 路径允许进入缓存。**设计如此：**缓存层可能保存 Dockerfile 复制进去的私有源代码或构建产物，使用 hash namespace 可以减少额外泄露面；权限判断仍使用 Manager 已知的真实 `owner/repo`，不会靠 hash 本身表达权限。upstream 配置只做允许范围声明，是因为实际回源仍由 Docker 使用原始镜像引用完成；再配置一份远端 URL 会让部署者误以为 Manager 在做透明代理。
 
-mirror 拉取成功后，容器可以使用本地取得的 mirror 引用，但配置、Feature lock 和 Manager 环境状态仍记录仓库声明的原始引用及实际内容 digest。mirror 访问失败时记录一次包含原始引用的警告，再访问原始 registry。HTTPS 是推荐部署方式；显式 HTTP 地址会合并到 Docker daemon 的 insecure registry 列表。私有 mirror 和 cache registry 使用实例 root 用户的标准 Docker credential store，部署者通过基础实例或自定义 profile 准备对应登录信息，不把 registry 用户名、密码或 token 写入 Manager YAML。
+镜像映射覆盖单镜像配置、Compose 实际启动服务的显式镜像和 OCI Feature。Manager 把允许的 upstream registry 映射到内置 registry 的 `/mirror/{registry}` 路径；运行时先拉取该缓存引用，未命中或不可用时拉取原始引用，并在成功后尽力发布到缓存。Docker daemon 的其他配置和既有 registry 设置会保留，HTTP cache 地址会合并到 insecure registry 列表。Dockerfile 中的 `FROM` 不做全局透明改写，因为 Docker daemon 的标准 `registry-mirrors` 主要表达 Docker Hub 的根 mirror，无法准确表达带路径、多 upstream 和鉴权作用域。**设计如此：**镜像引用转换只承担 Manager 能证明语义一致的获取路径，不改写 Dockerfile，也不假设所有 registry 产品都实现同一种代理规则。
 
-Dockerfile、Compose build、Feature 安装层和运行用户调整层通常使用 BuildKit registry cache。cache ref 由仓库、锁定 commit、Dev Container 文件摘要、平台 Web IDE 版本、目标平台和构建阶段计算，因此同一输入的新实例可以复用缓存，不同输入和不同阶段不会并发写入同一引用。平台 Secret、Gitea Token 和 Git SSH 私钥不参与摘要，也不作为 build args 传入。缓存导入不可用时，运行时给出一次警告并使用本地构建重试；缓存导出使用允许失败的发布方式，环境镜像构建成功后不会因为 cache registry 暂时不可用而失败。仓库声明 `build.options` 时改用 Docker 官方命令参数解析器，并使用仓库声明的 `cacheFrom` 与实例本地缓存；任意 Docker 参数可能改变 builder 和输出方式，因此这一路径不额外注入平台 registry cache。**设计如此：**仓库显式 Docker 选项具有完整语义，平台不能在不理解参数组合的情况下追加缓存导出并假定构建结果相同。
+Dockerfile、Compose build、Feature 安装层和运行用户调整层通常使用内置 registry 的 BuildKit cache。cache scope 由仓库全名、Manager 环境 tag、Dev Container 来源、配置路径或平台默认镜像、Dev Container 文件摘要、平台 Web IDE 版本、目标系统和架构计算；普通代码提交不进入 scope。不同构建阶段继续写入不同 cache ref。这样同一开发环境定义在不同提交之间可以复用构建层，而 Dockerfile 中复制的源码内容仍由 BuildKit 自己按层内容判断是否命中。平台 Secret、Gitea Token 和 Git SSH 私钥不参与摘要，也不作为 build args 传入。缓存导入不可用时，运行时给出一次警告并使用本地构建重试；缓存导出使用允许失败的发布方式，环境镜像构建成功后不会因为 cache registry 暂时不可用而失败。仓库声明 `build.options` 时改用 Docker 官方命令参数解析器，并使用仓库声明的 `cacheFrom` 与实例本地缓存；任意 Docker 参数可能改变 builder 和输出方式，因此这一路径不额外注入平台 registry cache。**设计如此：**跨提交缓存应该表达开发环境定义，而不是每次代码内容变化；BuildKit 层摘要已经能区分 Dockerfile 实际读取到的文件。仓库显式 Docker 选项具有完整语义，平台不能在不理解参数组合的情况下追加缓存导出并假定构建结果相同。
 
-缓存只参与 create。resume 使用已保存的容器和环境状态，stop 只停止这些资源，两者不访问 registry。Manager 不共享不同实例的 `/var/lib/docker`，因为该目录同时包含 daemon 元数据和可写运行状态，跨实例共享会破坏现有隔离。外部 registry 保存的构建层可能包含 Dockerfile 复制进去的私有源代码或构建产物，部署者需要为其配置与 Codespace 数据相匹配的访问控制、存储上限、保留期和垃圾回收；这些属于 registry 运维，不在 Manager 中再实现一套容量管理。
+Feature 安装完成后的中间镜像还会按 base image ID、Feature 引用、Feature 内容摘要、Feature 选项、安装用户和安装时容器环境生成 image artifact cache。下一次 create 解析到相同 Feature 输入时先拉取该镜像，命中后跳过 Feature 安装 Dockerfile 构建；未命中时按普通路径构建并尽力发布。该缓存不包含 workspace、Secret、Token、Git SSH 私钥、Codespace UUID 或 Gitea 用户身份。Compose 配置可以复用同一类 Feature 镜像 artifact，但 Compose 容器、网络、卷和完整项目状态仍只存在于当前 Incus 实例内。**设计如此：**Feature 安装常常是最耗时的镜像变换，把它作为纯镜像 artifact 缓存可以降低重复构建成本；完整 Compose 项目包含运行状态和服务关系，缓存它会与现有 stop/resume 状态重叠，收益不足且容易形成第二套恢复来源。
+
+缓存只参与 create。resume 使用已保存的容器和环境状态，stop 只停止这些资源，两者不访问 registry。Manager 不共享不同实例的 `/var/lib/docker`，因为该目录同时包含 daemon 元数据和可写运行状态，跨实例共享会破坏现有隔离。内置 registry 按配置的存储上限、保留期和清理周期删除旧 blob；清理失败只记录告警并在下一轮重试，不能改变 Codespace 生命周期。Gitea 数据库不记录缓存条目，因为缓存只影响 Manager 构建效率，生命周期、权限和审计仍以 Codespace、operation 和日志为准。
 
 ### 实现验收点
 
-- [x] `runtime.cache.mirrors` 统一作用于单镜像、Compose 实际启动服务和 OCI Feature；原始引用和真实 digest 继续进入配置、lock 与环境状态。
-- [x] 常规 Dockerfile、Compose、Feature 和运行用户调整构建使用按仓库输入、平台和阶段隔离的 BuildKit registry cache；带 `build.options` 的构建保留仓库 cache 语义，cache key 不包含 Secret 或开发凭据。
+- [x] `runtime.cache.registry` 启用时 Manager 启动内置 OCI registry cache；未启用时 create 继续直接访问原始 registry 和实例本地缓存。
+- [x] registry `public_url` 必须是 Runtime 可访问的根地址；upstream host 和 allow 模式在 Manager 启动时校验。
+- [x] create 下发短期 registry 凭据；凭据只进入本次 Runtime 临时请求文件，执行后删除，不进入 Manager YAML、Gitea 数据库或持久 Codespace 状态。
+- [x] 单镜像、Compose 实际启动服务和 OCI Feature 优先使用内置 `/mirror/{registry}` 缓存；原始引用和真实 digest 继续进入配置、lock 与环境状态，cache miss 后回源并尽力发布缓存。
+- [x] 常规 Dockerfile、Compose、Feature 和运行用户调整构建使用按开发环境定义、平台和阶段隔离的内置 BuildKit registry cache；普通代码 commit 变化不单独切换 cache scope，带 `build.options` 的构建保留仓库 cache 语义，cache key 不包含 Secret 或开发凭据。
+- [x] Feature image artifact cache 只由 base image、Feature digest、Feature 选项和安装环境决定；命中时跳过 Feature 安装镜像构建，未命中时构建后尽力发布。
+- [x] Compose 只复用 Feature image artifact，不缓存完整 Compose 项目状态。
 - [x] mirror 与构建缓存不可用时 create 可以回退原始 registry 或本地构建，并输出一条说明回退对象和原因的警告。
-- [x] Docker daemon cache 配置保留实例已有字段和列表；只有 Docker 支持的无路径 Docker Hub mirror 写入 `registry-mirrors`。
+- [x] Docker daemon cache 配置保留实例已有字段和列表；HTTP 内置 registry 地址进入 insecure registry，非 Docker Hub 的 Dockerfile `FROM` 不做透明改写。
 - [x] cache 配置只随 create 进入原生运行时，resume 和 stop 不访问 registry 或重新构建。
-- [x] 实例继续使用独立 Docker 数据目录；registry 的鉴权、容量、保留期和垃圾回收由部署者管理。
+- [x] 实例继续使用独立 Docker 数据目录；内置 registry 按配置执行容量、保留期和清理周期，清理失败不会改变 Codespace 主状态。
 
 ## Feature 与 Web IDE
 

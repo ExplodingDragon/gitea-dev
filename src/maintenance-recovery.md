@@ -331,7 +331,7 @@ active operation 与 pending 冲突时，Manager 保留旧 pending 并 Fetch 当
 
 queued operation 等待超时表示 Manager 尚未执行动作，因此写回 operation 创建前可确认的稳定状态：create/delete 写 failed，resume 保持 stopped，stop 保持 running。全部清空 active operation；queued resume 删除可能残留的 Token 并保留 Git SSH Key，queued stop 保留当前两类开发凭据，create/delete 的 failed 结果删除两类开发凭据。
 
-Fetch 遇到已超过该硬截止时间的 queued 候选时，在 Codespace lock 内按当前 UUID、operation 版本和 queued 状态条件执行同一 timeout State Finalization，不领取该项，也不把它计入服务端由两类容量推导的 payload 上限。Cron 处理未被 Fetch 扫到的过期记录。
+Fetch 遇到已超过该硬截止时间的 queued 候选时，以 UUID 取得 Codespace lock，在短事务中按候选内部 ID 重新读取并确认 operation 版本、queued 状态和截止时间，再执行同一 timeout State Finalization；该项不被领取，也不计入服务端由两类容量推导的 payload 上限。Cron 处理未被 Fetch 扫到的过期记录。**设计如此：**UUID 保证同一外部对象进入同一个锁，内部 ID 则与数据库主键和调度索引一致，适合事务内复读和写入。
 
 running operation 的当前 lease 或固定总期限到期后统一执行 timeout 映射：create/delete/stop 写 failed，resume 写 stopped。Manager 的 online、recovering 或 offline 状态只影响当前能否通信和领取新任务，不改变 `operation_started_unix` 或放宽 deadline。stop 超时写 failed 是因为 Gitea 没有收到 Incus stopped 与 stop 收尾结果的证明；resume 超时写 stopped 是因为已有根存储仍是下一次恢复的来源。这样 Gitea 与 Manager 的重启顺序不会产生另一套超时结果，持续在线但始终无法完成的 worker 也有确定终点。
 
@@ -411,7 +411,7 @@ ReportRuntimeTransition 被接受
 
 Gitea 不在处理全部 inventory 期间持有 Manager lock。请求先确认 generation 高于当前值，并批量预读 reported UUID 的当前 operation 版本；任一正数 observed operation 高于 Gitea 当前值时，整次请求直接返回 Manager 级 `state_history_conflict`。预检通过后，新请求在短事务中条件接受 `inventory_generation`，再按 UUID 取得 Codespace lock，并复检 Manager 身份和数据库 generation 仍等于请求值。单个 Codespace 失败不回滚其他已提交项，但 RPC 以临时错误结束且不返回部分 result；Manager 重新完整扫描并使用更高 generation 继续。Manager 在接受响应前还要确认本地当前 generation 仍等于请求 generation。每个 UUID 最多返回一个 action，优先级固定为 `cleanup > refetch > clear > stop > report transition`，避免同一轮给出互相冲突的动作。
 
-`reconcile_codespaces` 使用单活动 Gitea 进程中的现有调度器和同名 Cron 全局任务锁。每轮读取一次当前时间，依次处理 queued operation 超时、running operation 超时和 failed 到期清理。三个阶段分别按对应时间字段与 UUID 使用 100 条 keyset 批次；Codespace 候选逐条取得 Codespace lock 并使用短事务。单条错误记录日志后继续并在下一轮重试；候选查询或数据库级错误结束当前阶段，其他阶段继续，任务最后汇总返回错误。个人 Registration Token 随用户删除直接物理删除，不进入 Cron。该边界避免一条损坏记录或一个阶段的故障阻塞其他生命周期结果，也不增加任务队列或持久扫描游标。
+`reconcile_codespaces` 使用单活动 Gitea 进程中的现有调度器和同名 Cron 全局任务锁。每轮读取一次当前时间，依次处理 queued operation 超时、running operation 超时和 failed 到期清理。三个阶段分别按对应时间字段与内部 Codespace ID 稳定排序，每阶段读取最多 100 条候选；Codespace 候选逐条使用公开 UUID 取得 Codespace lock 并执行短事务。单条错误记录日志后继续并在下一轮重试；候选查询或数据库级错误结束当前阶段，其他阶段继续，任务最后汇总返回错误。个人 Registration Token 随用户删除直接物理删除，不进入 Cron。该边界避免一条损坏记录或一个阶段的故障阻塞其他生命周期结果，也不增加任务队列或持久扫描游标。
 
 failed Codespace 满足 `updated_unix <= now-OLDER_THAN` 时，由该任务取得 Codespace lock 后，在本地事务中直接物理删除其 Token、Git SSH Key、日志和记录；提交并释放 lock 后尽力清理 cache。`OLDER_THAN` 是正数时长，默认 `8760h`。failed 已经不能 resume，保留期结束表示 Gitea 不再保留该终态及诊断日志；运行侧若仍有同 UUID Runtime，原 Manager 下一次成功提交完整 inventory 时收到 `cleanup_local_runtime` 并完成本地清理。
 
@@ -433,7 +433,7 @@ failed Codespace 满足 `updated_unix <= now-OLDER_THAN` 时，由该任务取�
 - operation refetch 与上下文清除使用不同 action，Manager 不从空 Fetch 响应推导服务端状态。
 - Gitea 的 `state_history_conflict` 始终使整个 Manager 停止继续处理；Manager 收到低于请求发出时本地最高版本的 payload、续租回执或带版本 action 时使用 `operation_version_regression` 整体停止并保留资源，正常延迟结果只丢弃对应 UUID。
 - 每个 inventory UUID 只产生五种互斥 action 之一；metadata cache 重建和 final ready 条件由各自接口处理。
-- 单个 Cron 任务的三个阶段各自使用 100 条稳定 keyset 批次和逐条短事务；单条失败继续，阶段级错误不阻塞其他阶段并使任务返回失败，cache 清理失败不恢复已删除记录。
+- 单个 Cron 任务的三个阶段各自读取最多 100 条稳定排序候选并使用逐条短事务；单条失败继续，阶段级错误不阻塞其他阶段并使任务返回失败，cache 清理失败不恢复已删除记录。
 
 ## 自动暂停恢复
 

@@ -442,7 +442,7 @@ Manager 只有在以下条件同时成立时才在本地开放新 session：Gite
 - 已领取的 operation 使用 `operation_rversion` 绑定后续 `FinalizeOperation` 和 `UpdateLog`。
 - create/resume 使用启动槽位；stop/delete 和持久化的本地缩减动作使用清理槽位。
 - operation 调度优先级为 `delete > stop > resume > create`。
-- 同类型按 `operation_created_unix ASC, uuid ASC` keyset 分页处理；单次 request 最多返回 256 条，observed 列表最多 10000 条，DB 在稳定 scope/tag 筛选后合计最多检查 1024 条候选。
+- 同类型在稳定 scope/tag 筛选后按 `operation_created_unix ASC, id ASC` 读取有界候选；单次 request 最多返回 256 条，observed 列表最多 10000 条，DB 合计最多检查 1024 条候选。内部 ID 不进入 Manager 协议。
 - `startup_capacity_available` 根据空闲启动槽位、Fetch 预留、Incus 可用性、正在启动/恢复和 running 的实例数量计算；`cleanup_capacity_available` 根据空闲清理槽位、Fetch 预留和已有本地 pending 计算。
 - `accepted_operation_types` 声明本次是否接收 create/resume，`accepted_create_tags` 进一步限定 create；stop/delete 不使用这两个字段，只按清理容量领取。
 - Fetch 周期不超过 `OPERATION_LEASE_TIMEOUT / 3`，同一个循环同时负责领取和全部 observed operation 续租。
@@ -722,7 +722,7 @@ Manager 重启时恢复当前设置和交互版本，不恢复空闲请求本身
 
 ### Manager 直接删除
 
-Manager delete 在 Gitea 保持 Codespace user relation lock 和 Manager lock，按 UUID keyset 分批、逐 Codespace 短事务删除 binding、开发凭据和日志，空集合复检后再删除 Manager。每个子事务提交并释放 Codespace lock 后尽力清理相关 cache；cache 清理失败只记录服务端日志，不改变已提交结果。delete 不读取 Manager runtime state，不发送 RPC，也不等待 Runtime 回收。Manager 的 Incus 实例和本地状态文件可以继续存在；Manager 记录删除后旧 secret 无法认证，相关 Codespace UUID 也已从 Gitea 消失，因此运行侧残留只能形成部署侧资源占用或连接失败，不会破坏 Gitea 数据。
+Manager delete 在 Gitea 保持 Codespace user relation lock 和 Manager lock，按内部 Codespace ID 顺序分批读取，并逐 Codespace 使用公开 UUID 取得对象锁，在短事务中删除 binding、开发凭据和日志，空集合复检后再删除 Manager。每个子事务提交并释放 Codespace lock 后尽力清理相关 cache；cache 清理失败只记录服务端日志，不改变已提交结果。delete 不读取 Manager runtime state，不发送 RPC，也不等待 Runtime 回收。Manager 的 Incus 实例和本地状态文件可以继续存在；Manager 记录删除后旧 secret 无法认证，相关 Codespace UUID 也已从 Gitea 消失，因此运行侧残留只能形成部署侧资源占用或连接失败，不会破坏 Gitea 数据。
 
 这是组件所有权的设计边界：Gitea 对自己的数据库、凭据和日志给出同步删除结果，内部短事务失败时保留 Manager 父记录，相同请求可继续清理剩余项；Manager 部署对 Incus 实例和本地快照负责。Manager 记录删除后原身份无法再提交 `ReportInstances`，因此无记录 UUID 的 inventory 清理规则不适用于该身份；本设计不为 Manager 身份删除增加远端确认、删除中状态、补偿队列或跨身份扫描。删除确认界面负责向用户展示绑定 Codespace 数量和运行侧可能残留资源，用户确认后即可提交 Gitea 本地删除。
 
