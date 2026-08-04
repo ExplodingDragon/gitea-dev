@@ -726,7 +726,7 @@ metadata_generation
     streaming --&gt; unavailable: route or lifecycle closed
     unavailable --&gt; [*]: route removed or process exit
 </pre>
-<p><code>private -&gt; public</code> 先关闭 <code>connecting/live</code>、使认证 allowed 失效，再开放公共 ready；<code>public -&gt; private</code> 先取消 <code>validating/forwarding/streaming</code>、使公共 allowed 失效，再进入等待认证。普通 Endpoint 的 upstream、端口、协议变化，以及新 ready 快照改变 Web IDE 目标时，同样先关闭旧连接再替换目标。Host、Origin、Service Worker 或 code 格式在入口校验失败时直接结束请求，不进入以上状态，也不推进 <code>interaction_generation</code>。<strong>设计如此：访问方式和跨域判定属于当前连接的本地生命周期，不增加 Gitea 主状态、operation 或历史记录。</strong></p>
+<p><code>private -&gt; public</code> 先关闭 <code>connecting/live</code>、使认证 allowed 失效，再开放公共 ready；<code>public -&gt; private</code> 先取消 <code>validating/forwarding/streaming</code>、使公共 allowed 失效，再进入等待认证。普通 Endpoint 的端口或访问方式变化，以及新 ready 快照改变 Web IDE 目标时，同样先关闭旧连接再替换目标。Host、Origin、Service Worker 或 code 格式在入口校验失败时直接结束请求，不进入以上状态，也不推进 <code>interaction_generation</code>。<strong>设计如此：访问方式和跨域判定属于当前连接的本地生命周期，不增加 Gitea 主状态、operation 或历史记录；普通 Endpoint 的内部连接固定为 HTTP，由 Gateway 统一处理外部 HTTP/HTTPS。</strong></p>
 <p>Runtime Metadata 写入 Gitea cache，用于页面展示以及 open/SSH 的 ready 和 Endpoint existence 判定。SSH 的实际后端、普通 Endpoint 端口目标和 <code>workspace</code> 的 code-server 目标都由 Manager 本地快照决定；Gitea 判断当前启动是否 ready、目标描述是否存在以及用户是否允许连接。<code>workspace</code> 是 Manager 固定加入完整 endpoints 集合的私有 Web IDE 授权对象，不改变主状态；主状态和权限判断仍以数据库字段为准。resume 只读取数据库主状态、active operation 和 Manager 可用性，不依赖该 cache，因为它的职责正是恢复 stopped workspace。</p>
 <p><strong>设计如此：</strong><code>workspace</code> 描述进入 metadata 是为了让 Gitea 与 Gateway 对“入口是否已经建立”使用同一事实；实例名、容器和端口留在 Manager 本地，是为了避免控制面缓存成为可连接后端的第二来源。</p>
 <p><code>boot.stage</code> 使用以下适用顺序，<code>boot.operation_rversion</code> 标识产生快照的 Manager 启动上下文：</p>

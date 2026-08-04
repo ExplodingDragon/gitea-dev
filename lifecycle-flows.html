@@ -163,7 +163,7 @@
 .devcontainer.json
 .devcontainer/*/devcontainer.json
 </code></pre>
-<p>根配置优先作为默认候选；一级子目录中的配置分别作为独立环境，不相互融合。仓库没有配置时仍提供平台默认项，它只包含创建时的 <code>DEVCONTAINER_DEFAULT_IMAGE</code>。用户确认页展示所选来源、ref、运行环境、配置名称、当前可用 Secret 名称、尚未满足的 Secret 建议和附加仓库权限；Gitea 保存来源、路径、完整提交和原始文件 SHA256，RPC 不携带 JSONC 正文。</p>
+<p>根配置优先作为默认候选；一级子目录中的配置分别作为独立环境，不相互融合。管理员和用户还可以保存命名 Dev Container 模板，作为非仓库配置候选。用户确认页展示所选来源、ref、运行环境、配置名称、当前可用 Secret 名称、尚未满足的 Secret 建议和附加仓库权限；Gitea 保存来源、仓库配置路径或模板内容以及完整提交。仓库来源在 RPC 中只携带路径，由 Manager 从锁定 workspace 读取；模板来源在 RPC 中携带创建时固化的内容。**设计如此：**仓库文件的权威来源是锁定提交，模板的权威来源是用户提交创建时的设置内容，二者都只保存本次 create 需要的最小输入。</p>
 <p>仓库配置中的 <code>customizations.gitea.repositories</code> 只声明希望附加访问的仓库和单元权限。Gitea 在确认页按当前用户权限展开并让用户确认，最终授权保存在 Gitea；Manager 只解释标准 Dev Container 字段，不取得授权规则。顶层 <code>secrets</code> 只提供名称和说明，Secret 值仍由用户设置中的所有仓库范围或指定仓库关系决定。确认页只展示当前计划且不读取已有值，create 和 resume 会按当时的代码写权限与范围重新解析；普通 fork Pull Request 的配置来自贡献者分支，因此不向该环境提供用户 Secret。</p>
 <p>**设计如此：**配置正文来自锁定提交，Gitea 只解释自己负责的权限扩展，Manager 原生运行时解释开发环境。两侧各自只有一个权威来源，也不会因分支后来移动而改变已经创建的环境。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
@@ -173,9 +173,9 @@ ref 在创建前解析为完整 commit，解析失败不产生 Codespace 记录�
 <li><input disabled="" type="checkbox" checked=""/>
 Pull Request 页面提交十进制编号，数据库保存基仓库规范内部 ref；关闭、来源仓库不可读或来源分支缺失时不产生 Codespace 记录。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-多个 Dev Container 文件作为候选单选，仓库没有配置时可选择平台默认项。</li>
+多个 Dev Container 文件和可见模板作为候选单选，仓库没有配置时可选择全局或个人模板。</li>
 <li><input disabled="" type="checkbox" checked=""/>
-创建确认和持久数据包含配置来源、路径、提交和 SHA256，不保存原始正文。</li>
+创建确认和持久数据包含配置来源、仓库路径或模板内容以及提交；仓库来源不保存正文，模板来源保存创建时内容。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Secret 和附加仓库权限由 Gitea 确认，Manager 不形成第二份授权状态；所有仓库 Secret 与指定当前仓库的 Secret 在 create/resume 时按当前代码写权限解析。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -183,7 +183,7 @@ Secret 和附加仓库权限由 Gitea 确认，Manager 不形成第二份授权�
 </ul>
 <h3 id="manager-匹配与-operation-创建"><a class="header" href="#manager-匹配与-operation-创建">Manager 匹配与 operation 创建</a></h3>
 <p>Gitea 把用户在确认页显式选择的 <code>environment_tag</code> 写入 Codespace。成功 Declare 同名 tag 的站点全局 Manager 与当前用户个人 Manager 都可参与领取；Manager online、具有启动容量、接受 create，且本轮 <code>accepted_create_tags</code> 包含该 tag 时可以 claim。tag 表示部署管理员定义的基础设施环境，不是仓库配置、Incus profile 或实例类型。暂时没有 Manager 当前可接单时 Codespace 保持 queued create；Fetch 按稳定顺序领取，并在数据库事务中绑定 <code>manager_id</code>、写入 running operation、版本、开始时间和 deadline。</p>
-<p>create payload 使用领取时重新读取的 repository 关系生成 HTTP(S)、SSH 和 Web URL。<code>git_protocol</code> 只表示首次 clone 的首选协议；不可用协议的 URL 为空。分支使用 <code>refs/heads/&lt;name&gt;</code>，Tag 使用 <code>refs/tags/&lt;name&gt;</code>，直接 commit 使用空 ref。普通 Pull Request 以数据库中的基仓库内部 ref 锁定审阅内容，领取时再使用来源仓库 clone URL 和 <code>refs/heads/&lt;head_branch&gt;</code>；AGit 没有独立来源仓库分支，使用基仓库 clone URL 和 <code>refs/pull/&lt;index&gt;/head</code>。Manager 不从 Fetch 请求 Host 推导外部地址。**设计如此：**普通 PR 同时需要审阅快照的稳定身份和开发分支的正常提交、推送语义；基仓库内部 ref 与锁定 <code>commit_sha</code> 负责前者，来源仓库和 heads ref 负责后者。AGit 只有内部 ref，因此明确作为固定快照处理。</p>
+<p>create payload 使用 <code>repository</code> 分组携带领取时重新读取的仓库名、HTTP(S)/SSH clone URL、起始 ref、锁定提交和首次 clone 首选协议。不可用协议的 URL 为空，<code>preferred_protocol</code> 必须指向一个非空 URL。分支使用 <code>refs/heads/&lt;name&gt;</code>，Tag 使用 <code>refs/tags/&lt;name&gt;</code>，直接 commit 使用空 ref。普通 Pull Request 以数据库中的基仓库内部 ref 锁定审阅内容，领取时再使用来源仓库 clone URL 和 <code>refs/heads/&lt;head_branch&gt;</code>；AGit 没有独立来源仓库分支，使用基仓库 clone URL 和 <code>refs/pull/&lt;index&gt;/head</code>。Manager 不从 Fetch 请求 Host 推导外部地址。**设计如此：**普通 PR 同时需要审阅快照的稳定身份和开发分支的正常提交、推送语义；基仓库内部 ref 与锁定 <code>commit_sha</code> 负责前者，来源仓库和 heads ref 负责后者。AGit 只有内部 ref，因此明确作为固定快照处理。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -221,7 +221,7 @@ queued create 由 queue timeout 收敛，不通过 Manager 本地猜测改写状
     M-&gt;&gt;G: FinalizeOperation(done)
 </pre>
 <p>bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 <code>--no-checkout</code>，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支和普通 Pull Request 来源分支精确 fetch 到 <code>origin/&lt;branch&gt;</code>，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、AGit Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。</p>
-<p>原生 runtime 从 workspace 读取固定配置并复核 SHA256。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；OCI 与 HTTPS Feature 固定摘要，仓库内 Feature 由锁定提交固定，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git 和 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server <code>/healthz</code> 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。</p>
+<p>原生 runtime 对仓库来源从 workspace 读取固定配置，对模板来源直接解析创建时下发的内容。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；OCI 与 HTTPS Feature 固定摘要，仓库内 Feature 由锁定提交固定，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git、初始化 Web IDE settings 和扩展，并启动 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server <code>/healthz</code> 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。</p>
 <p>**设计如此：**workspace 的一次性 clone 与 Dev Container 的可恢复环境分开。普通分支和普通 Pull Request 保持开发者熟悉的 branch/upstream 语义，Tag、AGit Pull Request 和直接 commit 保持锁定提交语义；create 重试可以识别同 Codespace 标签的未完成 Docker 对象并清理重建，但不会接管其他对象。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
@@ -258,7 +258,7 @@ stop 失败不会留下“已停止但内部容器仍运行”的成功状态。
 delete 可以接管失败的 stop 并直接进入销毁流程。</li>
 </ul>
 <h3 id="resume"><a class="header" href="#resume">Resume</a></h3>
-<p>resume 只使用 Manager state 中的 startup input、外层用户、workspace 和完整 Dev Container 环境。Manager 启动原 Incus 实例，取得新的 Gitea Token 和当前仓库授权 Secret，重写 seed 与易失 Secret，然后调用原生 runtime 启动保存的全部容器、执行 <code>postStartCommand</code>、恢复 code-server 并检查 ready。它不再读取 repository payload、重新解析 Dev Container 文件、clone、fetch 或 checkout。</p>
+<p>resume 只使用 Manager state 中的 startup input、外层用户、workspace 和完整 Dev Container 环境。Manager 启动原 Incus 实例，取得新的 Gitea Token 和当前仓库授权 Secret，重写 seed 与易失 Secret，然后调用原生 runtime 启动保存的全部容器、执行 <code>postStartCommand</code> 和 <code>postAttachCommand</code>、恢复 code-server 并检查 ready。它不再读取 repository payload、重新解析 Dev Container 文件、clone、fetch、checkout、覆盖 Web IDE settings 或重复安装扩展。</p>
 <p>Git helper 使用 workspace 已有 remote；HTTP(S) 和 SSH 请求仍由 Gitea 依据当前用户、仓库和分支保护判断。repository 已删除时，resume 仍可恢复本地 workspace，后续远端请求按当前 Gitea 状态失败。**设计如此：**resume 恢复的是用户已经工作的磁盘和容器环境，不是重新创建最初提交；把远端可达性作为 ready 条件会让 repository 运维变化错误阻断本地数据访问。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
@@ -266,6 +266,8 @@ delete 可以接管失败的 stop 并直接进入销毁流程。</li>
 resume 启动同一 Incus 实例和同一完整 Dev Container 环境。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 resume 重写当前 Token 与 Secret，保留 workspace HEAD、remote 和用户修改的 Git identity。</li>
+<li><input disabled="" type="checkbox" checked=""/>
+resume 保留用户在 Web IDE 中修改过的 settings 和扩展状态，只恢复 code-server 进程与当前运行环境。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>postStartCommand</code> 与平台 Web IDE附着命令重新执行，首次 create 命令不重放。</li>
 <li><input disabled="" type="checkbox" checked=""/>
