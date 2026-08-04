@@ -16,9 +16,9 @@ Gitea 数据库保存 Codespace 与 Manager 的绑定、生命周期结果、创
 | `ref_name` | `TEXT NOT NULL` | branch/tag/commit 标识或基仓库中的规范 PR ref 路径；普通 PR 的来源仓库和分支由当前 PR 关系读取 |
 | `environment_tag` | `VARCHAR(64) NOT NULL` | 用户创建时显式选择并经 Gitea 复检的运行环境键，用于 Manager claim；仓库配置不参与基础设施调度 |
 | `commit_sha` | `VARCHAR(64) NOT NULL DEFAULT ''` | create 前置校验完成后必须为完整锁定 commit SHA |
-| `dev_container_path` | `VARCHAR(512) NOT NULL DEFAULT ''` | 仓库配置相对路径；平台默认来源为空 |
-| `dev_container_content_sha256` | `VARCHAR(64) NOT NULL DEFAULT ''` | 仓库原始 JSONC 的 SHA256；平台默认来源为空 |
-| `dev_container_default_image` | `VARCHAR(512) NOT NULL DEFAULT ''` | 平台默认来源使用的站点镜像；仓库来源为空 |
+| `dev_container_source` | `VARCHAR(32) NOT NULL DEFAULT ''` | `repository` 表示仓库文件，`template` 表示 Gitea 设置中的命名模板 |
+| `dev_container_path` | `VARCHAR(512) NOT NULL DEFAULT ''` | 仓库配置相对路径；模板来源为空 |
+| `dev_container_content` | `TEXT NOT NULL` | 模板来源保存创建时内容；仓库来源为空 |
 | `permission_authorization_id` | `BIGINT NOT NULL DEFAULT 0` | 0 表示配置未申请附加仓库权限；正数引用创建时确认的授权记录 |
 | `manager_id` | `BIGINT NOT NULL DEFAULT 0` | create 被领取前为 0，领取后固定 |
 | `status` | `VARCHAR(16) NOT NULL DEFAULT ''` | 有效记录只允许五个持久主状态 |
@@ -50,7 +50,20 @@ Codespace UUID 在创建记录前由 Gitea 使用加密安全随机源生成 UUI
 
 `environment_tag` 是用户在 Gitea 创建确认页显式选择的运行环境键。可选值来自站点全局 Manager 和当前用户个人 Manager 已成功 Declare 的环境声明，最终提交在事务内重新校验后保存。仓库 Dev Container 文件只描述内部开发环境，不选择 Incus 主机、实例类型或 Manager tag。**设计如此：**用户能够明确选择部署管理员提供的基础设施能力，仓库代码仍不能借配置文件改变调度范围。create 被领取后，stop、resume 和 delete 只使用已经绑定的 `manager_id` 与 Manager 本地环境快照。
 
-三个 `dev_container_*` 字段共同保存创建确认时的不可变选择，不保存 JSONC 正文。仓库来源使用非空路径和原始字节摘要，平台默认来源使用非空默认镜像，两种形态互斥；配置所在提交直接使用同一行的 `commit_sha`。内容摘要使用 `VARCHAR(64)`，因为平台默认来源需要把它准确保存为空字符串；PostgreSQL 和 MSSQL 会对定长 `CHAR` 补空格，读取后将不再满足互斥字段的空值语义。UUID 和始终完整生成的请求摘要继续使用定长字段。**设计如此：创建时解析配置和锁定源码使用同一个提交，来源又能由互斥字段无歧义地判断，重复保存来源枚举和提交会形成可能不一致的第二份状态；按字段是否允许为空选择变长或定长类型，可以让各支持数据库得到相同判断结果。**Manager clone 后从锁定提交校验所选文件，站点默认镜像之后变化也不会改变已创建对象。
+三个 `dev_container_*` 字段共同保存创建确认时的不可变选择。仓库来源使用 `dev_container_source=repository` 和非空相对路径，配置所在提交直接使用同一行的 `commit_sha`；模板来源使用 `dev_container_source=template` 和创建时内容。模板 ID 不写入 Codespace 行，因为 Fetch 只需要本次创建已经确认的内容，后续模板改名、修改或删除都只影响新的 Codespace。**设计如此：**仓库配置的权威来源是锁定提交，模板配置的权威来源是创建提交时的表单内容；保存模板 ID 会让 queued create 重新依赖可变设置表，而保存内容可以让 Manager Fetch 直接闭环。
+
+### codespace_dev_container_template
+
+| 字段 | 类型说明 | 备注 |
+| --- | --- | --- |
+| `id` | `BIGINT` 自增主键 | 仅用于设置页管理 |
+| `user_id` | `BIGINT NOT NULL DEFAULT 0` | `0` 表示管理员维护的全局模板；正数表示个人模板 |
+| `name` | `VARCHAR(255) NOT NULL DEFAULT ''` | 用户手工命名的显示名称，不从 Dev Container 内容中的 `name` 字段派生 |
+| `content` | `TEXT NOT NULL` | JSONC Dev Container 配置内容 |
+| `created_unix` | `BIGINT NOT NULL DEFAULT 0` | 创建时间戳 |
+| `updated_unix` | `BIGINT NOT NULL DEFAULT 0` | 最近修改时间戳 |
+
+模板表只作为创建候选来源。Gitea 保存时解析 JSONC，并要求模板使用 image-based 配置；需要仓库相对 build context、Compose 文件或仓库相对 Feature 的配置应放在仓库 Dev Container 文件中。**设计如此：**模板不属于某个仓库，没有稳定的仓库路径上下文；把它限定为可以独立解释的配置，可以让失败发生在保存或创建确认阶段，而不是 Manager 已领取 operation 后才失败。
 
 Git clone 首选协议不进入 `codespace` 表。Gitea 在 create 记录创建时校验站点 Git 传输配置可用，在 Manager 领取 create 并构造 payload 时再次读取当前配置，生成 `git_protocol`、HTTP(S) clone URL 和 SSH clone URL；禁用协议字段为空，首选协议必须指向非空 URL。**设计如此：协议是站点当前接入能力，不是 Codespace 生命周期事实。**对象一旦初始化完成，resume 以 workspace 实际 remote 为准，不需要 Gitea 保存或重放旧协议；这样修改站点 Git 接入配置不会要求批量改历史 Codespace，也不会让 resume 误用过期外部 SSH Host Key 信息。
 
@@ -266,9 +279,9 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - [x] active operation 完成后 operation 字段清空，`operation_rversion` 和最新状态报告 generation 保留当前值。
 - [x] 每个 active operation 都保存 `user` 或 `idle` 来源，完成、超时、取消或物理删除时与其他 active operation 字段一同清空。
 - [x] `environment_tag` 是用户显式选择并由 Gitea 复检的持久调度键；索引和 create claim 使用该列，仓库文件不能修改它，没有可见或有效环境时不创建数据库记录。
-- [x] Dev Container 仓库路径与摘要和平台默认镜像按两种形态互斥保存；来源由字段形态派生，配置提交统一使用 `commit_sha`，数据库不保存原始 JSONC 正文。
-- [x] 平台默认来源的配置路径和内容摘要经过 SQLite、MySQL、PostgreSQL 与 MSSQL 写入再读取后仍为空字符串；仓库来源的内容摘要保持完整 64 字符，Fetch 对各数据库使用相同的来源判断。
-- [x] Fetch create payload 直接使用持久 Dev Container 选择，不重新读取移动中的 branch 或站点当前默认镜像。
+- [x] Dev Container 仓库路径和模板内容按 `dev_container_source` 互斥保存；配置提交统一使用 `commit_sha`。
+- [x] 全局模板和当前用户模板可作为创建候选；其他用户模板不会被列出、更新或删除。
+- [x] Fetch create payload 直接使用 Codespace 行中的 Dev Container 选择，不重新读取移动中的 branch 或当前模板表。
 - [x] `git_protocol` 不存在于 Codespace 表；create payload 按 Manager 领取时的站点配置计算首选协议和可用 clone URL，resume payload 不携带协议。
 - [x] 数据库 operation 与 generation 的 0 值只用于尚未产生版本，有效版本从 1 开始，递增不会溢出回绕；inventory 的 observed operation 为 0 时只表达 Manager 缺少完整 active operation 上下文，数据库版本继续采用当前持久值。
 - [x] running operation 的总执行期限固定为 `operation_started_unix + OPERATION_MAX_DURATION`。`operation_deadline_unix` 保存本次 lease 截止时间与总执行期限中的较早值；未接近总期限时相对有效时长等于配置的精确 lease 毫秒数，最后一次授权返回到总期限为止、向下取整的正整数毫秒数。

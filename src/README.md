@@ -12,13 +12,13 @@
 | codespace-proto-go | Gitea 与 Manager 共用的类型化 protobuf/Connect 协议 |
 | Codespace Manager | Incus 实例、原生 Dev Container、Gateway、Web IDE、SSH/SFTP、Endpoint、资源采样和本地恢复 |
 
-Dev Container 是唯一的仓库开发环境格式。Gitea 只解析名称、Secret 建议和 Gitea 权限扩展；Manager 解析标准运行字段并通过 Docker API、Compose Go API 和 ORAS Go API实现。没有仓库配置时，平台默认镜像生成一份内存配置，用户仍可创建 Codespace。
+Dev Container 是唯一的开发环境格式。仓库可以提供 Dev Container 文件；管理员和用户也可以在 Gitea 设置中保存命名 Dev Container 模板，用于没有仓库配置或希望使用统一基础环境的仓库。Gitea 只解析名称、Secret 建议和 Gitea 权限扩展；Manager 解析标准运行字段并通过 Docker API、Compose Go API 和 ORAS Go API实现。模板内容在创建提交时写入 Codespace 记录，后续模板修改只影响新的 Codespace。**设计如此：**模板是创建入口的可管理候选，不是运行时配置项；把本次选择直接保存到 Codespace 行，可以让 queued create 和 Manager Fetch 不依赖会继续变化的设置表。
 
 ### 实现验收点
 
 - [x] Gitea、共享协议和 Manager 的职责边界明确，生命周期状态只有 Gitea 一个权威来源。
-- [x] 仓库开发环境只使用 Dev Container；基础设施环境只由 Manager tag和本地配置选择。
-- [x] 没有 Dev Container 文件的仓库使用平台默认镜像完成同一创建流程。
+- [x] 开发环境只使用 Dev Container；基础设施环境只由 Manager tag和本地配置选择。
+- [x] 没有 Dev Container 文件的仓库可以选择全局或个人 Dev Container 模板完成同一创建流程。
 - [x] 用户可在 repository 入口和个人页面完成创建、访问、停止、恢复、设置和删除。
 
 ## 架构
@@ -59,7 +59,7 @@ sequenceDiagram
     participant D as Dev Container
 
     U->>G: 选择 ref、配置、权限和 Secret
-    G->>G: 固定 commit、配置路径和 SHA256
+    G->>G: 固定 commit 与 Dev Container 路径或模板内容
     M->>G: Fetch create
     M->>R: 创建实例、写凭据、执行 bootstrap
     R->>R: 原子 clone workspace
@@ -69,15 +69,16 @@ sequenceDiagram
     M->>G: ready metadata + final done
 ```
 
-create 的 clone只在 bootstrap中执行，并在受控临时目录校验锁定 commit后原子提交。首选 Git协议失败且另一个 URL可用时，同一次 bootstrap最多回退一次。原生 runtime随后复核配置摘要，创建完整 Dev Container环境，执行首次 lifecycle、配置 Git并启动固定 code-server。
+create 的 clone只在 bootstrap中执行，并在受控临时目录校验锁定 commit后原子提交。首选 Git协议失败且另一个 URL可用时，同一次 bootstrap最多回退一次。原生 runtime随后从 workspace 读取仓库配置，或直接解析 Gitea 下发的模板内容，创建完整 Dev Container环境，执行首次 lifecycle、配置 Git、初始化 Web IDE settings 和扩展，并启动固定 code-server。
 
-stop 停止完整 Dev Container环境、清理易失 Secret，再停止 Incus实例。resume启动同一实例和保存的容器集合，重写当前 Token与 Secret，执行 `postStartCommand`、恢复 Web IDE并重新发布 ready；它不重新读取 repository配置、不 clone、不 checkout。delete直接删除 Incus实例并确认缺失，不依赖 stop成功。
+stop 停止完整 Dev Container环境、清理易失 Secret，再停止 Incus实例。resume启动同一实例和保存的容器集合，重写当前 Token与 Secret，执行 `postStartCommand` 和 `postAttachCommand`、恢复 Web IDE并重新发布 ready；它不重新读取 repository配置、不 clone、不 checkout、不覆盖 Web IDE settings，也不重复安装扩展。delete直接删除 Incus实例并确认缺失，不依赖 stop成功。
 
 ### 实现验收点
 
-- [x] create只提交经过 commit校验的 workspace，Dev Container配置摘要与用户确认一致。
+- [x] create只提交经过 commit校验的 workspace，Dev Container 仓库路径或模板内容与用户确认一致。
 - [x] stop/resume覆盖主容器和 Compose相关容器，不只处理单一容器。
 - [x] resume保留用户 HEAD、remote和 Git identity，只刷新当前开发凭据与运行服务。
+- [x] resume保留用户在 Web IDE内修改过的 settings 和扩展状态。
 - [x] ready在 final done前验证 Incus、workspace、Dev Container、Web IDE和同一 operation版本。
 - [x] delete以 Incus实例缺失为资源清理完成条件。
 

@@ -994,7 +994,7 @@ Manager 按 transition Connect error 选择下一步：`current_operation_confli
 
 ### RequestRuntimeAccess
 
-`RequestRuntimeAccess` 是 active create、active resume 和稳定 running 恢复运行访问材料的统一入口。Manager 先生成或从本地 state 恢复固定 Git SSH key，再提交 `codespace_uuid + operation_rversion + git_ssh_public_key`。Gitea 用同一个 Codespace 生命周期版本验证本次请求，成功响应一次返回当前 Token、规范化 Gitea `ROOT_URL`、当前源仓库可用的所有仓库或指定仓库 Secret，以及 Git SSH known_hosts。
+`RequestRuntimeAccess` 是 active create、active resume 和稳定 running 恢复运行访问材料的统一入口。Manager 先生成或从本地 state 恢复固定 Git SSH key，再提交 `codespace_uuid + operation_rversion + git_ssh_key.public_key`。Gitea 用同一个 Codespace 生命周期版本验证本次请求，成功响应在 `RuntimeAccessBundle` 中一次返回当前 `gitea_token`、规范化 `gitea_server_url`、当前源仓库可用的所有仓库或指定仓库 Secret，以及 Git SSH known_hosts。
 
 允许条件如下：
 
@@ -1013,7 +1013,7 @@ Token 行存在时，Gitea 解密后重新计算 verifier 并以常量时间比�
 
 实现验收点：
 
-- active create、active resume 和无 active operation 的 running 使用当前 `operation_rversion` 和固定公钥取得 Token、`server_url`、按名称排序的 Secret 与 known_hosts；active stop/delete、租约过期、版本不匹配和排空状态不返回材料。
+- active create、active resume 和无 active operation 的 running 使用当前 `operation_rversion` 和固定公钥取得 `RuntimeAccessBundle`；其中包含 `gitea_token`、`gitea_server_url`、按名称排序的 Secret 与 known_hosts。active stop/delete、租约过期、版本不匹配和排空状态不返回材料。
 - 当前 operation 的 ready metadata 和 Token 行缺一时，create/resume final done 被拒绝。
 - 相同版本和公钥的响应丢失可以幂等重试；不同公钥不会替换现有 binding，跨 PublicKey 类型的相同指纹只有一个创建结果。
 - 公钥登记不要求 repository 仍存在或创建者当前仍有仓库权限；实际 Git SSH 命令每次重新检查 repository、code unit 和用户权限。
@@ -1271,17 +1271,18 @@ stale report 使用分类响应而不是改写主状态，是因为 Manager 上�
 | `command.resume/stop/delete` | 对应类型 | 不携带 repository 数据的明确命令分支 |
 | `command.abort_create` | 站点排空后 deadline 未到期的 running create | 删除本轮新建的 Incus 实例并 final failed，Gitea 写入 failed |
 | `command.abort_resume` | 站点排空后 deadline 未到期的 running resume | 停止本轮启动进程、保留既有 workspace 并 final failed，Gitea 写回 stopped |
-| `create.repo_full_name` | create | repository 完整名称 |
-| `repo_clone_http_url` | create | HTTP clone 启用时由 Gitea 生成的规范 HTTP(S) clone URL |
-| `repo_clone_ssh_url` | create | Codespace SSH clone 启用时由 Gitea 生成的规范 SSH clone URL |
-| `start_ref` | create | 普通分支和普通 Pull Request 来源分支使用完整 heads ref，Tag 使用完整 tags ref，AGit Pull Request 使用内部 PR ref，直接 commit 为空 |
-| `commit_sha` | create | 锁定 commit SHA |
+| `create.repository.full_name` | create | repository 完整名称 |
+| `create.repository.clone_http_url` | create | HTTP clone 启用时由 Gitea 生成的规范 HTTP(S) clone URL |
+| `create.repository.clone_ssh_url` | create | Codespace SSH clone 启用时由 Gitea 生成的规范 SSH clone URL |
+| `create.repository.start_ref` | create | 普通分支和普通 Pull Request 来源分支使用完整 heads ref，Tag 使用完整 tags ref，AGit Pull Request 使用内部 PR ref，直接 commit 为空 |
+| `create.repository.commit_sha` | create | 锁定 commit SHA |
+| `create.repository.preferred_protocol` | create | Gitea 构造本次 create payload 时计算出的 `HTTP` 或 `SSH` 首选协议 |
 | `create.environment_tag` | create | Manager 本地运行环境键；只用于选择并持久化本次有效环境 |
 | `create.runtime_settings` | create | 当前有效自动暂停设置和交互版本 |
-| `create.git_protocol` | create | Gitea 构造本次 create payload 时计算出的 `HTTP` 或 `SSH` 首选协议 |
-| `create.username` | create | 创建时的 Gitea 用户名，同时作为 Git `user.name` 和 Linux 用户名派生输入 |
-| `create.git_user_email` | create | 创建时隐私保护后的 Git email |
-| `create.dev_container` | create | 仓库配置的相对路径与原始文件 SHA256，或平台默认镜像；仓库配置提交复用顶层 `commit_sha`，不包含配置正文 |
+| `create.git_identity.gitea_username` | create | 创建时的 Gitea 用户名，同时作为 Git `user.name` 和 Linux 用户名派生输入 |
+| `create.git_identity.git_user_email` | create | 创建时隐私保护后的 Git email |
+| `create.dev_container.repository_path` | create | 仓库配置的相对路径；读取提交使用 `create.repository.commit_sha` |
+| `create.dev_container.template_content` | create | 创建时固化的 Dev Container 模板内容 |
 | `resume.runtime_settings` | resume | 当前有效自动暂停设置和交互版本 |
 
 规则：
@@ -1292,8 +1293,8 @@ stale report 使用分类响应而不是改写主状态，是因为 Manager 上�
 - `start_ref` 对 branch 使用 `refs/heads/<name>`，tag 使用 `refs/tags/<name>`，commit 使用空值。Pull Request 的数据库身份仍是基仓库和 `refs/pull/<index>/head`；领取普通 PR 时，Gitea 重新读取 PR 关系，clone URL 指向来源仓库，`start_ref` 使用 `refs/heads/<head_branch>`；AGit 没有独立来源分支，继续使用基仓库 URL 和内部 PR ref。Manager 据此选择 tracking branch 或 detached checkout，并最终以 `commit_sha` 校验 HEAD。
 - `resume|stop|delete` 返回数据不包含 create 专属的 repository、用户身份、ref 或 commit 字段。
 - `resume` 完全基于已初始化 workspace 和绑定 Manager 执行，不重新解析 repository，不依赖 repository payload。
-- create 的 `git_protocol` 来自 payload 构造时的站点当前 Git 配置；create 返回当前可用协议的 clone URL，禁用协议字段为空。Manager 在初始化前统一通过 `RequestRuntimeAccess` 确认固定公钥和取得 Token，HTTP(S) remote 使用限定路径的 Token helper。SSH 回退到 HTTP(S) 后允许保留已经登记的公钥。resume 不携带协议，恢复以 workspace 实际 remote 为准。
-- `create.username`、`create.git_user_email` 和 `create.dev_container` 是 create 初始化输入。Gitea 不保存派生后的 Linux 用户名或 JSONC 正文，只保存 Dev Container 的不可变选择；Manager 领取 create 后把初始化身份和选择保存到本地 state。**设计如此：**用户名和邮箱只初始化一个具体 Runtime，Dev Container 元数据则用于 resume 继续恢复同一开发环境；它们都不需要在 resume 时由 Gitea 重放。
+- create 的 `repository.preferred_protocol` 来自 payload 构造时的站点当前 Git 配置；create 返回当前可用协议的 clone URL，禁用协议字段为空。Manager 在初始化前统一通过 `RequestRuntimeAccess` 确认固定公钥和取得 `RuntimeAccessBundle`，HTTP(S) remote 使用限定路径的 Token helper。SSH 回退到 HTTP(S) 后允许保留已经登记的公钥。resume 不携带协议，恢复以 workspace 实际 remote 为准。
+- `create.git_identity` 和 `create.dev_container` 是 create 初始化输入。Gitea 不保存派生后的 Linux 用户名；Dev Container 仓库来源保存路径，模板来源保存创建时内容。Manager 领取 create 后把初始化身份和选择保存到本地 state。**设计如此：**用户名和邮箱只初始化一个具体 Runtime；仓库配置由锁定提交固定，模板配置由创建请求固定，它们都不需要在 resume 时由 Gitea 重放。
 - create/resume payload 让 Manager 在 Runtime 进入 running 前保存当前设置；后续完整快照覆盖本地策略，交互版本只向前更新，RequestIdleStop 继续承担过期策略的最终复检。
 - repository 删除后，本地上下文完整的 running create 通过 observed 续租继续；缺少上下文时等待原 deadline，并由 running create timeout 进入 failed。
 - `delete` 返回数据使用 `codespace_uuid` 生成，不依赖 repository row。repository DB 记录删除后，Manager 仍可领取并完成 cleanup。
@@ -1312,10 +1313,10 @@ stale report 使用分类响应而不是改写主状态，是因为 Manager 上�
 - Fetch、final、日志、metadata、transition、inventory 和 session revalidate 的请求响应与 RPC 文档一致。
 - command rejection 携带统一 Connect failure detail，访问判定返回 decision response。
 - create payload 的 `environment_tag` 等于用户在确认页显式选择并由 Gitea 最终复检的运行环境。仓库不能通过 Dev Container 配置选择 Manager 的基础设施环境；Manager 使用该值精确查找本地环境并保存有效环境快照。
-- create payload 的 `username` 使用创建用户当前 Gitea 用户名，`git_user_email` 使用隐私保护后的 Git email；Manager 派生 Linux 运行用户名并只保存到本地 state，不回写 Gitea。
-- create payload 的 `dev_container` 在平台默认时携带默认镜像，在仓库来源时携带所选路径和原始文件 SHA256，并复用顶层锁定提交。Manager clone 后从 workspace 复检该文件并交给 Manager 原生 Dev Container 运行时；正文不进入 RPC 或 Manager state，resume 使用本地保存的同一选择。
+- create payload 的 `git_identity.gitea_username` 使用创建用户当前 Gitea 用户名，`git_identity.git_user_email` 使用隐私保护后的 Git email；Manager 派生 Linux 运行用户名并只保存到本地 state，不回写 Gitea。
+- create payload 的 `dev_container` 在仓库来源时携带所选路径并复用 `repository.commit_sha`，在模板来源时携带创建时固化的内容。Manager clone 后从 workspace 读取仓库文件，或直接解析模板内容，再交给 Manager 原生 Dev Container 运行时；resume 使用本地保存的同一选择。
 - create payload 对普通分支和普通 Pull Request 下发来源仓库的完整 heads ref，使 Runtime 建立同名本地分支与 `origin/<branch>` upstream；Tag、AGit Pull Request 和 commit 锁定到 detached HEAD。两类结果都必须等于 `commit_sha`。
-- create payload 的 `git_protocol` 等于 payload 构造时站点当前首选值；create 取得当前可用协议的规范 clone URL，首选协议对应 URL 必须非空。内置 bootstrap 在受控临时 workspace 中先使用首选地址，并在 clone/fetch 失败且另一种 URL 非空时在同一次 init 调用中尝试另一地址；最终失败写入不可恢复结果，不进入启动恢复重试。resume 不取得 repository payload，也不携带协议，只按 workspace 实际 remote 恢复本地凭据配置。
+- create payload 的 `repository.preferred_protocol` 等于 payload 构造时站点当前首选值；create 取得当前可用协议的规范 clone URL，首选协议对应 URL 必须非空。内置 bootstrap 在受控临时 workspace 中先使用首选地址，并在 clone/fetch 失败且另一种 URL 非空时在同一次 init 调用中尝试另一地址；最终失败写入不可恢复结果，不进入启动恢复重试。resume 不取得 repository payload，也不携带协议，只按 workspace 实际 remote 恢复本地凭据配置。
 - create/resume payload 的有效设置与当前数据库结果一致，Manager 重启后可恢复当前计时策略；stop 的来源不改变运行侧执行路径。
 - 普通 operation payload 返回正数相对 lease 时长，abort 返回 0；Gitea 的绝对 deadline 不进入协议。
 
@@ -1621,7 +1622,6 @@ OPERATION_LEASE_TIMEOUT = 300s
 OPERATION_MAX_DURATION = 2h
 QUEUE_TIMEOUT = 5m
 LOG_MAX_SIZE = 64MiB
-DEVCONTAINER_DEFAULT_IMAGE = mcr.microsoft.com/devcontainers/base:ubuntu
 AUTO_STOP_DEFAULT_TIMEOUT = 30m
 AUTO_STOP_MIN_TIMEOUT = 5m
 AUTO_STOP_MAX_TIMEOUT = 168h
@@ -1636,7 +1636,7 @@ OLDER_THAN = 8760h
 
 说明：
 
-- `GIT_PROTOCOL=http|ssh` 是 create payload 的首次 clone 首选协议，默认 `http`。Gitea 创建记录时校验该配置可用，但不写入 `codespace` 表；Manager 领取 create 时按站点当前可用 Git clone 能力提供 URL：HTTP 可用时提供 `repo_clone_http_url`，SSH 可用时提供 `repo_clone_ssh_url`；不可用的协议使用空 URL 表达。内置 bootstrap 只在非空 URL 中选择实际 remote；首选协议的 clone/fetch 非零退出且另一种 URL 非空时清理受控临时 workspace 并在同一次 bootstrap 中重试一次，最终把成功 URL 固定为 workspace remote。resume 以实际 remote 为准，不重新选择。
+- `GIT_PROTOCOL=http|ssh` 是 create payload 的首次 clone 首选协议，默认 `http`。Gitea 创建记录时校验该配置可用，但不写入 `codespace` 表；Manager 领取 create 时按站点当前可用 Git clone 能力提供 URL：HTTP 可用时提供 `repository.clone_http_url`，SSH 可用时提供 `repository.clone_ssh_url`；不可用的协议使用空 URL 表达。内置 bootstrap 只在非空 URL 中选择实际 remote；首选协议的 clone/fetch 非零退出且另一种 URL 非空时清理受控临时 workspace 并在同一次 bootstrap 中重试一次，最终把成功 URL 固定为 workspace remote。resume 以实际 remote 为准，不重新选择。
 - 启用功能时，全部 setting 和数据库迁移完成后推导 Git clone 能力。HTTP 可用条件是 `[repository] DISABLE_HTTP_GIT=false`。SSH 可用条件是 `[server] DISABLE_SSH=false`，并且能够取得可信 Host Key：内置 SSH 可从 Gitea Host Key 派生，外部 SSH 需要显式 `GIT_SSH_KNOWN_HOSTS`。`GIT_PROTOCOL=http` 且 HTTP 可用时，外部 SSH 没有 known_hosts 只关闭 SSH clone；`GIT_PROTOCOL=ssh` 时 SSH 必须可用；HTTP 被关闭且 SSH 不可用时没有可交付给 Runtime 的 clone URL。此类配置错误会禁用本进程的 Codespace 功能并写出明确错误，Gitea 其他功能继续启动，管理员修正配置并重启后即可恢复。
 - `[server] START_SSH_SERVER=true` 表示使用 Gitea 内置 SSH。`GIT_SSH_KNOWN_HOSTS` 为空时，启动顺序先调用内置 SSH 已有的 Host Key 准备逻辑：读取存在的 `SSH_SERVER_HOST_KEYS`，全部不存在时在既有目录生成默认 Key；随后从实际启用的私钥派生公开 Host Key，并按 `SSH_DOMAIN` 和有效 `SSH_PORT` 构造规范 known_hosts 行。Codespace 校验和内置 SSH 服务使用同一组准备结果，首次启动不会因 Key 尚未生成而误报配置错误。
 - `[server] START_SSH_SERVER=false` 表示 SSH 接入由外部服务提供。Gitea 进程不能可靠知道外部 SSH 服务的 Host Key，因此只有显式配置 `GIT_SSH_KNOWN_HOSTS` 时才启用 Codespace SSH clone。每行的 host pattern 必须精确匹配默认端口的 host 或非默认端口的 `[host]:port`，公钥必须通过 Gitea SSH parser。内置 SSH 也可以显式配置该项，以便在 Host Key 轮换期间同时下发多把可信 Key。
@@ -1673,7 +1673,7 @@ OLDER_THAN = 8760h
 - `ENABLED=false` 下 RequestIdleStop 不创建新的 operation；已有 idle stop 的幂等请求返回原版本，其余 running 请求取得关闭自动暂停的完整设置。ReportInstances 下发同一设置，Manager 取消本地普通计时并继续恢复已经接受的 stop。
 - Gitea 是功能开关的唯一判定来源。**设计如此：**关闭后的访问收敛复用四个访问 RPC，create/resume 收敛复用 Fetch abort，Runtime Metadata 返回 `state_unavailable`；Manager 依据这些结果处理当前工作，协议保持现有字段和调用方向。
 - `ENABLED=true` 时，Gitea 在组件注册前推导 HTTP 与 SSH clone 能力；首选协议必须可用，且至少一种 clone URL 可以下发。错误指出不可用协议和相关配置项。
-- `GIT_PROTOCOL=http`、HTTP Git 可用、外部 SSH 未配置 `GIT_SSH_KNOWN_HOSTS` 时启动成功，create payload 的 `repo_clone_ssh_url` 为空；`GIT_PROTOCOL=ssh` 或 HTTP Git 被关闭时，SSH 服务关闭、Host Key 缺失或 host/port 不匹配会阻止启用。
+- `GIT_PROTOCOL=http`、HTTP Git 可用、外部 SSH 未配置 `GIT_SSH_KNOWN_HOSTS` 时启动成功，create payload 的 `repository.clone_ssh_url` 为空；`GIT_PROTOCOL=ssh` 或 HTTP Git 被关闭时，SSH 服务关闭、Host Key 缺失或 host/port 不匹配会阻止启用。
 - 内置 SSH 首次启动时，Codespace 校验与 SSH 服务复用同一次 Host Key 准备结果；外部 SSH 不从本机私钥推测服务器身份，使用显式 `GIT_SSH_KNOWN_HOSTS`。返回 Runtime 的每条 known_hosts 行都能匹配规范 SSH clone URL。
 - `ENABLED=false` 时可以关闭 HTTP Git 或 SSH，并继续执行 stop、delete、inventory 收敛和管理清理；再次启用前恢复存量 Codespace 所需的接入面。
 - 启用 Codespace 时只有一个活动 Gitea 进程；memory、twoqueue、Redis、memcache cache adapter 和 memory、Redis global lock backend 均沿用 Gitea 现有配置，不据此提供多实例能力。
@@ -1778,11 +1778,11 @@ Manager 当前配置是 `node.name`、`runtime.environments[].tag`、`runtime.en
 
 `runtime.git.ssh_key_type` 是 Manager 本地生成 Runtime Git SSH key 的算法选择，默认 `ed25519`，可选 `rsa-4096`。该值只在 Runtime 内没有已有 key 时影响 Manager 生成 root seed 的方式，不进入 Gitea 数据库、RPC payload 或 Codespace state。Runtime Git SSH 私钥位于对应 Incus 实例内，不写入普通配置之外的 Manager 状态目录。**设计如此：**Gitea 只需要保存和鉴权公钥，不需要知道管理员选择哪种本地密钥算法；把算法留在 Manager 配置中可以满足部署偏好，同时不扩大控制面协议。
 
-`runtime.cache.registry` 是 Manager 内置 OCI registry cache。启用后，Manager 在 `listen` 上启动 registry 服务，Runtime 内的 Docker 客户端通过 `public_url` 访问它；`public_url` 必须是 registry 根地址，不带业务 path。`storage_path` 保存 registry 数据，`max_size`、`max_age` 和 `gc_interval` 控制本地清理。`upstreams` 的键是允许进入缓存的原始 OCI registry host，`allow` 是该 host 下允许缓存的 image 路径模式；省略 `allow` 表示该 host 下的 image 都可缓存。省略整个 `runtime.cache.registry` 时，每个 Runtime 只使用自身 Docker daemon 的本地缓存并直接访问原始 registry。
+`runtime.cache.registry` 是 Manager 内置 OCI registry cache。启用后，Manager 在 `listen` 上启动 registry 服务，Runtime 内的 Docker 客户端通过 `public_url` 访问它；`public_url` 必须是 registry 根地址，不带业务 path。`storage_path` 保存 registry 数据，`max_size`、`max_age` 和 `gc_interval` 控制本地清理。`upstreams` 的键是允许进入缓存的原始 OCI registry host，`allow` 是该 host 下允许缓存的 image 路径模式；省略 `allow` 表示该 host 下的 image 都可缓存。mirror 是 Manager 级共享下载缓存，BuildKit 构建缓存按仓库 hash namespace 隔离。省略整个 `runtime.cache.registry` 时，每个 Runtime 只使用自身 Docker daemon 的本地缓存并直接访问原始 registry。
 
 启用后，Manager 只在 create 下发短期 registry 凭据和缓存地址：显式镜像和 Feature 优先从内置 `/mirror/{registry}` 取得，未命中或不可用时拉取原始镜像，并在成功后尽力发布到缓存；Dockerfile、Compose、Feature 和运行用户调整层从内置 BuildKit registry cache 恢复并发布结果；Feature 安装后的纯镜像 artifact 也会按 base image、Feature digest、Feature 选项和安装环境尽力发布，后续相同输入可直接拉取复用。普通代码 commit 不进入跨实例 cache scope，原因是 BuildKit 会按 Dockerfile 实际读取的文件内容判断层命中；把 commit 放进 scope 会让同一开发环境在每次代码提交后失去缓存。resume 和 stop 使用现有环境，不访问 registry。mirror 或 cache 暂时不可用会回退原始 registry 或本地构建，因此缓存用于降低下载流量和重复构建时间，不成为 Codespace 正确运行的依赖。
 
-内置 registry 使用 Runtime 内 root 用户的标准 Docker credential store。Manager 为每次 create 生成短期凭据，凭据只写入本次 Runtime 临时请求文件，执行后删除，不写入 Manager YAML、Gitea 数据库或持久 Codespace 状态。HTTP `public_url` 会进入实例 Docker daemon 的 insecure registry 列表，生产部署推荐 HTTPS。Manager 合并已有 `/etc/docker/daemon.json`，保留部署者的日志、存储和其他 registry 设置。缓存可能保存 Dockerfile 产生的私有层或 Feature 安装后的镜像 artifact，所以构建缓存路径按仓库全名生成 hash namespace，日志和 registry 路径不暴露明文仓库名；授权判断仍使用 Manager 已知的真实仓库身份。Gitea 数据库不记录缓存条目，因为缓存只影响 Manager 构建效率，生命周期、权限和审计仍以 Codespace、operation 和日志为准。**设计如此：**缓存是 Manager 本地运行数据，放在 Gitea 数据库会把性能优化误认为生命周期状态；短期凭据和 hash namespace 可以满足 create 期间的访问控制，同时不增加一套用户可见的 registry 账号体系。
+内置 registry 使用 Runtime 内 root 用户的标准 Docker credential store。Manager 为每次 create 生成短期凭据，凭据只写入本次 Runtime 临时请求文件，执行后删除，不写入 Manager YAML、Gitea 数据库或持久 Codespace 状态。HTTP `public_url` 会进入实例 Docker daemon 的 insecure registry 列表，生产部署推荐 HTTPS 或只放在 Incus 私有网络。Manager 合并已有 `/etc/docker/daemon.json`，保留部署者的日志、存储和其他 registry 设置。缓存可能保存 Dockerfile 产生的私有层或 Feature 安装后的镜像 artifact，所以构建缓存路径按仓库全名生成 hash namespace，日志和 registry 路径不暴露明文仓库名；授权判断仍使用 Manager 已知的真实仓库身份，并拒绝跨仓库 blob mount。私有 registry 的上游登录凭据仍由 Runtime 内 Docker 环境负责，Manager 内置 registry 不保存远端 registry 账号。Gitea 数据库不记录缓存条目，因为缓存只影响 Manager 构建效率，生命周期、权限和审计仍以 Codespace、operation 和日志为准。**设计如此：**缓存是 Manager 本地运行数据，放在 Gitea 数据库会把性能优化误认为生命周期状态；短期凭据和 hash namespace 可以满足 create 期间的访问控制，同时不增加一套用户可见的 registry 账号体系。
 
 Manager 版本来自当前二进制构建信息，生产运行固定使用 Incus，Codespace 根路径、Bash、root bootstrap 和系统准备用户属于内置运行协议。**设计如此：**这些值必须与随二进制发布的脚本、状态路径和恢复逻辑保持一致，把它们暴露为配置只会产生看似可改、实际无法闭环的组合。测试后端仍由测试代码直接注入，不作为部署能力。完整行为见[Manager 原生 Dev Container 运行时](devcontainer-runtime.md)。
 
@@ -1833,7 +1833,7 @@ Manager 从实例展开设备中选择恰好一个连接到 `runtime.incus.netwo
 
 managed network 位于 default project，并由 Codespace project 共享。实例入站只通过 Gateway；Manager/Gateway 使用 Incus API 完成 shell、exec、SFTP 和文件访问，并通过 Incus 确认的当前实例地址连接普通 Endpoint 与 Web IDE。Runtime 不需要访问 Manager API 地址。需要保证虚拟机隔离级别的容量使用独立 tag 和 Manager 配置，Gitea 不从实例类型推断安全级别。
 
-`gateway.http.listen` 和 `gateway.ssh.listen` 是本地监听地址；`gateway.http.public_url` 和 `gateway.ssh.public_addr` 是向 Gitea 或用户声明的可达地址，两者可以因反向代理或端口映射而不同。注册 Gitea URL 和 `gateway.http.public_url` 都允许 HTTP/HTTPS。`gitea-codespace register` 会在兑换身份前对 `gateway.http.public_url` 和 `gateway.ssh.public_addr` 做本地语法预检；Gitea 的 `RegisterManager` 只创建身份，第一次 Declare 再用数据库事务判定地址唯一性。`gateway.http.public_url` 必须使用规范的 ASCII DNS 主机名，不能带尾随点、业务 path 或 IP literal；每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符。规范化地址在 Manager 间唯一；推荐与 Gitea `ROOT_URL` 使用不同可注册域，若处于同一 cookie scope，Gitea 记录部署告警并继续运行。部署为该基础域名和 `*.domain` 配置 DNS。Gateway URL 为 HTTPS 时，监听证书或受信反向代理证书同时覆盖基础域名与单层 wildcard；Cookie Secure 和保留名称按外部 URL 的实际 scheme 决定。Endpoint HTTPS upstream 使用 upstream TLS 配置，Endpoint 请求不能修改信任策略。
+`gateway.http.listen` 和 `gateway.ssh.listen` 是本地监听地址；`gateway.http.public_url` 和 `gateway.ssh.public_addr` 是向 Gitea 或用户声明的可达地址，两者可以因反向代理或端口映射而不同。注册 Gitea URL 和 `gateway.http.public_url` 都允许 HTTP/HTTPS。`gitea-codespace register` 会在兑换身份前对 `gateway.http.public_url` 和 `gateway.ssh.public_addr` 做本地语法预检；Gitea 的 `RegisterManager` 只创建身份，第一次 Declare 再用数据库事务判定地址唯一性。`gateway.http.public_url` 必须使用规范的 ASCII DNS 主机名，不能带尾随点、业务 path 或 IP literal；每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符。规范化地址在 Manager 间唯一；推荐与 Gitea `ROOT_URL` 使用不同可注册域，若处于同一 cookie scope，Gitea 记录部署告警并继续运行。部署为该基础域名和 `*.domain` 配置 DNS。Gateway URL 为 HTTPS 时，监听证书或受信反向代理证书同时覆盖基础域名与单层 wildcard；Cookie Secure 和保留名称按外部 URL 的实际 scheme 决定。普通 Endpoint 到 Runtime 的内部连接固定为 HTTP，外部 HTTPS、Cookie 和来源安全由 Gateway 统一处理。
 
 `gateway.sessions` 管浏览器和 SSH session 生命周期，`gateway.limits` 管 Gateway 请求与连接资源，`gateway.ssh.auth` 管 SSH 公钥认证失败限流。`gateway.ssh.handshake_timeout` 同时限制 SSH 协议握手、Gitea 公钥校验和 Manager 本地后端确认，范围为 1 秒到 1 分钟、默认 30 秒；这样没有完成握手的 TCP 连接也会及时释放全局在途名额。`gateway.limits.max_inflight_total` 范围为 1..1000000，默认 4096；`gateway.limits.max_inflight_per_session` 和 `gateway.ssh.max_channels_per_connection` 范围均为 1..1024、默认 32，前者不得大于全进程上限。公共连接的 per-Endpoint 和 per-IP 上限范围均为 1..10000，且 per-IP 不大于 per-Endpoint；默认分别为 64 和 16，并继续受全进程在途上限约束。`gateway.limits.validation_max_inflight` 范围为 1..4096，默认 128，统一限制公共与认证 HTTP 的在途 Gitea 授权校验；相同授权键的并发 miss 只占一个名额。Gateway HTTP listener 固定使用 64 KiB header 上限和 10 秒 read-header timeout，正文保持流式转发。SSH 认证限流状态固定最多 65536 个有期限键。`node.shutdown_timeout` 限制 SIGINT/SIGTERM 后关闭准入、暂停 worker、保存本地状态和停止 listener 的总等待时间。心跳周期、Runtime Metadata 刷新周期、控制面消息上限和 Gitea 浏览器根 URL来自每次成功 Declare 响应，不在 Manager 配置中重复声明，因为这些值由 Gitea 的站点配置决定。
 
@@ -1843,10 +1843,11 @@ Manager 本地部署配置仍使用 `codespace.yaml`；它与仓库中的 `devco
 
 - 控制面和 Gateway 在 HTTP 配置下可正常工作，启用对应 HTTPS 配置后使用证书和 CA 校验。
 - `runtime.cache` 省略时创建继续直接访问原始 registry；配置后 Manager 启动内置 OCI registry cache，并且只影响 create。
-- 普通代码 commit 变化不会单独改变 Manager 下发的 BuildKit cache scope；Dev Container 配置、平台默认镜像、Manager 环境 tag、Web IDE 版本或架构变化会改变 scope。
+- 普通代码 commit 变化不会单独改变 Manager 下发的 BuildKit cache scope；Dev Container 仓库路径或模板内容、Manager 环境 tag、Web IDE 版本或架构变化会改变 scope。
 - Feature image artifact cache 命中时跳过 Feature 安装镜像构建；cache miss 或发布失败不改变 create 结果。
-- `runtime.cache.registry.public_url` 必须是可从 Runtime 访问的 registry 根地址；upstream host 和 allow 模式在 Manager 启动时校验；Docker daemon 现有 JSON 字段在合并 cache 设置后保持不变。
-- registry 凭据不出现在 Manager YAML、Gitea 数据库、持久 Codespace 状态或日志；内置 registry 按配置执行容量、保留期和清理周期，清理失败不改变 Codespace 状态。
+- `runtime.cache.registry.public_url` 必须是可从 Runtime 访问的 registry 根地址；`max_size` 为正数时启用容量回收；upstream host 和 allow 模式在 Manager 启动时校验；Docker daemon 现有 JSON 字段在合并 cache 设置后保持不变。
+- registry 凭据不出现在 Manager YAML、Gitea 数据库、持久 Codespace 状态或日志；BuildKit cache 只能访问当前仓库 hash namespace，mirror cache 只能访问配置允许的 upstream host 和 image path，跨仓库 blob mount 被拒绝。
+- 内置 registry 按配置执行容量、保留期和清理周期，清理失败或后续缓存引用缺失只影响缓存命中，不改变 Codespace 状态。
 - Gateway Cookie Secure 按规范外部 `gateway.http.public_url` 选择 HTTPS `__Host-` 或 HTTP 普通保留 Cookie 名称；显式值与外部 scheme 不一致时启动失败。
 - `gateway.http.public_url` 的尾随点、非法 DNS 标签、非根 path、IP literal 和过长派生 Host 都被拒绝；基础域名与单层 wildcard DNS/TLS 可以覆盖所有派生 Endpoint host。
 - `register` 对 Gateway HTTP/SSH 对外地址做本地语法预检；`RegisterManager` 不占用地址，第一次 Declare 负责保存地址并判定唯一冲突。

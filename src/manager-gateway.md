@@ -792,22 +792,22 @@ Git SSH 公钥在每次 create/resume 都会上报。Manager 优先读取 Runtim
 
 CPU、内存和磁盘指标不由 Runtime helper 写文件或上报。Manager 在 metadata 发布前和周期刷新时通过 Incus API 读取当前实例状态，生成 `RuntimeResourceUsage` 后放入同一份 Runtime Metadata typed snapshot。采样失败只记录本地诊断并让页面暂时显示指标不可用，不阻止 ready、final、open、SSH、公共 Endpoint 或自动暂停。**设计如此：**资源指标来自实例外部管理面，与仓库 lifecycle 和 Dev Container 内部结构无关；由 Manager 统一采样可以保持单一可信来源。
 
-Endpoint helper 只修改 `/var/lib/gitea-codespace/runtime/endpoints.json`。文件格式为单个 JSON 对象，`version=1`，`endpoints` 为普通 Endpoint 的完整声明列表。原生运行时在 create 的首次 lifecycle 前根据 `forwardPorts`、`appPort` 和端口属性写入默认清单，文件 owner 是实际运行用户且权限为 `0600`；resume 读取并保留该文件。Manager 在原生环境创建或恢复成功后、ready 前和稳定 running 健康检查中读取该文件；读取成功后先规范化普通 Endpoint，再固定补入私有的 `workspace` Endpoint，把这一份完整集合同时写入本地路由快照、Gateway route 和 Runtime Metadata。文件不存在或 endpoints 为空表示当前没有普通 Endpoint，完整集合仍包含平台管理的 `workspace`。清单最多声明 63 个普通 Endpoint，补入 `workspace` 后协议和本地状态中的总数最多为 64。
+Endpoint helper 只修改 `/var/lib/gitea-codespace/runtime/endpoints.json`。文件格式为单个 JSON 对象，`version=2`，`endpoints` 为普通 Endpoint 的完整声明列表。原生运行时在 create 的首次 lifecycle 前根据 `forwardPorts`、`appPort` 和端口属性写入默认清单，文件 owner 是实际运行用户且权限为 `0600`；resume 读取并保留该文件。Manager 在原生环境创建或恢复成功后、ready 前和稳定 running 健康检查中读取该文件；读取成功后先规范化普通 Endpoint，再固定补入私有的 `workspace` Endpoint，把这一份完整集合同时写入本地路由快照、Gateway route 和 Runtime Metadata。文件不存在或 endpoints 为空表示当前没有普通 Endpoint，完整集合仍包含平台管理的 `workspace`。清单最多声明 63 个普通 Endpoint，补入 `workspace` 后 RPC 数据和本地状态中的总数最多为 64。
 
-`workspace` 是平台 Web IDE 的保留 ID，helper 和仓库配置不能声明它。Manager 只接受自己补入的固定属性：`label=Workspace`、`public=false`、HTTP 和平台 Web IDE 端口 `13337`。**设计如此：**清单属于工作环境输入，不能替换或公开平台开发入口；Manager 生成的完整集合则是 Gitea 授权、页面展示和 Gateway 路由共同使用的事实。由同一次同步生成两侧数据，可以避免 Gitea 根据 ready 状态猜测入口存在，而 Manager 本地实际尚未建立对应路由。
+`workspace` 是平台 Web IDE 的保留 ID，helper 和仓库配置不能声明它。Manager 只接受自己补入的固定属性：`label=Workspace`、`public=false` 和平台 Web IDE 端口 `13337`；内部连接同样使用 HTTP。**设计如此：**清单属于工作环境输入，不能替换或公开平台开发入口；Manager 生成的完整集合则是 Gitea 授权、页面展示和 Gateway 路由共同使用的事实。由同一次同步生成两侧数据，可以避免 Gitea 根据 ready 状态猜测入口存在，而 Manager 本地实际尚未建立对应路由。
 
-manifest 中每个 Endpoint 只包含 `endpoint_id`、`label`、`upstream_scheme`、`upstream_port` 和 `public`，不包含 upstream host、Manager 地址、token、容器 ID 或内部状态。端口始终解释为主 Dev Container 内的 loopback 端口；普通 ID 固定为 `port-<upstream_port>`。Gateway 通过 Incus exec 启动 `runtime tcp`，再由 Docker API连接该端口，不创建 Docker host 端口映射。Dev Container 内的 `gitea-codespace-endpoint` 提供按端口的 list、set 和 delete；set 默认创建私有 HTTP 入口，并可明确选择 HTTPS、标签或公共访问。**设计如此：Runtime 只声明“当前开发容器的哪个端口可以访问”，认证、公共访问复检、限流和连接仍由 Gateway 统一实现。端口身份固定后，仓库默认值与用户调整会更新同一条记录，不需要任意 ID 命名规则或 Gitea 写接口。**
+manifest 中每个 Endpoint 只包含 `endpoint_id`、`label`、`upstream_port` 和 `public`，不包含 upstream host、内部协议、Manager 地址、token、容器 ID 或内部状态。端口始终解释为主 Dev Container 内的 loopback 端口；普通 ID 固定为 `port-<upstream_port>`。Gateway 通过 Incus exec 启动 `runtime tcp`，再由 Docker API连接该端口，不创建 Docker host 端口映射。Dev Container 内的 `gitea-codespace-endpoint` 提供按端口的 list、set 和 delete；set 默认创建私有 HTTP 入口，并可设置标签或公共访问。**设计如此：Runtime 只声明“当前开发容器的哪个 HTTP 端口可以访问”，认证、公共访问复检、限流和连接仍由 Gateway 统一实现。端口身份固定后，仓库默认值与用户调整会更新同一条记录，不需要任意 ID 命名规则或 Gitea 写接口。**
 
 实现验收点：
 
 - [x] Manager create/resume 生成或恢复公钥后先写入 root seed，再以当前 operation 版本调用一次 `RequestRuntimeAccess`；成功后把 Gitea Token 和 known_hosts 写入同一 root seed，进程中断后的重试复用原密钥。
 - Manager 在 create/resume 中把 Gitea 按所有仓库或当前仓库指定范围解析出的用户 Secret 写成运行时 JSON；文件使用实际运行用户和 `0600` 权限，stop 后不存在。
 - Runtime 内没有 Manager base URL、访问 Manager 的 token 或指向 Manager 的 HTTP helper；bootstrap、原生运行时和 Endpoint helper 只读写固定本地文件。
-- [x] Endpoint manifest 使用 `version=1` 和普通 Endpoint 完整列表语义；Manager 读取后固定补入 `workspace`，再用同一完整集合替换本地 Endpoint 快照、Gateway route 和 Runtime Metadata。空列表只清空普通 Endpoint。
+- [x] Endpoint manifest 使用 `version=2` 和普通 Endpoint 完整列表语义；Manager 读取后固定补入 `workspace`，再用同一完整集合替换本地 Endpoint 快照、Gateway route 和 Runtime Metadata。空列表只清空普通 Endpoint。
 - [x] Runtime manifest 最多接受 63 个普通 Endpoint；Manager 补入 `workspace` 后本地快照与 Runtime Metadata 总数最多为 64。
-- Endpoint manifest 的每个条目只允许声明实例内端口、协议、标签和公共访问布尔值；host、path、token、容器标识和用户身份不进入 manifest。
+- Endpoint manifest 的每个条目只允许声明实例内端口、标签和公共访问布尔值；host、path、内部协议、token、容器标识和用户身份不进入 manifest。
 - Dev Container 内的普通服务监听 loopback 或 all-interface 端口后即可声明；`forwardPorts` 与 `appPort` 由原生运行时生成初始 Endpoint，不要求发布到外层实例。
-- Dev Container 内可从 `PATH` 使用 Endpoint helper 按端口列出、新增、更新和删除声明；默认私有，`--public` 明确选择公共访问。
+- Dev Container 内可从 `PATH` 使用 Endpoint helper 按端口列出、新增、更新和删除声明；默认私有，`--public` 明确选择公共访问，内部连接固定使用 HTTP。
 - 默认清单只在 create 初始化并由实际运行用户持有；resume 不覆盖用户修改，Manager 的周期同步会把最新完整列表更新到路由和 metadata。
 - Manager 读取 manifest 失败、JSON 字段未知、Endpoint 超限或字段非法时，不发布新路由，并按当前启动或健康检查路径给出可诊断错误。
 - Git SSH 私钥只存在于 Runtime 实例内；公钥始终上报，known_hosts 始终由 Gitea 返回的可信行写入。
@@ -853,7 +853,7 @@ Manager 在接受 Runtime Endpoint 声明时执行该校验，Gitea 在接受 Ru
 
 ### Manager Web IDE
 
-Manager 把 `workspace` 固定代理到当前 Dev Container 中的 code-server。原生运行时在 create 时把固定引用的 code-server Feature 合入构建，程序版本来自 `runtime.web_ide.code_server_version` 的明确语义版本；create 和 resume 都启动环境中已安装的服务，监听容器内固定端口 `13337`，使用实际 workspace，并关闭自身登录、遥测和更新检查。自身登录关闭是因为 Gateway 已经完成 Gitea 身份校验并持续复检授权；再增加一套 code-server 密码只会产生无法与 Gitea 生命周期同步的第二身份。配置版本只影响新建环境，已有环境通过重建升级，这使恢复始终使用创建时已经验证的容器和 Feature digest。
+Manager 把 `workspace` 固定代理到当前 Dev Container 中的 code-server。原生运行时在 create 时把固定引用的 code-server Feature 合入构建，程序版本来自 `runtime.web_ide.code_server_version` 的明确语义版本；create 和 resume 都启动环境中已安装的服务，监听容器内固定端口 `13337`，使用实际 workspace，并关闭自身登录、遥测和更新检查。create 会初始化 `customizations.vscode.settings` 和扩展；resume 只恢复 code-server 进程和当前运行环境，不覆盖用户在 Web IDE 中后续修改的 settings，也不重复安装扩展。自身登录关闭是因为 Gateway 已经完成 Gitea 身份校验并持续复检授权；再增加一套 code-server 密码只会产生无法与 Gitea 生命周期同步的第二身份。配置版本只影响新建环境，已有环境通过重建升级，这使恢复始终使用创建时已经验证的容器和 Feature digest。
 
 Gateway 在完成规范 Host、Open Code、Cookie、session、来源和 Service Worker 检查后，从统一 Endpoint route store 取得 Manager 生成的 `workspace` 路由，通过 Incus exec 与 `runtime tcp` 连接 Dev Container 内的 code-server。代理保留原始 path 和 query，支持普通 HTTP 与 WebSocket upgrade，并与普通认证 Endpoint 共用转发头、应用 Cookie、重定向、连接租约和生命周期取消逻辑。浏览器不能提交实例地址或端口；这些目标只来自 Manager 的结构化环境结果，而且端口必须等于平台固定值。
 
@@ -870,6 +870,7 @@ create 和 resume 只有在 Dev Container running 且 code-server `/healthz` 返
 - [x] Web IDE 复用 Open Code、Gateway Cookie、session 配额、空闲时间、持续授权复检和自动暂停计数，不建立 code-server 密码身份。
 - [x] create、resume 和稳定健康检查都验证 Dev Container 与 code-server `/healthz`，失败时 workspace 不进入可用状态。
 - [x] Manager 启动时输出新建环境使用的 code-server 版本；配置只接受明确语义版本，已有环境通过重建升级。
+- [x] create 初始化 Web IDE settings 和扩展；resume 保留用户修改，只恢复 code-server 进程和当前 Secret 环境。
 - [x] stop、delete、cleanup、路由替换、准入关闭和授权复检失败通过统一 Endpoint lease 取消 Web IDE HTTP/WebSocket；resume 只在原生运行时恢复同一环境并通过检查后重新开放。
 - [x] SSH shell、exec、SFTP 和本地端口转发继续使用既有独立接入能力，不依赖 Web IDE 实现。
 
@@ -914,7 +915,7 @@ Gateway Endpoint 反向代理：
 - [x] Gateway 实现 HTTP reverse proxy。已由 `codespace/internal/app` 的认证 workspace 与公共 Endpoint upstream 代理单元测试覆盖。
 - [x] 支持 WebSocket upgrade。当前公共 Endpoint WebSocket 测试通过真实 upgrade 握手和 frame 往返确认，Gateway 使用同一 upstream 路由和转发上下文代理到 Runtime。
 - [x] Endpoint 支持 HTTP 和 WebSocket；SSH 使用独立接入面。当前已覆盖 HTTP 请求代理和 WebSocket upgrade 代理，SSH 仍由独立 Gateway SSH 章节实现。
-- [x] Gateway 用户入口按 `gateway_url` 和本地 listener 配置提供 HTTP 或 HTTPS；Gateway 到 Runtime 按 Endpoint 的 `upstream_scheme=http|https` 建立对应连接。当前实现用本地 route store 的 `upstream_scheme` 和 `upstreamHost` 构造 upstream，Endpoint 请求本身不能提交 host。
+- [x] Gateway 用户入口按 `gateway_url` 和本地 listener 配置提供 HTTP 或 HTTPS；Gateway 到 Runtime 固定使用 HTTP 连接 Runtime helper 转发出的容器端口。当前实现用本地 route store 的端口和固定 HTTP 构造 upstream，Endpoint 请求本身不能提交 host 或内部协议。
 - [x] Open Token 消费后建立 Gateway 服务端 session，cookie 只保存高熵随机 session ID。
 - [x] session ID 使用安全随机源生成 32 字节并以不可预测字符串编码。HTTPS 外部地址使用 `__Host-gitea_codespace_session`，属性固定为 `Secure`、`HttpOnly`、`SameSite=Lax`、`Path=/` 且没有 Domain；HTTP 使用无 Secure 的 `gitea_codespace_session`。`gateway_cookie_secure` 的最终配置必须与 `gateway_url` 外部 scheme 一致，Cookie 名称由该 scheme 唯一确定。
 - Gateway 始终保留两种 session 名称和两种恢复名称。代理请求按结构化 Cookie 语法收集当前名称的全部 session 候选并按值去重，再查询本地索引；只有恰好一个候选同时匹配当前规范 Host、user、Codespace、Endpoint、Manager 且未过期时认证成功。未知、过期或属于其他 Host/binding 的候选被忽略；多个有效匹配返回 401。这样父域注入的未知 Cookie 和其他 Endpoint 的有效 session 都不能覆盖当前 Host 的平台身份。全部保留名称随后从 upstream `Cookie` 删除，其余合法应用 Cookie 重新组成请求；格式错误的普通应用项被忽略，未解析的原始 Cookie 字符串不进入 Runtime。
@@ -939,7 +940,7 @@ X-Forwarded-Host
 - [x] Gateway 在代理 Runtime Endpoint 或 Web IDE 前删除自身 session cookie；code-server 只接收普通应用 Cookie 和 Gateway 重建的可信转发上下文，不解析平台 session。
 - [x] Gateway 不向 Endpoint 或 Web IDE 传递 `code`、Codespace Gitea Token、Manager Secret 或 Gitea Token。
 - [x] Gateway 在全部 Endpoint host 上先检查 Service Worker 标记；存在 `Service-Worker: script`、`Sec-Fetch-Dest: serviceworker` 或对应字段格式异常时固定返回 403，不连接 upstream。其他响应删除 `Service-Worker-Allowed`。普通 Web Worker、Shared Worker 和 Worklet 保持可用。**设计如此：Endpoint 的认证方式和生命周期会变化，持久 Service Worker 不能跨这些变化继续控制同一 origin 或截获 Open Code。**
-- HTTPS upstream 默认使用系统 CA 和派生 Runtime host 做证书校验；Manager 配置可指定 CA 文件和 server name。`upstream_tls_insecure_skip_verify` 默认 false，仅作为明确的部署配置，不由 Endpoint 请求覆盖。
+- Runtime upstream 固定为 HTTP，由 Gateway 负责外部 HTTPS、Cookie 安全属性、来源判断和持续授权；普通 Endpoint 不提供内部 TLS 配置。
 - Gateway 不生成 CORS 响应头。公共 Endpoint 的 Origin、预检 OPTIONS、Runtime `Access-Control-*` 和 `Vary` 原样传递，由 Runtime 应用决定跨源读取；需要认证的 Endpoint 先按下述固定来源矩阵拒绝跨源请求，因此不提供认证 CORS。
 - Runtime 返回的相对 `Location` 原样保留；绝对或 network-path Location 的 authority 等于当前内部 upstream 时，把 scheme 与 authority 改写为当前外部 Endpoint origin，并保留 path、query 和 fragment。指向其他外部站点的绝对 Location 原样保留，使应用仍可主动跳转到外部身份或业务服务。
 - 新的 ready 快照改变 Runtime 实例或 Dev Container Web IDE 目标时，Manager 先关闭现有 `workspace` HTTP/WebSocket session，再开放新目标。这样同一浏览器 origin 始终只连接当前已验证的 code-server，旧 Runtime 的长连接不能越过 stop、resume 或重建边界。
@@ -1150,7 +1151,7 @@ TTL 限制长期遗留 session，idle timeout 控制资源占用。普通 HTTP �
 
 重复 Open 的替换只作用于当前请求携带的旧 cookie。旧 session 与新 binding 完全相同时，一换一不会产生 live session 的 1 到 0 或 0 到 1 通知；新 session 30 秒未确认才在到期移除时产生实际计数变化。首次 Open 从 0 增加到 1，会立即取消自动暂停计时。这样刷新页面和重复点击 Open 不会短暂启动空闲计时，也不会留下长期无法访问的服务端 session。
 
-Endpoint 访问方式与路由变化只使用现有本地状态收敛：需要认证改为公共访问时关闭认证 session 并使认证 allowed 失效，再开放公共路由；公共访问改为需要认证时先关闭公共请求和长连接、使公共 allowed 失效，后续访问重新 Open。普通 Endpoint 的 upstream、端口或协议变化，以及新 ready 快照改变 Web IDE 目标时，都先关闭旧连接再提交新目标；`gateway_url` 变化关闭该 Manager 全部浏览器连接，旧 Host 随后按未知 Host 返回 404。**设计如此：这些变化属于 session、连接和不可变目标引用的本地生命周期，不增加 Gitea 主状态、数据库字段或 RPC 消息。**
+Endpoint 访问方式与路由变化只使用现有本地状态收敛：需要认证改为公共访问时关闭认证 session 并使认证 allowed 失效，再开放公共路由；公共访问改为需要认证时先关闭公共请求和长连接、使公共 allowed 失效，后续访问重新 Open。普通 Endpoint 的端口或访问方式变化，以及新 ready 快照改变 Web IDE 目标时，都先关闭旧连接再提交新目标；`gateway_url` 变化关闭该 Manager 全部浏览器连接，旧 Host 随后按未知 Host 返回 404。**设计如此：这些变化属于 session、连接和不可变目标引用的本地生命周期，不增加 Gitea 主状态、数据库字段或 RPC 消息。**
 
 session idle timeout 与 Codespace 自动暂停超时连续执行而不重叠：无流量 session 在本节的 idle timeout 到期时关闭，live session 计数归零后才由 Manager 开始 Codespace 级超时。认证 HTTP、WebSocket 和 SSH 共享该计数，因此任何已认证连接都能阻止自动暂停；公共连接和 Runtime 内部活动不进入该索引。
 
