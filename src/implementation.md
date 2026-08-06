@@ -19,17 +19,24 @@ Runtime Endpoint manifest 是实例内文件协议。Manager 读取并更新本�
 
 Gitea 与 Manager 共同依赖 `codespace-proto-go` 中的 `codespace.v1.ManagerService` 生成代码。协议仓只保存 `.proto` 和生成的 Go binding，不保存任一侧业务逻辑。协议仓提交并推送后，两个实现模块在各自 `go.mod` 中引用同一个远程版本，使它们在没有根 `go.work` 时也能独立构建。
 
-ManagerService 使用 Connect。`RegisterManager` 只使用 request body 中的 registration token；其他 RPC 使用 Manager ID 与 Secret header。每个 request 的 `protocol_version` 都在认证后的统一入口、业务读写前校验。路由层只负责 Connect 接入、认证、版本与错误映射，状态事务在服务层完成。
+ManagerService 使用 Connect。全部 RPC 都使用 Manager ID 与 Manager Secret header 认证，并在认证后、业务读写前统一校验 `protocol_version=1`。路由层只负责 Connect 接入、认证、版本与错误映射，状态事务在服务层完成。
 
-Manager 普通配置与注册状态分开。普通配置只包含部署参数；`register` 严格读取显式 YAML，取得状态目录独占锁并确认尚未注册后，把 Gitea URL、Manager ID、Manager Secret 和 inventory generation 一次原子写入 `node.state_dir/manager-state.json`，registration token 不落盘。`serve` 在发送 RPC 前取得同一把锁并读取完整的 Manager 状态。
+Manager 身份由 Gitea 管理页创建，页面只在创建成功时展示一次 Manager Secret。Manager 本地状态通过 `GITEA_CODESPACE_STATE=local|etcd` 选择；本地模式使用 SQLite 保存站点、Gateway、Incus、环境和缓存配置，Manager Secret 以环境提供的 32 字节密钥加密后保存。`gitea-codespace admin` 提供本地管理 API，`gitea-codespace serve` 从状态读取当前配置并继续把 `inventory_generation`、Gateway SSH Host Key 和 Runtime 快照放在 `node.state_dir`。这样身份签发由 Gitea 审计，部署侧配置由 Manager 管理，状态库泄露时不会直接得到明文控制面凭据。
+
+创建操作在排队和被领取时先使用 Gitea 的 `codespace.id` 表示数据库行。Manager 成功领取 create 后生成 `runtime_uuid`，调用 `BindRuntimeIdentity` 在 Gitea 事务中绑定；绑定成功前不创建 Incus 实例、不写 Runtime 快照、不发布 Gateway 路由。绑定后，Gateway、SSH、Endpoint、metadata、日志和后续生命周期 RPC 都使用 `runtime_uuid` 与 `operation_rversion` 校验运行时归属。
+
+**设计如此：Gitea 行 ID 与 Runtime UUID 分工明确。**Gitea 行 ID 适合 Web 路由、权限关系、日志和凭据清理，因为它在创建页面提交后立即存在；Runtime UUID 适合 Gateway 域名、SSH 用户名、Incus 实例和本地快照，因为它由实际执行的 Manager 分配。这样 create 排队阶段也能展示详情和日志，多个 Gitea 站点或多个 Manager 后端也不会因为服务端提前分配 UUID 产生部署侧冲突。
 
 ### 实现验收点
 
 - [x] Gitea 与 Manager 使用同一个已推送协议版本，并可分别在无 `go.work` 环境编译。
-- [x] 除注册外的 RPC 先认证 Manager，再校验 `protocol_version=1`，业务层不会收到不匹配请求。
-- [x] 注册身份、Secret、inventory generation 和 Gateway SSH Host Key 不属于普通配置。
+- [x] ManagerService 全部 RPC 先认证 Manager，再校验 `protocol_version=1`，业务层不会收到不匹配请求。
+- [x] Manager ID、Secret 和 Gitea URL 由 Gitea 管理页签发后录入 Manager 本地状态；secret 加密保存，不写入普通 Runtime 快照文件。
+- [x] 本地 Manager 状态使用 SQLite 保存运行配置；Manager Secret 加密保存，管理 API 的站点列表不返回明文 secret。
+- [x] create payload 在 Runtime UUID 绑定前携带 `codespace_id`；Manager 调用 `BindRuntimeIdentity` 成功后才执行 Incus 修改。
+- [x] Runtime 绑定后，运行时 RPC、Gateway、SSH、Endpoint 和日志都使用 `runtime_uuid` 与 operation 版本校验归属。
 - [x] 同一状态目录的第二个 Manager 进程在发送 RPC 前因独占锁失败。
-- [x] 显式注册配置错误、已有或损坏 Manager 状态都在发送 RPC 前失败；注册成功以一个 `0600` 的 `manager-state.json` 作为本地提交点。
+- [x] 状态目录只保存非控制面 secret 的运行恢复数据；inventory generation 使用独立运行状态文件持久化。
 
 ## 实施基线
 
@@ -52,7 +59,7 @@ Manager 普通配置与注册状态分开。普通配置只包含部署参数；
 - [x] 单容器与 Compose 使用同一结构化环境模型，Compose 侧车参与 stop/resume。
 - [x] SSH、Web IDE 与 Endpoint 不各自解析配置或猜测容器目标。
 - [x] 仓库 Feature 随锁定配置解析，平台 Web IDE Feature 随 Manager 配置加入；create payload 不携带用户工具偏好。
-- [x] code-server Feature 安装器随 Manager 固定，程序版本由 YAML 配置选择，新建后不自动改变。
+- [x] code-server Feature 安装器随 Manager 固定，程序版本由 Manager 本地状态中的运行配置选择，新建后不自动改变。
 
 ## Gitea 测试
 

@@ -19,7 +19,7 @@ Manager 将当前 `gitea-codespace` 可执行文件复制到实例的 root-owned
 
 Dev Container 实现位于可独立导入的 `gitea.dev/codespace/devcontainer` 和 `gitea.dev/codespace/devcontainer/docker`。前者提供配置类型、JSONC 读取、变量替换、元数据合并、锁文件、错误分类和可恢复状态；后者提供直接使用 Docker、Compose 以及 OCI、HTTPS 归档和仓库内 Feature 的具体 `Engine`。当前只有一个运行后端，因此公开 API 保留具体实现，不增加只有一个实现者的接口层。
 
-Codespace 业务位于 `internal/devcontainerruntime`。该适配层把 Codespace UUID、Git 用户信息、运行时只读挂载、平台 Web IDE Feature、Endpoint manifest 和请求结果文件映射到公开 API。`internal/runtimecmd` 只负责实例内命令入口。公开 Engine 在确定 remote user 和 remote environment 后提供一次 lifecycle 前准备回调，Codespace 用它写入 Git 用户信息、凭据助手和运行时可执行文件；这些产品内容统一由内部适配层解释。**设计如此：**Dev Container 解析和 Docker 生命周期本身可以被其他 Go 程序复用，而 Git、Web IDE、Gateway 和 Codespace operation 是本产品的策略；lifecycle 前回调保留必要的执行顺序，同时让公开状态只表达通用环境。
+Codespace 业务位于 `internal/devcontainerruntime`。该适配层把 Runtime UUID、Git 用户信息、运行时只读挂载、平台 Web IDE Feature、Endpoint manifest 和请求结果文件映射到公开 API。`internal/runtimecmd` 只负责实例内命令入口。公开 Engine 在确定 remote user 和 remote environment 后提供一次 lifecycle 前准备回调，Codespace 用它写入 Git 用户信息、凭据助手和运行时可执行文件；这些产品内容统一由内部适配层解释。**设计如此：**Dev Container 解析和 Docker 生命周期本身可以被其他 Go 程序复用，而 Git、Web IDE、Gateway 和 Codespace operation 是本产品的策略；lifecycle 前回调保留必要的执行顺序，同时让公开状态只表达通用环境。
 
 公开加载 API 可以读取调用方指定的绝对或相对配置路径，并通过可选的 `AllowedPathRoot` 施加路径范围。Codespace 创建时始终把当前锁定 workspace 作为该范围，所以配置文件、Compose 文件、Dockerfile 和 build context 解析符号链接后都必须留在本次仓库内；独立调用者可以根据自己的信任模型选择其他根目录。这里由调用方传入范围，是为了让通用库保持可复用，同时让 Codespace 的仓库固定和摘要校验继续形成完整边界。
 
@@ -72,7 +72,7 @@ Dev Container 是开发环境的唯一配置格式。Gitea 从仓库规范位置
 
 Dockerfile、Compose build、Feature 安装层和运行用户调整层通常使用内置 registry 的 BuildKit cache。cache scope 由仓库全名、Manager 环境 tag、Dev Container 来源、仓库配置路径或模板内容、平台 Web IDE 版本、目标系统和架构计算；普通代码提交不进入 scope。不同构建阶段继续写入不同 cache ref。这样同一开发环境定义在不同提交之间可以复用构建层，而 Dockerfile 中复制的源码内容仍由 BuildKit 自己按层内容判断是否命中。平台 Secret、Gitea Token 和 Git SSH 私钥不参与摘要，也不作为 build args 传入。缓存导入不可用时，运行时给出一次警告并使用本地构建重试；缓存导出使用允许失败的发布方式，环境镜像构建成功后不会因为 cache registry 暂时不可用而失败。仓库声明 `build.options` 时改用 Docker 官方命令参数解析器，并使用仓库声明的 `cacheFrom` 与实例本地缓存；任意 Docker 参数可能改变 builder 和输出方式，因此这一路径不额外注入平台 registry cache。**设计如此：**跨提交缓存应该表达开发环境定义，而不是每次代码内容变化；BuildKit 层摘要已经能区分 Dockerfile 实际读取到的文件。仓库显式 Docker 选项具有完整语义，平台不能在不理解参数组合的情况下追加缓存导出并假定构建结果相同。
 
-Feature 安装完成后的中间镜像还会按 base image ID、Feature 引用、Feature 内容摘要、Feature 选项、安装用户和安装时容器环境生成 image artifact cache。下一次 create 解析到相同 Feature 输入时先拉取该镜像，命中后跳过 Feature 安装 Dockerfile 构建；未命中时按普通路径构建并尽力发布。该缓存不包含 workspace、Secret、Token、Git SSH 私钥、Codespace UUID 或 Gitea 用户身份。Compose 配置可以复用同一类 Feature 镜像 artifact，但 Compose 容器、网络、卷和完整项目状态仍只存在于当前 Incus 实例内。**设计如此：**Feature 安装常常是最耗时的镜像变换，把它作为纯镜像 artifact 缓存可以降低重复构建成本；完整 Compose 项目包含运行状态和服务关系，缓存它会与现有 stop/resume 状态重叠，收益不足且容易形成第二套恢复来源。
+Feature 安装完成后的中间镜像还会按 base image ID、Feature 引用、Feature 内容摘要、Feature 选项、安装用户和安装时容器环境生成 image artifact cache。下一次 create 解析到相同 Feature 输入时先拉取该镜像，命中后跳过 Feature 安装 Dockerfile 构建；未命中时按普通路径构建并尽力发布。该缓存不包含 workspace、Secret、Token、Git SSH 私钥、Runtime UUID 或 Gitea 用户身份。Compose 配置可以复用同一类 Feature 镜像 artifact，但 Compose 容器、网络、卷和完整项目状态仍只存在于当前 Incus 实例内。**设计如此：**Feature 安装常常是最耗时的镜像变换，把它作为纯镜像 artifact 缓存可以降低重复构建成本；完整 Compose 项目包含运行状态和服务关系，缓存它会与现有 stop/resume 状态重叠，收益不足且容易形成第二套恢复来源。
 
 缓存只参与 create。resume 使用已保存的容器和环境状态，stop 只停止这些资源，两者不访问 registry。Manager 不共享不同实例的 `/var/lib/docker`，因为该目录同时包含 daemon 元数据和可写运行状态，跨实例共享会破坏现有隔离。内置 registry 按配置的存储上限、保留期和清理周期尽力删除旧 blob；清理目标是回收本地磁盘空间，后续如果遇到引用缺失会按普通缓存未命中回源或本地重建。清理失败只记录告警并在下一轮重试，不能改变 Codespace 生命周期。Gitea 数据库不记录缓存条目，因为缓存只影响 Manager 构建效率，生命周期、权限和审计仍以 Codespace、operation 和日志为准。
 
@@ -80,7 +80,7 @@ Feature 安装完成后的中间镜像还会按 base image ID、Feature 引用�
 
 - [x] `runtime.cache.registry` 启用时 Manager 启动内置 OCI registry cache；未启用时 create 继续直接访问原始 registry 和实例本地缓存。
 - [x] registry `public_url` 必须是 Runtime 可访问的根地址；upstream host 和 allow 模式在 Manager 启动时校验。
-- [x] create 下发短期 registry 凭据；凭据只进入本次 Runtime 临时请求文件，执行后删除，不进入 Manager YAML、Gitea 数据库或持久 Codespace 状态。
+- [x] create 下发短期 registry 凭据；凭据只进入本次 Runtime 临时请求文件，执行后删除，不进入 Manager 本地状态、Gitea 数据库或持久 Codespace 状态。
 - [x] 单镜像、Compose 实际启动服务和 OCI Feature 优先使用内置 `/mirror/{registry}` 缓存；Dev Container 配置和 Feature lock 继续保存仓库声明的原始配置，cache miss 后回源并尽力发布缓存。
 - [x] BuildKit cache 只能访问当前仓库 hash namespace；mirror cache 只能访问 Manager 配置允许的 upstream host 和 image path，跨仓库 blob mount 被拒绝。
 - [x] 常规 Dockerfile、Compose、Feature 和运行用户调整构建使用按开发环境定义、平台和阶段隔离的内置 BuildKit registry cache；普通代码 commit 变化不单独切换 cache scope，带 `build.options` 的构建保留仓库 cache 语义，cache key 不包含 Secret 或开发凭据。
@@ -132,7 +132,7 @@ stop 先停止环境状态中的主容器和相关容器，再清理易失 Secre
 
 `postAttachCommand` 在平台 Web IDE 附着以及每次 Gateway SSH shell/exec 附着前执行。`initializeCommand` 在外层 workspace、以实际运行用户执行；其他 lifecycle 在主 Dev Container 的 remote user 和 remote workspace 中执行。对象形式的 lifecycle 命令按规范并行执行，字符串和数组保持各自的 shell 或 argv 语义。
 
-公开环境状态保存格式版本、环境 ID、调用方 owner ID、配置路径和摘要、workspace、Compose identity、全部容器 ID、合并后的配置、remote user/workdir/env、Feature digest 和 lifecycle 完成标记。Codespace UUID 只存在于内部请求和 owner 映射，固定 Web IDE 端口只存在于产品适配层，两者都不污染通用状态。请求、结果和环境 JSON 使用固定格式版本并位于 `/var/lib/gitea-codespace/state`；Secret 不进入该状态。旧格式因字段所有权已经变化而直接报错，避免恢复到无法证明身份的 Docker 对象。
+公开环境状态保存格式版本、环境 ID、调用方 owner ID、配置路径和摘要、workspace、Compose identity、全部容器 ID、合并后的配置、remote user/workdir/env、Feature digest 和 lifecycle 完成标记。Runtime UUID 只存在于内部请求和 owner 映射，固定 Web IDE 端口只存在于产品适配层，两者都不污染通用状态。请求、结果和环境 JSON 使用固定格式版本并位于 `/var/lib/gitea-codespace/state`；Secret 不进入该状态。旧格式因字段所有权已经变化而直接报错，避免恢复到无法证明身份的 Docker 对象。
 
 ### 实现验收点
 
@@ -140,7 +140,7 @@ stop 先停止环境状态中的主容器和相关容器，再清理易失 Secre
 - [x] resume 使用已保存环境，不重新解析仓库文件或修改 workspace HEAD。
 - [x] `postAttachCommand` 跟随 Web IDE 和 Gateway SSH 附着执行。
 - [x] 环境状态包含恢复和 Gateway 所需的全部目标，且不包含 Secret 明文。
-- [x] 通用环境使用 owner ID；Codespace UUID 和固定 Web IDE 端口由内部适配层解释。
+- [x] 通用环境使用 owner ID；Runtime UUID 和固定 Web IDE 端口由内部适配层解释。
 - [x] 请求和结果控制文件在每次调用后删除，格式或环境身份不一致时拒绝继续。
 - [x] image/build 创建与删除不调用 Compose；Compose 清理先确认项目资源存在，并覆盖容器、网络和卷。
 - [x] Endpoint 默认清单在首次 lifecycle 前完成初始化，resume 不重新生成清单。

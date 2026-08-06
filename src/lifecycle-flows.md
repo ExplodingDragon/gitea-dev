@@ -67,7 +67,7 @@ sequenceDiagram
     M->>G: FinalizeOperation(done)
 ```
 
-bootstrap 只处理外层系统和 workspace。clone 使用带 Codespace UUID 的临时目录和 `--no-checkout`，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支和普通 Pull Request 来源分支精确 fetch 到 `origin/<branch>`，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、AGit Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。
+bootstrap 只处理外层系统和 workspace。clone 使用带 Runtime UUID 的临时目录和 `--no-checkout`，首选协议失败且另一个 URL 可用时在同一次 bootstrap 中清理并回退一次。普通分支和普通 Pull Request 来源分支精确 fetch 到 `origin/<branch>`，在锁定 commit 上建立同名本地分支并设置 upstream；Tag、AGit Pull Request 和直接 commit 在锁定 commit 上使用 detached HEAD。HEAD 校验成功后工作区原子移动到最终目录；create 重试发现已有工作区时复用同一检出函数，修复分支和 upstream 后再次校验 commit。它输出实际 UID/GID、用户和 workspace，Manager 随后把这些值与 create startup input 持久化。
 
 原生 runtime 对仓库来源从 workspace 读取固定配置，对模板来源直接解析创建时下发的内容。单镜像、Dockerfile 和 Compose 都转换为同一个结构化环境；OCI 与 HTTPS Feature 固定摘要，仓库内 Feature 由锁定提交固定，平台 code-server Feature 始终加入。环境创建完成后依次执行首次 lifecycle，配置 Git、初始化 Web IDE settings 和扩展，并启动 Web IDE。Manager 只有在本地状态保存成功、Dev Container running、code-server `/healthz` 可达并且同版本 ready metadata 被 Gitea 接受后才提交 final done。
 

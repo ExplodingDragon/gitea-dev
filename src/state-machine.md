@@ -169,7 +169,7 @@ queued idle stop 被用户交互取消或被用户 stop 接管时不递增 `oper
 
 站点排空下的 `abort_create` 和 `abort_resume` 复用当前 running create/resume 的 `operation_rversion`。**设计如此：**abort 不是新的生命周期 operation，而是要求 Manager 把当前启动操作收束为本地清理并提交原 operation 的 `final failed`；普通 create、resume、stop、delete 仍然通过递增版本表达新的下发意图。
 
-`operation_rversion` 写入 `FetchOperations` 返回数据，并由 `FinalizeOperation`、`UpdateLog` 携带。Gitea 按 `codespace_uuid + operation_rversion + manager_id` 校验 operation 上报归属。旧版本上报返回 `stale_operation`，主状态不变。
+`operation_rversion` 写入 `FetchOperations` 返回数据，并由 `FinalizeOperation`、`UpdateLog` 携带。Gitea 按 `runtime_uuid + operation_rversion + manager_id` 校验 operation 上报归属。旧版本上报返回 `stale_operation`，主状态不变。
 
 实现验收点：
 
@@ -225,7 +225,7 @@ startup_capacity_available
 cleanup_capacity_available
 accepted_operation_types
 observed_operations:
-  - codespace_uuid
+  - runtime_uuid
     operation_rversion
 ```
 
@@ -236,7 +236,7 @@ Response：
 ```text
 operations:
   - operation_rversion
-    codespace_uuid
+    runtime_uuid
     lease_valid_for_milliseconds
     log_offset
     command 分支
@@ -257,7 +257,7 @@ running operation 恢复条件：
 - `codespace.manager_id` 等于当前 Manager。
 - `operation_status=running`。
 - deadline 未到期；已到期的 operation 先 timeout，不进入 response。
-- 功能启用时，或站点排空下的 stop/delete，`observed_operations` 包含相同 `codespace_uuid + operation_rversion` 时只刷新 lease 并返回轻量续租回执；包含较低版本时返回当前 payload；未包含该 UUID 时保持等待原 deadline。站点排空下的 create/resume 不使用 observed 抑制 abort。
+- 功能启用时，或站点排空下的 stop/delete，`observed_operations` 包含相同 `runtime_uuid + operation_rversion` 时只刷新 lease 并返回轻量续租回执；包含较低版本时返回当前 payload；未包含该 UUID 时保持等待原 deadline。站点排空下的 create/resume 不使用 observed 抑制 abort。
 - 本次 response 已加入的 running operation 也从后续恢复候选中排除。
 - 返回普通执行 payload 时按本节统一租约计算刷新 `operation_deadline_unix`，并返回本次实际授予的正数相对有效时长；接近总执行期限时该值短于标准 lease，abort payload 不刷新且相对有效时长为 0。
 - running operation 恢复不占 create/resume 容量，但计入服务端推导的 payload 上限。
@@ -296,11 +296,11 @@ operation_deadline_unix=min(
 
 Fetch 在调用方 Manager lock 内先重新读取 Manager，确认其 online、环境声明和本轮接受的 tag，再查询仍有关联 repository 的候选。create 最终条件 UPDATE 以内部 ID 定位，并复检 `status=creating`、当前 `operation_rversion`、`manager_id=0`、`operation_type=create`、`operation_status=queued`、`operation_trigger=user`、候选读取到的 `environment_tag` 和 `repo_id`；个人 Manager 还要求 `codespace.user_id` 与 Manager 的 `user_id` 相同，站点全局 Manager 不限制用户。**设计如此：**Manager lock 保证本次领取期间 Manager 身份和声明不会被并发删除或替换，条件 UPDATE 只复检可能被其他业务事务改变的 Codespace 稳定字段，不需要重复连接 Manager 和 repository 表。repository transfer 不改变创建者，所以不改变候选 Manager。
 
-Fetch 不使用覆盖整批操作的大事务。running lease 刷新和每条 queued claim 分别使用短事务；每条 claim 成功提交后再按候选的内部 ID 加载 payload，并确认当前 `operation_rversion`、`manager_id`、`operation_type`、`operation_trigger` 和 `operation_status=running` 仍与本次 claim 一致；账户清理已经删除记录或其他流程已经替换 operation 时，该候选不返回旧 payload。若加载 create 所需 repository/user 数据或构造 payload 失败，服务使用单独短事务按内部 ID、`operation_rversion`、`operation_status=running`、`operation_type`、`operation_trigger` 和 `manager_id` 释放尚未下发的 claim：恢复 `operation_status=queued`，清空 started/deadline，保留来源，create 额外恢复 `manager_id=0`。释放条件 affected rows 为 0 表示 operation 已被其他流程替换，不再覆盖当前状态。payload 构造或释放失败会终止本次 RPC 且不返回部分 response；数据库连接等系统性错误同样终止本次 RPC，已经提交且无法确认释放的 claim 保持 running 并等待原 deadline。**设计如此：**Connect 错误响应不能同时携带可安全消费的部分调度结果，终止本次 RPC 可以让 Manager 只处理完整成功响应；内部 ID 与调度索引和数据库主键一致，适合短事务复读与条件写入，公开 UUID 继续作为对象锁、日志和 Manager 协议身份，不进入数据库分页游标。这样每条 claim 仍使用独立短事务，无法确认 payload 已被 Manager 持久化时也不会重新启动动作。
+Fetch 不使用覆盖整批操作的大事务。running lease 刷新和每条 queued claim 分别使用短事务；每条 claim 成功提交后再按候选的内部 ID 加载 payload，并确认当前 `operation_rversion`、`manager_id`、`operation_type`、`operation_trigger` 和 `operation_status=running` 仍与本次 claim 一致；账户清理已经删除记录或其他流程已经替换 operation 时，该候选不返回旧 payload。若加载 create 所需 repository/user 数据或构造 payload 失败，服务使用单独短事务按内部 ID、`operation_rversion`、`operation_status=running`、`operation_type`、`operation_trigger` 和 `manager_id` 释放尚未下发的 claim：恢复 `operation_status=queued`，清空 started/deadline，保留来源，create 额外恢复 `manager_id=0`。释放条件 affected rows 为 0 表示 operation 已被其他流程替换，不再覆盖当前状态。payload 构造或释放失败会终止本次 RPC 且不返回部分 response；数据库连接等系统性错误同样终止本次 RPC，已经提交且无法确认释放的 claim 保持 running 并等待原 deadline。**设计如此：**Connect 错误响应不能同时携带可安全消费的部分调度结果，终止本次 RPC 可以让 Manager 只处理完整成功响应；内部 ID 与调度索引和数据库主键一致，适合短事务复读与条件写入。create payload 在绑定前继续使用内部 ID；绑定后的 Runtime UUID 才作为对象锁、日志和运行侧 Manager 协议身份。
 
 批量返回规则：
 
-- 服务端以两类可用容量之和推导 payload 上限并限制在 `1..256`；`observed_operations` 最多 10000 条且 `codespace_uuid` 不重复，Manager 每次上报全部本地上下文完整的 running operation。
+- 服务端以两类可用容量之和推导 payload 上限并限制在 `1..256`；`observed_operations` 最多 10000 条且 `runtime_uuid` 不重复，Manager 每次上报全部本地上下文完整的 running operation。
 - 单个 Manager 的 Runtime 总数由 Manager 本地配置限制为不超过 10000；完整 inventory 与 observed operation 分别以一个完整请求提交，其最大编码尺寸由 Gitea 启动校验覆盖。
 - DB 在稳定 scope/tag 筛选后使用 `operation_created_unix, id` 排序，并在单次 Fetch 中检查最多 1024 个候选。数值 ID 只作为相同创建时间下的内部稳定排序，不进入 Manager 协议。
 - `operations` 总返回数量不超过服务端推导的 payload 上限；`renewed_leases` 最多等于 observed 数量，不占 payload 名额。
@@ -396,7 +396,7 @@ final failed
 Gitea 校验：
 
 ```text
-codespace_uuid
+runtime_uuid
 operation_rversion
 final.operation_type（final 时）
 manager_id
@@ -538,7 +538,7 @@ Manager 可以在没有 Gitea-issued active operation 时主动上报本地 stop
 
 ```text
 ReportRuntimeTransition:
-  codespace_uuid
+  runtime_uuid
   runtime_generation
   observed_operation_rversion
   fact: stopped 或 failed
@@ -897,7 +897,7 @@ Manager 进程重启后已经失去原单调时钟基线，因此先取消遗留
 
 站点排空下的 create/resume abort 不续租，`lease_valid_for_milliseconds=0`。abort 只授权立即执行幂等的缩减动作：create 删除本轮新建的 Incus 实例，resume 停止本轮 Incus 启动并保留根存储，随后提交 final failed；它不能继续普通初始化或启动步骤。缩减动作晚于服务端原 deadline 完成时，final 可能得到幂等或 stale 结果，后续仍由 timeout 与 inventory 规则收敛。
 
-Cron、claim 和 Fetch 续租先用公开 UUID 取得对象锁或定位记录，事务内以内部 ID、`operation_rversion`、binding 和 `operation_status` 复检并写入；final 由请求 UUID 定位，在同一状态锁和事务内完成版本、归属与状态复检后按内部 ID 提交。并发时第一个满足当前状态的写入生效，后续流程按最新主状态返回 stale、idempotent 或对象不存在，不覆盖先完成的结果。**设计如此：**UUID 是跨进程和协议稳定的对象身份，内部 ID 是数据库事务与索引的高效定位键，两者职责明确且不形成两套外部状态。
+Cron 和创建者 Web 操作按内部 ID 取得对象锁或定位记录；绑定后的 Fetch 续租、final、metadata、inventory 和 Gateway 访问按 Runtime UUID 定位记录。事务内统一以内部 ID、`operation_rversion`、binding 和 `operation_status` 复检并写入。并发时第一个满足当前状态的写入生效，后续流程按最新主状态返回 stale、idempotent 或对象不存在，不覆盖先完成的结果。**设计如此：**内部 ID 是数据库事务、页面路由和排队阶段对象的稳定键，Runtime UUID 是绑定后的跨进程运行身份；两者职责明确且不形成两套外部状态。
 
 实现验收点：
 
@@ -935,7 +935,7 @@ Runtime inventory 作为 `ReportInstances` 请求数据处理，extra/missing/mi
 ```text
 DeclareManager(recovering/online)
 ReportInstances(完整快照)
-ReportInstances 包含 codespace_uuid
+ReportInstances 包含 runtime_uuid
 FinalizeOperation 携带当前 operation_rversion
 ReportRuntimeMetadata 被接受
 ReportRuntimeTransition 被接受
@@ -953,9 +953,9 @@ ReportRuntimeTransition 被接受
 - Codespace Token 行可在 active create、active resume 或稳定 running 保留，并在 create/resume 初始化期直接使用；resume failed/timeout/abort 和 stop final 删除 Token。SSH Key 首次 create 登记后跨 stopped 和 resume 保留，有效 create/resume 初始化期与 running 可用，稳定 stopped 按状态拒绝。failed、deleting 和物理删除会删除两类凭据；站点排空时已有完整行可保留但新请求拒绝。
 - Token 时间经过本身不轮换；允许阶段的每个新请求仍执行工作状态、源仓库或附加仓库能力、登录限制和现有业务权限检查，生命周期删除 Token 行后由下一次合法 resume 重新签发。
 - `reconcile_codespaces` 不单独扫描或修复开发凭据；所有状态转换与物理删除路径在自身事务中完成 Token 与 Git SSH Key 结果。
-- 用户删除按 keyset 分批、逐 Codespace 短事务清理该用户创建的 Codespace、Token、Git SSH Key、日志，以及该用户的个人 Manager、地址和 registration token；删除结果只依赖 Gitea 持久数据。
+- 用户删除按 keyset 分批、逐 Codespace 短事务清理该用户创建的 Codespace、Token、Git SSH Key、日志，以及该用户的个人 Manager 和地址；删除结果只依赖 Gitea 持久数据。
 - Codespace user relation、repository、Manager 和 Codespace 关系变更在需要多个锁时使用固定层级；用户删除在关系锁内复扫本功能的个人关系。repository transfer 不改变 Codespace 创建者。
-- 用户清理绑定到其他用户或站点全局 Manager 的 Codespace 时只取得 Codespace lock；成功删除个人用户不会删除 `user_id=0` 的 Manager、地址、registration token 或无关 Codespace。
+- 用户清理绑定到其他用户或站点全局 Manager 的 Codespace 时只取得 Codespace lock；成功删除个人用户不会删除 `user_id=0` 的 Manager、地址或无关 Codespace。
 - 用户删除后仍有效的站点全局或其他用户 Manager 通过成功完整 inventory 清理无记录 UUID；随用户删除的个人 Manager 身份无法继续认证，其运行资源仍由部署运维处理。组织删除只解除 repository 绑定，不清理成员工作区。
-- Manager 删除保持父级 lock，按内部 Codespace ID 顺序分批读取，逐 Codespace 使用公开 UUID 取得对象锁并在短事务中清理 binding、Token、Git SSH Key 和日志；空集合复检后删除 Manager 地址行与 Manager，不以运行侧状态或回收为前置条件。
+- Manager 删除保持父级 lock，按内部 Codespace ID 顺序分批读取，逐 Codespace 使用内部 ID 或绑定后的 Runtime UUID 取得对象锁并在短事务中清理 binding、Token、Git SSH Key 和日志；空集合复检后删除 Manager 地址行与 Manager，不以运行侧状态或回收为前置条件。
 - 展示态按固定优先级派生，不写入 `codespace.status`。

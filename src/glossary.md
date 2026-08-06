@@ -12,7 +12,7 @@ Manager 为一个 Codespace 创建并持有的单个 Incus 实例。实例可以
 
 <span id="codespace-manager"></span>
 ### Codespace Manager
-运行侧服务，负责注册、领取 operation、通过 Incus 管理 Runtime Instance、上传日志和上报 Runtime Metadata。删除 Manager 时，Gitea 删除其注册身份及绑定的 Gitea 资源并同步返回；运行侧实例是否回收由部署运维负责。这样账户和身份删除不依赖 Manager 在线。
+运行侧服务，使用 Gitea 管理页创建的身份领取 operation、通过 Incus 管理 Runtime Instance、上传日志和上报 Runtime Metadata。删除 Manager 时，Gitea 删除其身份及绑定的 Gitea 资源并同步返回；运行侧实例是否回收由部署运维负责。这样账户和身份删除不依赖 Manager 在线。
 
 <span id="codespace-gateway"></span>
 ### Codespace Gateway
@@ -64,13 +64,9 @@ Gitea 为 Runtime Instance 签发的独立、不透明开发凭据，使用 `gcs
 ### Codespace Git SSH Key
 Runtime 访问 Gitea Git SSH 入口时使用的运行环境凭据。Manager 在 create/resume 内优先复用 Runtime 最终路径或 root seed 中已有的密钥对，缺失时用 Go 生成；先把密钥对写入 root seed，再通过 `RequestRuntimeAccess` 一次提交当前 operation 版本和公钥，并取得 Gitea Token、Codespace Secret 与 known_hosts，最后把响应材料写入 seed，由 bootstrap 安装到最终用户路径。**设计如此：**公钥绑定和本轮运行凭据由同一个版本化请求确认，避免两个 RPC 之间生命周期已经变化；RPC 前先持久化密钥，可保证进程中断后的重试继续使用同一公钥。密钥类型是 Manager 本地配置项，默认 `ed25519`，可选 `rsa-4096`；私钥只存在于 Manager 内存和 Runtime 凭据文件中。`GIT_SSH_KNOWN_HOSTS` 是 Gitea SSH 服务端 Host Key 信任材料，与用户 SSH Key、Gateway SSH Host Key 相互独立。
 
-<span id="registration-token"></span>
-### Registration Token
-站点管理员或个人用户使用的当前明文注册凭据，存储在 `codespace_manager_token` 表；站点和每个个人用户最多一行。settings 页面进入时自动确保当前行存在；Manager 通过 `RegisterManager` 注册并获得 manager secret；Registration Token 重置会原地替换该行，不保存历史，个人用户删除时物理删除其对应行。组织没有 Registration Token。
-
 <span id="manager-secret"></span>
 ### Manager Secret
-Manager 调用 ManagerService RPC 的长期凭据。它在注册成功时签发，并与 Manager 记录保持相同生命周期；registration token 重置不影响已注册 Manager。
+Manager 调用 ManagerService RPC 的长期凭据。它由 Gitea 管理页创建 Manager 身份时签发，只在创建响应中展示一次，并与 Manager 记录保持相同生命周期。Manager 记录删除后，该 secret 立即失效。
 
 <span id="runtime-metadata"></span>
 ### Runtime Metadata
@@ -94,7 +90,7 @@ open Endpoint、SSH、继续运行、resume。
 
 <span id="stale-report"></span>
 ### Stale Report
-Manager 上报中的 `codespace_uuid`、`operation_rversion`、`manager_id` 或 operation status 与 Gitea 当前 active operation 不匹配。
+Manager 上报中的 `runtime_uuid`、`operation_rversion`、`manager_id` 或 operation status 与 Gitea 当前 active operation 不匹配。
 
 <span id="state-divergence"></span>
 ### State Divergence
@@ -123,7 +119,7 @@ Web 列表使用明确的服务端页面数据结构。创建者列表可以包�
 - codespace 创建者字段统一为 `user_id`。
 - repository owner 仍为 `repository.owner_id -> user.id`。
 - Endpoint 字段统一为 `endpoint_id`。
-- Endpoint 唯一性范围是单个 `codespace_uuid`。
+- Endpoint 唯一性范围是单个 `runtime_uuid`。
 - Endpoint 不是端口模型。
 - 动态运行时数据统一称为 Runtime Metadata。
 

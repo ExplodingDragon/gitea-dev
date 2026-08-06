@@ -34,7 +34,7 @@ flowchart LR
     I -->|Docker API| D
 ```
 
-Gitea 与 Manager 只通过 ManagerService 通信。Manager 主动发起 Register、Declare、Fetch、日志、Runtime Metadata、凭据和状态报告；Runtime 内没有访问 Manager 控制端口的路径。Gateway 的 HTTP、WebSocket、SSH、SFTP和端口转发都先完成 Gitea授权，再通过 Incus exec/file进入当前 Dev Container。
+Gitea 与 Manager 只通过 ManagerService 通信。Manager 身份先由 Gitea 管理页面创建，Manager 运行期主动发起 Declare、Fetch、运行身份绑定、日志、Runtime Metadata、凭据和状态报告；Runtime 内没有访问 Manager 控制端口的路径。Gateway 的 HTTP、WebSocket、SSH、SFTP和端口转发都先完成 Gitea授权，再通过 Incus exec/file进入当前 Dev Container。
 
 每个 Codespace 对应一个确定性命名的 Incus 实例。实例可以是系统容器或虚拟机，虚拟机强制要求 agent。Manager project隔离实例、profile和项目卷；managed bridge位于 default project，由 Codespace project共享。Manager托管 bridge时开启 IPv4 NAT和 DHCPv4，实例资源限制由用户在 Gitea 创建确认页选择、Manager 已声明的本地 environment定义，仓库不能改变调度 tag或 Incus规格。
 
