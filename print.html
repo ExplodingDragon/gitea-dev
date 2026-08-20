@@ -350,7 +350,7 @@ Runtime Metadata cache丢失后可由 Manager完整重报，不影响数据库�
 <h3 id="codespace_manager"><a class="header" href="#codespace_manager">codespace_manager</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>类型说明</th><th>备注</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td><code>BIGINT</code> 自增主键</td><td></td></tr>
-<tr><td><code>name</code></td><td><code>VARCHAR(255) NOT NULL DEFAULT ''</code></td><td>展示名称，不要求唯一</td></tr>
+<tr><td><code>name</code></td><td><code>VARCHAR(255) NOT NULL DEFAULT ''</code></td><td>Gitea 管理页显示名称，不要求唯一</td></tr>
 <tr><td><code>user_id</code></td><td><code>BIGINT NOT NULL DEFAULT 0</code></td><td>0 表示站点全局 Manager；正数表示个人用户的 Manager</td></tr>
 <tr><td><code>secret_hash</code></td><td><code>VARCHAR(64) NOT NULL DEFAULT ''</code></td><td>SHA-256 hex verifier</td></tr>
 <tr><td><code>secret_salt</code></td><td><code>VARCHAR(32) NOT NULL DEFAULT ''</code></td><td>16 随机字节的 hex 编码</td></tr>
@@ -575,6 +575,7 @@ Gitea 创建 Manager 时只展示一次明文 secret，数据库只保存 hash �
 Manager 删除物理清理绑定 Codespace、Token、Git SSH Key、日志、Manager 地址行和 Manager row，不新增删除状态、墓碑或远端确认字段。</li>
 </ul>
 <h2 id="manager-声明字段"><a class="header" href="#manager-声明字段">Manager 声明字段</a></h2>
+<p><code>codespace_manager.name</code> 由 Gitea 管理页创建和维护。它用于管理员识别 Manager 身份，不参与认证、路由或调度，也不会被 <code>DeclareManager</code> 覆盖。**设计如此：**名称是管理信息，运行时心跳只表达当前运行事实；两者分开后，管理员在 Gitea 页面输入的名称不会因为 Manager 进程重启或配置变更被意外改写。</p>
 <p><code>codespace_manager</code> 使用四个类型化列保存 <code>DeclareManager</code> 提交的展示和诊断信息：软件版本、Gateway SSH host key 算法、SHA256 指纹和更新时间。字段集合固定且需要直接查询展示，因此类型化列比 JSON 更明确，也避免每个读取页面重复解析相同结构。</p>
 <p>规则：</p>
 <ul>
@@ -585,11 +586,13 @@ Manager 删除物理清理绑定 Codespace、Token、Git SSH Key、日志、Mana
 <li><code>gateway_ssh_host_key_algorithm</code> 与 fingerprint 一起展示，避免用户只看到裸 hash。</li>
 <li><code>gateway_ssh_host_key_updated_unix</code> 用于提示 host key 轮换时间。</li>
 <li>Gitea 每次接受 <code>DeclareManager</code> 后校验并覆盖写入类型化列；Manager 不提交自由 JSON/map。</li>
-<li>Manager 可以修改声明字段；每次成功 Declare 在同一事务整体覆盖当前名称、tags、运行状态、版本、host key 字段和地址，失败请求不产生部分更新。只保存最新快照，不增加声明历史。</li>
+<li>Manager 可以修改声明字段；每次成功 Declare 在同一事务整体覆盖当前 tags、运行状态、版本、host key 字段和地址，失败请求不产生部分更新。只保存最新快照，不增加声明历史。</li>
 <li>普通 Codespace 列表不返回 Manager 的完整声明；需要展示 SSH 连接信息的页面按权限读取必要字段。</li>
 </ul>
 <p>实现验收点：</p>
 <ul>
+<li><input disabled="" type="checkbox" checked=""/>
+<code>codespace_manager.name</code> 由 Gitea 管理页创建和展示，成功 Declare 后保持原值。</li>
 <li><input disabled="" type="checkbox" checked=""/>
 Declare 的固定字段经过类型校验后覆盖写入对应数据库列。</li>
 <li><input disabled="" type="checkbox" checked=""/>
@@ -2997,10 +3000,11 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>control-plane deadline 和 caller cancel 分别返回 <code>DeadlineExceeded</code>、<code>Canceled</code> 且不附业务 detail；已提交事务由幂等重试读取当前结果。</li>
 </ul>
 <h3 id="manager-身份创建"><a class="header" href="#manager-身份创建">Manager 身份创建</a></h3>
-<p>Manager 身份由 Gitea 管理页创建，不通过 ManagerService RPC 创建。站点管理员可以创建 <code>user_id=0</code> 的全局 Manager；个人用户只能在自己的设置页创建个人 Manager。创建服务在 Codespace user relation lock 和同一数据库事务中插入 <code>codespace_manager</code>，生成随机 Manager Secret，保存 <code>secret_hash / secret_salt</code>，并把明文 secret 只返回给当前 Web 响应。</p>
+<p>Manager 身份由 Gitea 管理页创建，不通过 ManagerService RPC 创建。站点管理员可以创建 <code>user_id=0</code> 的全局 Manager；个人用户只能在自己的设置页创建个人 Manager。创建前页面弹窗要求输入 Manager 名称，创建服务在 Codespace user relation lock 和同一数据库事务中插入 <code>codespace_manager</code>，生成随机 Manager Secret，保存 <code>secret_hash / secret_salt</code>，并把明文 secret 只返回给当前 Web 响应。名称是 Gitea 管理页显示名，用于列表、详情和删除确认，不参与认证、路由或调度。</p>
 <p>Manager 进程通过本地状态读取 Gitea 控制面 URL、Manager ID 和 Manager Secret。本地状态可由管理员面板写入；单机部署使用 SQLite 保存，Manager Secret 加密后落盘。RPC 层只验证已存在 Manager 身份；删除 Manager 记录后，旧 secret 在下一次 RPC 认证时失效。**设计如此：**身份签发属于 Gitea 的管理和审计动作，运行进程只消费既有身份。把身份放入 Manager 本地状态，可以支持一个部署管理多个 Gitea 站点，同时避免通过可重复调用的注册 RPC 在网络重试、配置复制或多站点部署时产生额外 Manager 身份。</p>
 <p>实现验收点：</p>
 <ul>
+<li>点击 New 只打开创建弹窗，不直接创建 Manager；名称为空或包含控制字符时不创建记录。</li>
 <li>Manager 创建成功只在当前页面响应中展示一次明文 secret；列表、详情、刷新和 API 错误都不回显 secret。Manager 管理面保存 secret 后只返回站点和 Manager 摘要，不返回明文 secret。</li>
 <li>创建 Manager 身份与保存 secret hash/salt 在同一事务中完成，失败不留下半条 Manager 记录。</li>
 <li>全局 Manager 使用 <code>user_id=0</code>，个人 Manager 使用当前个人用户 ID；组织没有 Manager 身份创建入口。</li>
@@ -3020,9 +3024,9 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 </ul>
 <h3 id="declaremanager"><a class="header" href="#declaremanager">DeclareManager</a></h3>
 <ul>
-<li><code>DeclareManager</code> 提交 Manager 客户端当前稳定配置和运行状态的完整快照，不是身份创建后不可修改的配置。客户端可修改并重新声明名称、版本、Gateway/SSH 地址、环境 tag 与说明、SSH host key 信息和 <code>manager_runtime_state</code>；容量由 Manager 本地配置与每次 Fetch 的当前可用槽位表达。</li>
+<li><code>DeclareManager</code> 提交 Manager 客户端当前稳定配置和运行状态的完整快照，不是身份创建后不可修改的配置。客户端可修改并重新声明版本、Gateway/SSH 地址、环境 tag 与说明、SSH host key 信息和 <code>manager_runtime_state</code>；容量由 Manager 本地配置与每次 Fetch 的当前可用槽位表达。Manager 名称由 Gitea 管理页创建和维护，因为它是管理员识别身份的管理信息；Declare 只表达运行时当前事实，避免心跳覆盖人工命名。</li>
 <li>Declare 与所有其他 request 一样必须提交 <code>protocol_version=1</code>。统一入口先认证 Manager，再在更新 heartbeat、取得声明写锁或校验其余快照字段前完成协议版本检查；不匹配时返回 <code>protocol_mismatch</code>，现有 Manager 记录、地址和在线时间全部保持原值。</li>
-<li>每次请求都携带完整字段；Gitea 校验成功后在同一事务整体覆盖 <code>name</code>、<code>tags_json</code>、<code>runtime_state</code>、版本、Gateway SSH host key 类型化列和两条 <code>codespace_manager_address</code>。字段缺失或空值只按该字段自身规则校验，不表示“保持旧值”，因此不需要 PATCH、字段掩码或 declaration version。</li>
+<li>每次请求都携带完整声明字段；Gitea 校验成功后在同一事务整体覆盖 <code>tags_json</code>、<code>runtime_state</code>、版本、Gateway SSH host key 类型化列和两条 <code>codespace_manager_address</code>。字段缺失或空值只按该字段自身规则校验，不表示“保持旧值”，因此不需要 PATCH、字段掩码或 declaration version。</li>
 <li><code>manager_id</code>、<code>user_id</code>、secret verifier、inventory generation 和已有 Codespace binding 不由 Declare 修改。Manager secret 从身份创建成功起保持有效，删除 Manager 记录时失效。</li>
 <li>更新 <code>last_online_unix</code>。</li>
 <li><code>DeclareManager</code> 同时作为 heartbeat。</li>
@@ -4057,7 +4061,7 @@ Gateway HTTP 的 <code>/</code> 不返回进程状态 JSON；workspace 派生域
 </tbody></table>
 </div>
 <p>组织不提供 Manager 创建入口。<strong>设计如此：组织仓库可以作为代码来源，但工作区和运行容量属于实际创建它的个人用户；组织管理员不因此取得成员工作区或个人 Manager 的控制权。</strong></p>
-<p>Gitea 创建 Manager 时在同一事务中插入 <code>codespace_manager</code>，生成随机 Manager Secret，保存 <code>secret_hash / secret_salt</code>，并把明文 secret 只在本次响应中展示给管理员。页面刷新后不再显示该 secret；需要撤销时删除 Manager 记录，需要新凭据时创建新的 Manager 身份。这个模型把身份签发、审计和删除都留在 Gitea，不让 Manager 进程用一个可重复注册入口自己创建身份。</p>
+<p>Gitea 创建 Manager 时先由管理员在页面弹窗中填写显示名称，再在同一事务中插入 <code>codespace_manager</code>，生成随机 Manager Secret，保存 <code>secret_hash / secret_salt</code>，并把明文 secret 只在本次响应中展示给管理员。页面刷新后不再显示该 secret；需要撤销时删除 Manager 记录，需要新凭据时创建新的 Manager 身份。这个模型把身份签发、审计和删除都留在 Gitea，不让 Manager 进程用一个可重复注册入口自己创建身份。名称由 Gitea 管理页维护，因为它是管理员识别身份的管理信息；运行时 Declare 只更新当前运行事实。</p>
 <p>Gitea 创建的 Manager ID 与 Manager Secret 录入 Manager 本地状态。<code>GITEA_CODESPACE_STATE=local</code> 时，Manager 使用 SQLite 状态库保存站点、Gateway、Incus、环境 tag 和缓存配置；<code>GITEA_CODESPACE_STATE=etcd</code> 时，同一结构保存到 etcd，用于多节点和 Gateway-only 部署。状态库中的 Manager Secret 使用 <code>GITEA_CODESPACE_STATE_ENCRYPTION_KEY</code> 指定的 32 字节密钥加密保存。<code>gitea-codespace admin</code> 启动本地管理 API，用 <code>GITEA_CODESPACE_ADMIN_TOKEN</code> 保护配置写入；站点列表只返回 Manager ID 与 Gitea URL，不返回明文 secret。</p>
 <pre><code class="language-text">GITEA_CODESPACE_STATE=local
 GITEA_CODESPACE_STATE_PATH=/var/lib/gitea-codespace/manager.db
@@ -5384,11 +5388,10 @@ message DeclareManagerRequest {
   string gateway_ssh_addr = 3;
   repeated EnvironmentTag environments = 4;
   string version = 5;
-  string name = 6;
-  ManagerRuntimeState manager_runtime_state = 7;
-  string gateway_ssh_host_key_algorithm = 8;
-  string gateway_ssh_host_key_fingerprint_sha256 = 9;
-  int64 gateway_ssh_host_key_updated_unix = 10;
+  ManagerRuntimeState manager_runtime_state = 6;
+  string gateway_ssh_host_key_algorithm = 7;
+  string gateway_ssh_host_key_fingerprint_sha256 = 8;
+  int64 gateway_ssh_host_key_updated_unix = 9;
 }
 
 message EnvironmentTag {
@@ -5866,7 +5869,7 @@ x-codespace-manager-secret: &lt;manager secret&gt;
 <li>每个 <code>RuntimeInstanceResult</code> 只使用 <code>cleanup_local_runtime</code>、<code>refetch_operation</code>、<code>clear_operation_context</code>、<code>stop_local_runtime</code> 或 <code>report_runtime_transition</code> 之一，优先级依次为 cleanup、refetch、clear、stop、report。Gitea 有 active operation 且其版本高于 Manager 上报的正数版本时可以 refetch；Manager 上报的正数版本高于 Gitea 当前 operation 版本时，整次请求返回 Manager 级 <code>state_history_conflict</code>。metadata cache 缺失和 final 的 ready 前置条件由对应 RPC 处理。</li>
 <li>inventory item 只携带 UUID、Runtime state 和 observed operation version；Gateway 用户 SSH 验证只携带 UUID 和客户端公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。该 <code>VerifySSHPublicKey</code> 公钥用于用户连接工作区，与 <code>RequestRuntimeAccess.git_ssh_key.public_key</code> 提交的 Runtime Git SSH 公钥是两个独立用途。</li>
 <li><code>report_runtime_transition.current_operation_rversion</code> 始终携带 Gitea 当前 operation 版本；它可由 Gitea running、Runtime stopped 的分歧或无 active operation 的 <code>RUNTIME_STATE_FAILED</code> inventory 触发。Gitea stopped、Runtime running 返回 <code>stop_local_runtime</code>；启动只能由 Gitea 下发的 resume operation 完成。<code>ReportRuntimeTransition.runtime_state</code> 只接受 <code>STOPPED|FAILED</code>：运行健康检查确认基础交互持续失败时，Manager 先停止实例再提交 <code>STOPPED</code>；只有资源明确不可恢复时提交 <code>FAILED</code>。诊断详情只进入 Manager 本地日志。</li>
-<li><code>DeclareManager</code> 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret 或 Codespace binding。</li>
+<li><code>DeclareManager</code> 每次提交完整当前运行快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret、Gitea 管理页显示名或 Codespace binding。Manager 显示名由 Gitea 创建和编辑，因为它是管理员识别身份的管理信息；运行时声明只表达版本、入口地址、环境、host key 和运行状态这些当前事实，避免心跳覆盖人工命名。</li>
 <li><code>DeclareManagerResponse</code> 返回正数 <code>heartbeat_interval_milliseconds</code>、<code>runtime_metadata_refresh_interval_milliseconds</code> 和 <code>control_plane_max_message_size_bytes</code>，并返回来自 Gitea <code>ROOT_URL</code> 的规范 absolute <code>http|https</code> <code>gitea_web_url</code>。该 URL 必须有 host，不含 userinfo、query 或 fragment，path 是规范 AppSubURL 并以 <code>/</code> 结尾；HTTP 与 HTTPS 都可使用。Manager 启动后先以 recovering 立即声明，成功取得全部字段后才启动周期任务和领取流程；后续成功响应原子替换当前服务端参数。字段非法时 Manager 保持 recovering，后续 Fetch 提交两类零可用槽位，不采用本地猜测值。</li>
 <li><code>DeclareManager.environments</code> 包含 1..64 项；tag 转为 lower-case 后使用 <code>[a-z0-9_-]+</code>、长度为 1..64，description trim 后最长 255 字符。规范化后的重复 tag 拒绝整次声明。</li>
 <li><code>gateway_url</code> 使用无尾随点的规范 ASCII DNS 主机名，每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符。Gitea 会识别它与 <code>ROOT_URL</code>、Session Cookie Domain 或其他 Manager 声明地址的重叠并记录部署诊断，但不会因为共享 Gateway URL 或 SSH 地址拒绝 Declare。任一语法校验失败都不产生部分声明更新。**设计如此：**共享入口是常见反向代理和统一 Gateway 部署形态，安全边界来自 Runtime UUID、Open Code binding、session 和 Manager 绑定复检，而不是地址唯一性。</li>
