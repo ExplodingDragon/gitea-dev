@@ -80,7 +80,7 @@ Endpoint、boot、CPU/内存/磁盘 resource usage 和 last_reported 保存在 G
 | 字段 | 类型说明 | 备注 |
 | --- | --- | --- |
 | `id` | `BIGINT` 自增主键 | |
-| `name` | `VARCHAR(255) NOT NULL DEFAULT ''` | 展示名称，不要求唯一 |
+| `name` | `VARCHAR(255) NOT NULL DEFAULT ''` | Gitea 管理页显示名称，不要求唯一 |
 | `user_id` | `BIGINT NOT NULL DEFAULT 0` | 0 表示站点全局 Manager；正数表示个人用户的 Manager |
 | `secret_hash` | `VARCHAR(64) NOT NULL DEFAULT ''` | SHA-256 hex verifier |
 | `secret_salt` | `VARCHAR(32) NOT NULL DEFAULT ''` | 16 随机字节的 hex 编码 |
@@ -299,6 +299,8 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 
 ## Manager 声明字段
 
+`codespace_manager.name` 由 Gitea 管理页创建和维护。它用于管理员识别 Manager 身份，不参与认证、路由或调度，也不会被 `DeclareManager` 覆盖。**设计如此：**名称是管理信息，运行时心跳只表达当前运行事实；两者分开后，管理员在 Gitea 页面输入的名称不会因为 Manager 进程重启或配置变更被意外改写。
+
 `codespace_manager` 使用四个类型化列保存 `DeclareManager` 提交的展示和诊断信息：软件版本、Gateway SSH host key 算法、SHA256 指纹和更新时间。字段集合固定且需要直接查询展示，因此类型化列比 JSON 更明确，也避免每个读取页面重复解析相同结构。
 
 规则：
@@ -310,11 +312,12 @@ Codespace Git SSH Key 是运行环境凭据，不是用户主动维护的账户 
 - `gateway_ssh_host_key_algorithm` 与 fingerprint 一起展示，避免用户只看到裸 hash。
 - `gateway_ssh_host_key_updated_unix` 用于提示 host key 轮换时间。
 - Gitea 每次接受 `DeclareManager` 后校验并覆盖写入类型化列；Manager 不提交自由 JSON/map。
-- Manager 可以修改声明字段；每次成功 Declare 在同一事务整体覆盖当前名称、tags、运行状态、版本、host key 字段和地址，失败请求不产生部分更新。只保存最新快照，不增加声明历史。
+- Manager 可以修改声明字段；每次成功 Declare 在同一事务整体覆盖当前 tags、运行状态、版本、host key 字段和地址，失败请求不产生部分更新。只保存最新快照，不增加声明历史。
 - 普通 Codespace 列表不返回 Manager 的完整声明；需要展示 SSH 连接信息的页面按权限读取必要字段。
 
 实现验收点：
 
+- [x] `codespace_manager.name` 由 Gitea 管理页创建和展示，成功 Declare 后保持原值。
 - [x] Declare 的固定字段经过类型校验后覆盖写入对应数据库列。
 - [x] `gateway` 地址规范化后只保留 scheme、DNS base domain 和可选 port，不保存业务 path。
 - [x] 不同 Manager 不能写入相同类型的规范化地址，冲突声明不覆盖原地址或声明字段。

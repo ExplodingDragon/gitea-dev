@@ -42,7 +42,7 @@ Manager 身份由 Gitea 的 Codespace Manager 页面创建。页面分为站点�
 
 组织不提供 Manager 创建入口。**设计如此：组织仓库可以作为代码来源，但工作区和运行容量属于实际创建它的个人用户；组织管理员不因此取得成员工作区或个人 Manager 的控制权。**
 
-Gitea 创建 Manager 时在同一事务中插入 `codespace_manager`，生成随机 Manager Secret，保存 `secret_hash / secret_salt`，并把明文 secret 只在本次响应中展示给管理员。页面刷新后不再显示该 secret；需要撤销时删除 Manager 记录，需要新凭据时创建新的 Manager 身份。这个模型把身份签发、审计和删除都留在 Gitea，不让 Manager 进程用一个可重复注册入口自己创建身份。
+Gitea 创建 Manager 时先由管理员在页面弹窗中填写显示名称，再在同一事务中插入 `codespace_manager`，生成随机 Manager Secret，保存 `secret_hash / secret_salt`，并把明文 secret 只在本次响应中展示给管理员。页面刷新后不再显示该 secret；需要撤销时删除 Manager 记录，需要新凭据时创建新的 Manager 身份。这个模型把身份签发、审计和删除都留在 Gitea，不让 Manager 进程用一个可重复注册入口自己创建身份。名称由 Gitea 管理页维护，因为它是管理员识别身份的管理信息；运行时 Declare 只更新当前运行事实。
 
 Gitea 创建的 Manager ID 与 Manager Secret 录入 Manager 本地状态。`GITEA_CODESPACE_STATE=local` 时，Manager 使用 SQLite 状态库保存站点、Gateway、Incus、环境 tag 和缓存配置；`GITEA_CODESPACE_STATE=etcd` 时，同一结构保存到 etcd，用于多节点和 Gateway-only 部署。状态库中的 Manager Secret 使用 `GITEA_CODESPACE_STATE_ENCRYPTION_KEY` 指定的 32 字节密钥加密保存。`gitea-codespace admin` 启动本地管理 API，用 `GITEA_CODESPACE_ADMIN_TOKEN` 保护配置写入；站点列表只返回 Manager ID 与 Gitea URL，不返回明文 secret。
 

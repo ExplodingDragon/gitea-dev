@@ -131,11 +131,10 @@ message DeclareManagerRequest {
   string gateway_ssh_addr = 3;
   repeated EnvironmentTag environments = 4;
   string version = 5;
-  string name = 6;
-  ManagerRuntimeState manager_runtime_state = 7;
-  string gateway_ssh_host_key_algorithm = 8;
-  string gateway_ssh_host_key_fingerprint_sha256 = 9;
-  int64 gateway_ssh_host_key_updated_unix = 10;
+  ManagerRuntimeState manager_runtime_state = 6;
+  string gateway_ssh_host_key_algorithm = 7;
+  string gateway_ssh_host_key_fingerprint_sha256 = 8;
+  int64 gateway_ssh_host_key_updated_unix = 9;
 }
 
 message EnvironmentTag {
@@ -622,7 +621,7 @@ x-codespace-manager-secret: <manager secret>
 - 每个 `RuntimeInstanceResult` 只使用 `cleanup_local_runtime`、`refetch_operation`、`clear_operation_context`、`stop_local_runtime` 或 `report_runtime_transition` 之一，优先级依次为 cleanup、refetch、clear、stop、report。Gitea 有 active operation 且其版本高于 Manager 上报的正数版本时可以 refetch；Manager 上报的正数版本高于 Gitea 当前 operation 版本时，整次请求返回 Manager 级 `state_history_conflict`。metadata cache 缺失和 final 的 ready 前置条件由对应 RPC 处理。
 - inventory item 只携带 UUID、Runtime state 和 observed operation version；Gateway 用户 SSH 验证只携带 UUID 和客户端公钥，运行侧时间、原因、来源 IP 和客户端诊断留在 Manager/Gateway 本地日志。该 `VerifySSHPublicKey` 公钥用于用户连接工作区，与 `RequestRuntimeAccess.git_ssh_key.public_key` 提交的 Runtime Git SSH 公钥是两个独立用途。
 - `report_runtime_transition.current_operation_rversion` 始终携带 Gitea 当前 operation 版本；它可由 Gitea running、Runtime stopped 的分歧或无 active operation 的 `RUNTIME_STATE_FAILED` inventory 触发。Gitea stopped、Runtime running 返回 `stop_local_runtime`；启动只能由 Gitea 下发的 resume operation 完成。`ReportRuntimeTransition.runtime_state` 只接受 `STOPPED|FAILED`：运行健康检查确认基础交互持续失败时，Manager 先停止实例再提交 `STOPPED`；只有资源明确不可恢复时提交 `FAILED`。诊断详情只进入 Manager 本地日志。
-- `DeclareManager` 每次提交完整当前快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret 或 Codespace binding。
+- `DeclareManager` 每次提交完整当前运行快照；客户端可以修改声明字段后整体覆盖，但不能通过 Declare 修改 Manager 身份、owner、secret、Gitea 管理页显示名或 Codespace binding。Manager 显示名由 Gitea 创建和编辑，因为它是管理员识别身份的管理信息；运行时声明只表达版本、入口地址、环境、host key 和运行状态这些当前事实，避免心跳覆盖人工命名。
 - `DeclareManagerResponse` 返回正数 `heartbeat_interval_milliseconds`、`runtime_metadata_refresh_interval_milliseconds` 和 `control_plane_max_message_size_bytes`，并返回来自 Gitea `ROOT_URL` 的规范 absolute `http|https` `gitea_web_url`。该 URL 必须有 host，不含 userinfo、query 或 fragment，path 是规范 AppSubURL 并以 `/` 结尾；HTTP 与 HTTPS 都可使用。Manager 启动后先以 recovering 立即声明，成功取得全部字段后才启动周期任务和领取流程；后续成功响应原子替换当前服务端参数。字段非法时 Manager 保持 recovering，后续 Fetch 提交两类零可用槽位，不采用本地猜测值。
 - `DeclareManager.environments` 包含 1..64 项；tag 转为 lower-case 后使用 `[a-z0-9_-]+`、长度为 1..64，description trim 后最长 255 字符。规范化后的重复 tag 拒绝整次声明。
 - `gateway_url` 使用无尾随点的规范 ASCII DNS 主机名，每个标签为 1..63 字符，最长派生 Endpoint Host 不超过 253 字符。Gitea 会识别它与 `ROOT_URL`、Session Cookie Domain 或其他 Manager 声明地址的重叠并记录部署诊断，但不会因为共享 Gateway URL 或 SSH 地址拒绝 Declare。任一语法校验失败都不产生部分声明更新。**设计如此：**共享入口是常见反向代理和统一 Gateway 部署形态，安全边界来自 Runtime UUID、Open Code binding、session 和 Manager 绑定复检，而不是地址唯一性。
