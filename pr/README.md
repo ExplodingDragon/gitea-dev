@@ -39,6 +39,10 @@ An end-to-end verification is complete when a Codespace reaches **Running**, log
 
 ![Codespace Manager administration with status, environment tags, and assignment information](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-managers.png)
 
+### Web IDE
+
+![A Gitea repository open in the browser-based development environment with its file tree, editor, and terminal](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-web-ide.png)
+
 ----
 AI Disclosure:
 
