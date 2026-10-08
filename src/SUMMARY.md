@@ -1,15 +1,19 @@
 # Summary
 
-[总览](README.md)
+[总体设计](README.md)
 
-- [数据模型](data-model.md)
-- [状态与生命周期](state-machine.md)
-- [生命周期流程](lifecycle-flows.md)
-- [Manager 原生 Dev Container 运行时](devcontainer-runtime.md)
-- [维护与重启恢复](maintenance-recovery.md)
+# 核心架构
+
 - [Gitea 服务端](gitea-server.md)
-- [Manager 与 Gateway](manager-gateway.md)
-- [RPC 接口定义](rpc-spec.md)
-- [实施](implementation.md)
+- [运行平台](runtime-platform.md)
 
-[术语表](glossary.md)
+# 行为与接口
+
+- [生命周期](lifecycle.md)
+- [数据模型](data-model.md)
+- [RPC 接口](rpc-spec.md)
+
+# 运维与开发
+
+- [部署要求](deployment-requirements.md)
+- [实施与测试](implementation.md)

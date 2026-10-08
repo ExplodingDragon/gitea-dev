@@ -1,111 +1,88 @@
-# 实施
+# 实施与测试
 
-## 代码边界
+本文说明代码落点、验证层次和完成标准。设计意图由其他章节定义，本文不重复协议字段和状态转换。
 
-Gitea 负责用户页面、权限、数据库状态、ManagerService 和审计日志。相关代码按现有 Gitea 分层放在 `routers`、`services/codespace`、`models/codespace` 与 `modules/codespace`，Web handler 和 ManagerService handler 分别位于 Web 与 API/Connect 入口。路由层处理输入、认证和响应，服务层推进事务，模型层保存数据结构与查询。
+## 仓库边界
 
-`codespace` Manager 负责 Incus、原生 Dev Container 运行时、Gateway 和本地恢复。公开的 `devcontainer` 包处理配置、合并、锁文件与结构化环境，`devcontainer/docker` 使用 Docker、Compose 和 Feature API 创建并恢复环境；`internal/devcontainerruntime` 注入 Codespace 的 Git、Web IDE、运行时挂载和 Endpoint 策略；`internal/provisioner` 只处理 Incus 实例与文件/exec API；`internal/runtimecmd` 提供实例内隐藏子命令；`internal/app` 组织控制面 worker、Gateway 与状态持久化。
+| 仓库 | 职责 |
+| --- | --- |
+| `gitea` | 业务模型、权限、页面、Manager RPC 服务和后台任务 |
+| `codespace-proto-go` | Gitea、Manager、组件与 Agent 的 Proto 定义和生成代码 |
+| `codespace` | Manager、Gateway、Cache、Agent、Dev Container 运行时、管理 API 与 Vue 前端 |
 
-Runtime Endpoint manifest 是实例内文件协议。Manager 读取并更新本地路由，Runtime 不向 Manager 端口发请求，Gitea 也不解析该文件。这样控制面、运行后端和用户接入各自只有一个数据来源。
-
-### 实现验收点
-
-- [x] Gitea 的 Web、RPC、服务和模型依赖方向与现有项目一致。
-- [x] Incus 与 Docker 实现只位于 Manager，Gitea 不包含运行后端驱动。
-- [x] Dev Container 公开包只处理通用配置与运行环境；Codespace 请求、Git、Web IDE 和 Gateway 策略集中在内部适配层。
-- [x] Runtime manifest 不注册到 Gitea router，也不要求 Runtime 访问 Manager 端口。
-
-## 共享协议
-
-Gitea 与 Manager 共同依赖 `codespace-proto-go` 中的 `codespace.v1.ManagerService` 生成代码。协议仓只保存 `.proto` 和生成的 Go binding，不保存任一侧业务逻辑。协议仓提交并推送后，两个实现模块在各自 `go.mod` 中引用同一个远程版本，使它们在没有根 `go.work` 时也能独立构建。
-
-ManagerService 使用 Connect。全部 RPC 都使用 Manager ID 与 Manager Secret header 认证，并在认证后、业务读写前统一校验 `protocol_version=1`。路由层只负责 Connect 接入、认证、版本与错误映射，状态事务在服务层完成。
-
-Manager 身份由 Gitea 管理页创建，页面只在创建成功时展示一次 Manager Secret。Manager 本地状态通过 `GITEA_CODESPACE_STATE=local|etcd` 选择；本地模式使用 SQLite 保存站点、Gateway、Incus、环境和缓存配置，Manager Secret 以环境提供的 32 字节密钥加密后保存。`gitea-codespace admin` 提供本地管理 API，`gitea-codespace serve` 从状态读取当前配置并继续把 `inventory_generation`、Gateway SSH Host Key 和 Runtime 快照放在 `node.state_dir`。这样身份签发由 Gitea 审计，部署侧配置由 Manager 管理，状态库泄露时不会直接得到明文控制面凭据。
-
-创建操作在排队和被领取时先使用 Gitea 的 `codespace.id` 表示数据库行。Manager 成功领取 create 后生成 `runtime_uuid`，调用 `BindRuntimeIdentity` 在 Gitea 事务中绑定；绑定成功前不创建 Incus 实例、不写 Runtime 快照、不发布 Gateway 路由。绑定后，Gateway、SSH、Endpoint、metadata、日志和后续生命周期 RPC 都使用 `runtime_uuid` 与 `operation_rversion` 校验运行时归属。
-
-**设计如此：Gitea 行 ID 与 Runtime UUID 分工明确。**Gitea 行 ID 适合 Web 路由、权限关系、日志和凭据清理，因为它在创建页面提交后立即存在；Runtime UUID 适合 Gateway 域名、SSH 用户名、Incus 实例和本地快照，因为它由实际执行的 Manager 分配。这样 create 排队阶段也能展示详情和日志，多个 Gitea 站点或多个 Manager 后端也不会因为服务端提前分配 UUID 产生部署侧冲突。
+公共协议先在 Proto 仓库修改、生成、测试并发布，再更新 Gitea 和 Codespace 的远程依赖。两个实现仓库不复制协议结构，也不通过裸 JSON 交换已定义的业务对象。
 
 ### 实现验收点
 
-- [x] Gitea 与 Manager 使用同一个已推送协议版本，并可分别在无 `go.work` 环境编译。
-- [x] ManagerService 全部 RPC 先认证 Manager，再校验 `protocol_version=1`，业务层不会收到不匹配请求。
-- [x] Manager ID、Secret 和 Gitea URL 由 Gitea 管理页签发后录入 Manager 本地状态；secret 加密保存，不写入普通 Runtime 快照文件。
-- [x] 本地 Manager 状态使用 SQLite 保存运行配置；Manager Secret 加密保存，管理 API 的站点列表不返回明文 secret。
-- [x] create payload 在 Runtime UUID 绑定前携带 `codespace_id`；Manager 调用 `BindRuntimeIdentity` 成功后才执行 Incus 修改。
-- [x] Runtime 绑定后，运行时 RPC、Gateway、SSH、Endpoint 和日志都使用 `runtime_uuid` 与 operation 版本校验归属。
-- [x] 同一状态目录的第二个 Manager 进程在发送 RPC 前因独占锁失败。
-- [x] 状态目录只保存非控制面 secret 的运行恢复数据；inventory generation 使用独立运行状态文件持久化。
+- 每项功能能落入唯一仓库职责，不通过跨仓库复制实现。
+- Proto 生成结果可重复，工作树生成后无额外差异。
+- Gitea 和 Codespace 使用已发布远程模块版本。
+- 协议变更同时更新设计、实现和必要测试。
 
-## 实施基线
+## 代码组织
 
-本文档集描述整体目标设计，当前功能按一套最终模型实施：
+Gitea 的 Codespace 代码遵循现有 model、service、router、template 和 frontend 边界。业务规则集中在 service/model，router 负责绑定请求和响应，模板不执行权限判断。
 
-- 用户生命周期为 create、open、resume、stop 和 delete；异步动作统一使用 operation。
-- 主状态为 creating、running、stopped、deleting 和 failed；排队、启动、停止、恢复与重建是由 operation 和 Manager 运行态派生的展示状态。
-- Gitea 固定仓库、提交、Dev Container 配置、权限和 Secret 授权；Manager 固定外层 Incus 环境并原生实现内部 Dev Container。
-- 仓库 Dev Container 配置声明项目 Feature，Manager 加入平台 Web IDE Feature；Gitea 只固定仓库配置选择，不维护另一套个人工具配置。
-- create 执行一次固定 bootstrap，然后创建完整 Dev Container 环境；stop 停止完整环境与实例；resume 恢复已经保存的环境；delete 删除 Incus 实例。
-- Gateway SSH、Web IDE 与 Endpoint 都读取同一份 Manager 本地环境状态。shell/exec 与 TCP bridge 通过 Incus exec 进入隐藏运行时，SFTP 使用 Incus 文件 API。
-- 容量由 Manager 按本地实例、Incus project、worker 和待清理状态计算后上报，Gitea 不推测后端剩余资源。
-
-**设计如此：外层实例和内部开发容器是两个清晰层级。**Incus 提供隔离、持久根存储与管理通道，Dev Container 提供仓库声明的工具、用户和生命周期。固定 bootstrap 只准备外层系统，原生 Go 运行时只管理内部环境，避免出现可替换脚本与另一套恢复协议。
+Codespace 按可独立理解的领域组织：控制面、Kubernetes 资源、Runtime/Agent、Gateway、Cache、Dev Container 和管理界面。局部逻辑保留在调用点附近；跨流程共享并且具有明确不变量的逻辑才提取为包或接口。功能入口、模型、测试和文档随同一变更保持一致，注释说明原因、不变量和外部限制。
 
 ### 实现验收点
 
-- [x] create、stop、resume、delete 在 Gitea operation、Manager state、Incus 与 Docker 环境之间有唯一映射。
-- [x] 生产路径只使用原生运行时，不保存可替换生命周期内容或字符串环境状态。
-- [x] 单容器与 Compose 使用同一结构化环境模型，Compose 侧车参与 stop/resume。
-- [x] SSH、Web IDE 与 Endpoint 不各自解析配置或猜测容器目标。
-- [x] 仓库 Feature 随锁定配置解析，平台 Web IDE Feature 随 Manager 配置加入；create payload 不携带用户工具偏好。
-- [x] code-server Feature 安装器随 Manager 固定，程序版本由 Manager 本地状态中的运行配置选择，新建后不自动改变。
+- Router/Handler 中没有重复的状态机、权限和事务实现。
+- 接口对应真实替换边界，不为单个实现增加空抽象。
+- 较长流程按稳定业务阶段组织；提取的函数各自承载明确行为或不变量。
+- 静态检查与代码搜索能够确认入口、实现和文档一致。
 
-## Gitea 测试
+## 测试层次
 
-Gitea 测试严格使用 `gitea/docs/testing.md` 规定的 Make 入口，不直接执行 `go test`。按变更范围选择：
+测试按风险选择最小有效层次：
 
-```bash
-cd gitea
-make test-backend#<service-or-router-test>
-make test-integration#<integration-test>
-make fmt
-make lint-go
-make lint-frontend
-```
+| 层次 | 覆盖重点 |
+| --- | --- |
+| 单元测试 | 解析、权限交集、状态转换、幂等键、缓存键和纯函数 |
+| 数据库测试 | 事务、条件更新、唯一索引和多数据库迁移 |
+| 组件集成测试 | RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护 |
+| Kubernetes 端到端测试 | CR/PVC/Pod、Leader 切换、RuntimeClass、网络与恢复 |
+| 浏览器测试 | 创建确认、列表/详情、日志增量加载和管理界面交互 |
 
-模型测试覆盖迁移、索引、状态与凭据关系；服务测试覆盖权限、operation 事务、Token、Git SSH、Secret 和删除收敛；RPC 测试覆盖认证、领取、lease、inventory、metadata 与幂等 final；Web 测试覆盖创建、列表、详情、设置和动作；集成测试覆盖 create 到 delete 的跨层闭环。测试写法、fixture、SQLite 初始化和断言风格复用同目录现有代码。
+测试验证用户可观察行为和安全不变量，测试数量与真实风险相称，并使用正式生产路径完成验证。
 
-权限测试重点覆盖源仓库和附加仓库 grant、pull request 的目标与来源、Token 和 Git SSH 两条访问路径，以及 stop/resume/delete 后的凭据结果。并发测试只覆盖会影响状态事务与安全边界的提交顺序，不为理论上不存在的分支增加负向测试。
+Gitea 测试严格使用其文档规定的 Make 目标和测试环境，尤其集成测试不直接运行 `go test`。Codespace 使用项目 Makefile 统一执行 Go、前端和端到端测试。
 
 ### 实现验收点
 
-- Gitea codespace 变更使用文档规定的 Make 入口完成后端、集成、格式和对应 lint。
-- 权限、凭据、状态事务和物理删除都有服务层或集成覆盖。
-- 测试使用现有 Gitea fixture 与辅助函数，不为测试写生产临时代码。
+- 关键状态机至少覆盖成功、并发抢占、非当前操作版本和恢复路径。
+- 权限测试覆盖修改对象 ID、跨用户、跨站点和凭据重放。
+- 前端测试在 Chromium 与 Firefox 中稳定，不依赖脆弱的定时假设。
+- 本地与自动化使用相同的公开测试入口。
 
-## Manager 测试
+## 真实环境验证
 
-Manager 普通 Go 测试覆盖 JSONC、配置选择与摘要、变量命名空间、Compose 合并、Feature 顺序、lifecycle、端口属性、环境校验、state 原子持久化、Gateway 认证与路由、operation lease 和恢复。Docker 集成测试覆盖 image、Dockerfile、OCI 与本地 Feature、`runArgs`、`build.options`、Compose 多服务以及 stop/resume；需要镜像下载的测试使用显式入口，普通单元测试不隐式拉取镜像。
+Kubernetes 端到端测试使用项目维护的 k3s 测试环境，镜像可预先构建并导入 containerd。Kata 和 Sysbox 都需要真实 RuntimeClass 场景；不具备相应硬件时可以跳过并明确记录，不能用普通容器测试冒充隔离验证。
 
-Incus 真实 E2E 使用专门入口并串行执行。启动时识别本地 unix socket 或远程 Incus endpoint、信任、project、storage、managed bridge、image、profile 和 agent。可选入口在环境未准备时说明缺失条件并跳过；required 入口把缺失条件作为失败。container 与 VM 都使用真实 `gitea-codespace` 可执行文件和同一原生运行时，按 create、stop、resume、delete 验证实例事实、完整环境、workspace、SSH/PTY、Web IDE、TCP 与 SFTP。Dev Container 运行时另以官方基础镜像、官方 Feature 和 Compose 标准夹具验证 image metadata、UID/GID、lifecycle 与恢复行为；同一夹具同时用于 Docker 直测和 Incus 整链路测试，便于判断问题属于通用 Engine 还是部署集成。
-
-真实测试一次只创建一个实例，CPU 为 1，内存上限为 `1GiB`。镜像包管理、外部仓库和 OCI Feature 可能依赖出网，因此与不拉取镜像的基础 Incus 生命周期入口分开。这样本地快速验证不会受镜像源影响，部署验收仍能覆盖真实网络与安装链路。
-
-### 实现验收点
-
-- [x] 普通 Go 测试覆盖原生运行时的纯逻辑和 Manager 状态边界。
-- Docker 集成入口验证单容器、Dockerfile、Compose、Feature、Docker 参数与 stop/resume，不由普通测试隐式拉取镜像。
-- container 与 VM 的 Incus E2E 使用真实二进制、同一网络模型和完整生命周期。
-- [x] Dev Container 标准夹具由 Docker 与 Incus 两个显式入口共享，并使用官方镜像和官方 Feature。
-- [x] 真实 E2E 串行执行并把单实例内存限制为 `1GiB`。
-
-## 完成检查
-
-每次协议变化先生成并发布 `codespace-proto-go`，再更新 Gitea 与 Manager 的远程依赖。每次实现变化同步核对生命周期、状态、RPC、部署与故障排除文档。根工作区文件只用于本地联调，最终验证必须在各模块自身依赖下完成。
+端到端测试创建独立命名空间和唯一资源名，完成后清理 CR、PVC、Pod、Service、路由与测试凭据。失败时保留必要诊断，后续清理仍应可重复执行。
 
 ### 实现验收点
 
-- 协议生成文件与 `.proto` 一致，两个消费者引用同一个远程版本。
-- Gitea 和 Manager 的测试分别使用自身规范入口通过。
-- 文档中的配置、状态格式、生命周期与当前代码一致，不保留已删除实现的描述。
+- 测试开始前检查集群、RuntimeClass、StorageClass 和镜像是否可用。
+- Kata 与 Sysbox 各自完成 create、stop、resume、delete 和访问验证。
+- Leader 切换、Pod 删除和 Cache 丢失均有真实恢复验证。
+- 测试结束后自动检查无孤立资源。
+
+## 完成标准
+
+一次功能变更完成时应满足：
+
+1. 设计章节与实际职责、流程和原因一致；
+2. Proto、Gitea 和 Codespace 使用同一协议；
+3. 格式化、静态检查、单元、集成和适用的端到端测试通过；
+4. 配置示例、管理页面和部署清单同步更新；
+5. 入口、代码、测试和文档保持同一当前设计；
+6. 安全边界经过权限与凭据测试；
+7. 工作树没有意外生成物和测试资源残留。
+
+### 实现验收点
+
+- 审阅者可从设计验收点定位对应代码和测试。
+- 自动化检查与本地使用同一公开命令。
+- 未执行的真实环境测试在变更说明中明确列出原因和剩余风险。
+- 测试创建的命名空间、凭据和外部资源在任务完成后清理。
