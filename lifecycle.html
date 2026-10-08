@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>实施与测试 - Gitea Codespace 设计文档</title>
+        <title>生命周期 - Gitea Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,89 +155,103 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="实施与测试"><a class="header" href="#实施与测试">实施与测试</a></h1>
-<p>本文说明代码落点、验证层次和完成标准。设计意图由其他章节定义，本文不重复协议字段和状态转换。</p>
-<h2 id="仓库边界"><a class="header" href="#仓库边界">仓库边界</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>仓库</th><th>职责</th></tr></thead><tbody>
-<tr><td><code>gitea</code></td><td>业务模型、权限、页面、Manager RPC 服务和后台任务</td></tr>
-<tr><td><code>codespace-proto-go</code></td><td>Gitea、Manager、组件与 Agent 的 Proto 定义和生成代码</td></tr>
-<tr><td><code>codespace</code></td><td>Manager、Gateway、Cache、Agent、Dev Container 运行时、管理 API 与 Vue 前端</td></tr>
+                        <h1 id="生命周期"><a class="header" href="#生命周期">生命周期</a></h1>
+<p>Gitea 保存用户可见的主状态和当前操作，Manager 负责让 Kubernetes 资源收敛，Agent 负责 Runtime 内的执行。操作版本贯穿三者，使网络重试、进程重启和 Leader 切换不会产生第二条执行链。</p>
+<h2 id="状态与操作"><a class="header" href="#状态与操作">状态与操作</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>主状态</th><th>含义</th><th>有操作时的类型</th></tr></thead><tbody>
+<tr><td><code>creating</code></td><td>已确认创建，环境尚未可用</td><td>create</td></tr>
+<tr><td><code>running</code></td><td>Runtime 已就绪</td><td>stop</td></tr>
+<tr><td><code>stopped</code></td><td>持久数据保留，Runtime 已停止</td><td>resume</td></tr>
+<tr><td><code>deleting</code></td><td>正在确认平台资源清理</td><td>delete</td></tr>
+<tr><td><code>failed</code></td><td>create 已确定无法完成</td><td>无；允许 delete</td></tr>
 </tbody></table>
 </div>
-<p>公共协议先在 Proto 仓库修改、生成、测试并发布，再更新 Gitea 和 Codespace 的远程依赖。两个实现仓库不复制协议结构，也不通过裸 JSON 交换已定义的业务对象。</p>
+<p>操作创建时间大于零表示存在操作；开始时间为零表示 queued，否则表示 running。操作完成后写入新的主状态并清空触发来源和操作时间。操作类型与阶段由主状态和时间唯一推导，不在数据库中保存第二份相同事实。</p>
+<p>每个新意图增加操作版本。续期、日志、Runtime 绑定、状态报告和最终提交都需要匹配 Codespace、Manager、操作类型与版本。delete 可以用更高版本替代进行中的 create、resume 或 stop，因为它代表用户的最终清理意图；其他冲突操作返回当前状态。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
-<li>每项功能能落入唯一仓库职责，不通过跨仓库复制实现。</li>
-<li>Proto 生成结果可重复，工作树生成后无额外差异。</li>
-<li>Gitea 和 Codespace 使用已发布远程模块版本。</li>
-<li>协议变更同时更新设计、实现和必要测试。</li>
+<li>一个 Codespace 同时最多有一个有效操作。</li>
+<li>同一持久行能够唯一推导操作类型和 queued/running 阶段。</li>
+<li>旧版本的日志、Runtime 信息和最终结果不能覆盖当前操作。</li>
+<li>重复提交相同意图保持幂等，不增加操作版本。</li>
 </ul>
-<h2 id="代码组织"><a class="header" href="#代码组织">代码组织</a></h2>
-<p>Gitea 的 Codespace 代码遵循现有 model、service、router、template 和 frontend 边界。业务规则集中在 service/model，router 负责绑定请求和响应，模板不执行权限判断。</p>
-<p>Codespace 按可独立理解的领域组织：控制面、Kubernetes 资源、Runtime/Agent、Gateway、Cache、Dev Container 和管理界面。局部逻辑保留在调用点附近；跨流程共享并且具有明确不变量的逻辑才提取为包或接口。功能入口、模型、测试和文档随同一变更保持一致，注释说明原因、不变量和外部限制。</p>
+<h2 id="创建"><a class="header" href="#创建">创建</a></h2>
+<pre class="mermaid">sequenceDiagram
+    participant U as 用户
+    participant G as Gitea
+    participant M as Manager Leader
+    participant K as Kubernetes
+    participant A as Agent
+    U-&gt;&gt;G: 确认提交、环境、权限和 Secret
+    G-&gt;&gt;G: 事务创建 Codespace 与 create 操作
+    M-&gt;&gt;G: 领取 create
+    M-&gt;&gt;G: 绑定新分配的 Runtime UUID
+    M-&gt;&gt;K: 创建 CR、PVC 和 Runtime Pod
+    A-&gt;&gt;M: 建立控制流并执行初始化
+    M-&gt;&gt;G: 上报日志、Runtime 信息和结果
+    G--&gt;&gt;U: running
+</pre>
+<p>Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和访问服务初始化后发布 ready，Manager 再提交 create 结果。</p>
+<p>输入和权限错误在持久化前返回。确定性执行错误进入 failed；可能已经创建的平台资源继续由同一 Runtime UUID 清理，避免重试生成另一套资源。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
-<li>Router/Handler 中没有重复的状态机、权限和事务实现。</li>
-<li>接口对应真实替换边界，不为单个实现增加空抽象。</li>
-<li>较长流程按稳定业务阶段组织；提取的函数各自承载明确行为或不变量。</li>
-<li>静态检查与代码搜索能够确认入口、实现和文档一致。</li>
+<li>创建确认、授权和任务入队位于同一数据库事务。</li>
+<li>同一 create 只对应一个 Runtime UUID、一组 CR/PVC 和一个有效操作版本。</li>
+<li>Runtime UUID 绑定前不创建对外可用的 Runtime。</li>
+<li>页面在 create 完成前可以按偏移读取日志，成功后状态为 running。</li>
 </ul>
-<h2 id="测试层次"><a class="header" href="#测试层次">测试层次</a></h2>
-<p>测试按风险选择最小有效层次：</p>
-<div class="table-wrapper"><table><thead><tr><th>层次</th><th>覆盖重点</th></tr></thead><tbody>
-<tr><td>单元测试</td><td>解析、权限交集、状态转换、幂等键、缓存键和纯函数</td></tr>
-<tr><td>数据库测试</td><td>事务、条件更新、唯一索引和多数据库迁移</td></tr>
-<tr><td>组件集成测试</td><td>RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护</td></tr>
-<tr><td>Kubernetes 端到端测试</td><td>CR/PVC/Pod、Leader 切换、RuntimeClass、网络与恢复</td></tr>
-<tr><td>浏览器测试</td><td>创建确认、列表/详情、日志增量加载和管理界面交互</td></tr>
-</tbody></table>
-</div>
-<p>测试验证用户可观察行为和安全不变量，测试数量与真实风险相称，并使用正式生产路径完成验证。</p>
-<p>Gitea 测试严格使用其文档规定的 Make 目标和测试环境，尤其集成测试不直接运行 <code>go test</code>。Codespace 使用项目 Makefile 统一执行 Go、前端和端到端测试。</p>
+<h2 id="运行与访问"><a class="header" href="#运行与访问">运行与访问</a></h2>
+<p>running 状态下，Agent 向 Manager 发布当前 Pod 身份、访问目标和 Endpoint；Gateway 在每次连接前复核 Gitea 权限并取得短期票据。用户活动更新最后活动时间，用于自动停止；组件心跳和后台状态检查不计为用户活动。</p>
+<p>Runtime 信息是可重建的展示数据。暂时失联会让访问入口显示不可用，但不会把 running 推测为 stopped 或 failed。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
-<li>关键状态机至少覆盖成功、并发抢占、非当前操作版本和恢复路径。</li>
-<li>权限测试覆盖修改对象 ID、跨用户、跨站点和凭据重放。</li>
-<li>前端测试在 Chromium 与 Firefox 中稳定，不依赖脆弱的定时假设。</li>
-<li>本地与自动化使用相同的公开测试入口。</li>
+<li>私有 Endpoint、Web IDE、SSH 和 SFTP 均需要当前用户授权。</li>
+<li>公共 Endpoint 仍需匹配当前 Runtime 和 Endpoint 声明。</li>
+<li>后台心跳不会延后自动停止。</li>
+<li>Runtime 信息过期不改变主状态。</li>
 </ul>
-<h2 id="真实环境验证"><a class="header" href="#真实环境验证">真实环境验证</a></h2>
-<p>Kubernetes 端到端测试使用项目维护的 k3s 测试环境，镜像可预先构建并导入 containerd。Kata 和 Sysbox 都需要真实 RuntimeClass 场景；不具备相应硬件时可以跳过并明确记录，不能用普通容器测试冒充隔离验证。</p>
-<p>端到端测试创建独立命名空间和唯一资源名，完成后清理 CR、PVC、Pod、Service、路由与测试凭据。失败时保留必要诊断，后续清理仍应可重复执行。</p>
+<h2 id="停止恢复与自动停止"><a class="header" href="#停止恢复与自动停止">停止、恢复与自动停止</a></h2>
+<p>stop 定向到已绑定 Manager。Manager 撤销路由和运行期凭据、停止 Runtime Pod 并保留 CR/PVC，确认完成后 Gitea 进入 stopped。resume 复用 Runtime UUID、CR、PVC 和已确定的环境配置，创建具有新 Pod UID、Agent 身份和访问目标版本的 Pod。</p>
+<p>首次创建由 init 后进入 start；恢复只执行同一 start 语义。环境标签用于首次调度，后续改名或删除不会迁移已有 Codespace。自动停止通过普通 stop 操作实现，因此具有相同版本、清理和恢复行为。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
-<li>测试开始前检查集群、RuntimeClass、StorageClass 和镜像是否可用。</li>
-<li>Kata 与 Sysbox 各自完成 create、stop、resume、delete 和访问验证。</li>
-<li>Leader 切换、Pod 删除和 Cache 丢失均有真实恢复验证。</li>
-<li>测试结束后自动检查无孤立资源。</li>
+<li>stop 后持久数据保留，Runtime Pod、路由和运行期 Token 消失。</li>
+<li>resume 不重新克隆仓库，也不重放初始化或一次性生命周期命令。</li>
+<li>resume 发布新的 Pod 身份、访问目标版本和短期凭据。</li>
+<li>手动停止与自动停止使用同一状态转换，并发扫描不会创建重复操作。</li>
 </ul>
-<h2 id="完成标准"><a class="header" href="#完成标准">完成标准</a></h2>
-<p>一次功能变更完成时应满足：</p>
-<ol>
-<li>设计章节与实际职责、流程和原因一致；</li>
-<li>Proto、Gitea 和 Codespace 使用同一协议；</li>
-<li>格式化、静态检查、单元、集成和适用的端到端测试通过；</li>
-<li>配置示例、管理页面和部署清单同步更新；</li>
-<li>入口、代码、测试和文档保持同一当前设计；</li>
-<li>安全边界经过权限与凭据测试；</li>
-<li>工作树没有意外生成物和测试资源残留。</li>
-</ol>
+<h2 id="删除"><a class="header" href="#删除">删除</a></h2>
+<p>delete 生效后，旧操作不能再发布 ready 或改变终态。Manager 依次撤销访问、停止执行并删除 Pod、PVC、CR 和路由信息；确认平台资源消失后，Gitea 清理业务关系、凭据、日志和展示数据。</p>
+<p>删除步骤以资源身份和稳定名称保持幂等。资源已经不存在表示该步骤完成；无法确认是否存在时保持 deleting，等待后续协调，而不是提前宣告成功。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
-<li>审阅者可从设计验收点定位对应代码和测试。</li>
-<li>自动化检查与本地使用同一公开命令。</li>
-<li>未执行的真实环境测试在变更说明中明确列出原因和剩余风险。</li>
-<li>测试创建的命名空间、凭据和外部资源在任务完成后清理。</li>
+<li>create、resume 或 stop 期间发起 delete 最终能够收敛。</li>
+<li>重复 delete 不会重建资源，也不会因资源已经不存在而失败。</li>
+<li>旧操作结果不能覆盖 deleting。</li>
+<li>平台资源确认清理前，业务状态保持可诊断。</li>
+</ul>
+<h2 id="超时与恢复"><a class="header" href="#超时与恢复">超时与恢复</a></h2>
+<p>create 和 resume 的排队或执行期限用于结束无法启动的请求：create 进入 failed，resume 回到 stopped。stop 和 delete 表达必须完成的收敛意图；执行许可到期后以更高操作版本重新排队，并保留首次创建时间用于诊断。</p>
+<p>Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清单并核对 Gitea、CR、PVC、Pod 和 Agent。已成功且持久记录的 Agent 阶段只重复上报结果；开始后未记录完成的阶段明确失败，因为盲目重放可能重复修改用户环境。旧 Pod 是否仍可能写入 PVC 的处理见<a href="runtime-platform.html#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B8%8E%E6%95%85%E9%9A%9C%E6%81%A2%E5%A4%8D">运行平台</a>。</p>
+<h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
+<ul>
+<li>create/resume 超时进入明确稳定状态，stop/delete 超时继续收敛。</li>
+<li>两个 Manager 竞争时只有一个能领取同一操作。</li>
+<li>新 Leader 不依赖前任进程内状态即可恢复协调。</li>
+<li>已完成阶段不会重放，结果未知的阶段提供明确诊断。</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="deployment-requirements.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="runtime-platform.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
+                            <a rel="next prefetch" href="data-model.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -245,10 +259,13 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="deployment-requirements.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="runtime-platform.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
+                    <a rel="next prefetch" href="data-model.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>

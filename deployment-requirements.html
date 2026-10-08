@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>实施与测试 - Gitea Codespace 设计文档</title>
+        <title>部署要求 - Gitea Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,89 +155,88 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="实施与测试"><a class="header" href="#实施与测试">实施与测试</a></h1>
-<p>本文说明代码落点、验证层次和完成标准。设计意图由其他章节定义，本文不重复协议字段和状态转换。</p>
-<h2 id="仓库边界"><a class="header" href="#仓库边界">仓库边界</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>仓库</th><th>职责</th></tr></thead><tbody>
-<tr><td><code>gitea</code></td><td>业务模型、权限、页面、Manager RPC 服务和后台任务</td></tr>
-<tr><td><code>codespace-proto-go</code></td><td>Gitea、Manager、组件与 Agent 的 Proto 定义和生成代码</td></tr>
-<tr><td><code>codespace</code></td><td>Manager、Gateway、Cache、Agent、Dev Container 运行时、管理 API 与 Vue 前端</td></tr>
-</tbody></table>
-</div>
-<p>公共协议先在 Proto 仓库修改、生成、测试并发布，再更新 Gitea 和 Codespace 的远程依赖。两个实现仓库不复制协议结构，也不通过裸 JSON 交换已定义的业务对象。</p>
+                        <h1 id="部署要求"><a class="header" href="#部署要求">部署要求</a></h1>
+<p>本文面向集群管理员，说明运行 Codespace 所需的平台能力、配置边界和上线验收。架构原因见<a href="runtime-platform.html">运行平台</a>，这里不重复控制器内部流程。</p>
+<h2 id="kubernetes-平台"><a class="header" href="#kubernetes-平台">Kubernetes 平台</a></h2>
+<p>Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass、Service，以及 Ingress 或 Gateway API。每个 Gitea 站点对应一个 <code>codespace-&lt;site-name&gt;</code> 命名空间；站点名称使用稳定的 DNS 标签。</p>
+<p>Manager 的 ServiceAccount 具有管理 Codespace CRD、站点命名空间资源、环境模板和 Leader Lease 所需的权限。Gateway、Cache 和 Runtime 使用各自身份，其中 Runtime 关闭 ServiceAccount Token 自动挂载。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
-<li>每项功能能落入唯一仓库职责，不通过跨仓库复制实现。</li>
-<li>Proto 生成结果可重复，工作树生成后无额外差异。</li>
-<li>Gitea 和 Codespace 使用已发布远程模块版本。</li>
-<li>协议变更同时更新设计、实现和必要测试。</li>
+<li>启动检查能指出缺失的 API、CRD 或 RBAC 权限。</li>
+<li>不同站点的资源进入不同命名空间。</li>
+<li>Manager 多副本中只有一个 Leader 推进生命周期操作。</li>
+<li>Gateway、Cache 和 Runtime 的权限审计结果符合各自职责。</li>
 </ul>
-<h2 id="代码组织"><a class="header" href="#代码组织">代码组织</a></h2>
-<p>Gitea 的 Codespace 代码遵循现有 model、service、router、template 和 frontend 边界。业务规则集中在 service/model，router 负责绑定请求和响应，模板不执行权限判断。</p>
-<p>Codespace 按可独立理解的领域组织：控制面、Kubernetes 资源、Runtime/Agent、Gateway、Cache、Dev Container 和管理界面。局部逻辑保留在调用点附近；跨流程共享并且具有明确不变量的逻辑才提取为包或接口。功能入口、模型、测试和文档随同一变更保持一致，注释说明原因、不变量和外部限制。</p>
+<h2 id="runtime-环境"><a class="header" href="#runtime-环境">Runtime 环境</a></h2>
+<p>每个启用的环境模板绑定经过验证的 RuntimeClass、StorageClass、基础镜像和资源限制。Kata 需要可用的虚拟化设备；Sysbox 需要受支持的内核和存储驱动。设备通过 Kubernetes 扩展资源和设备插件分配。</p>
+<p>Runtime Pod 使用专属 Docker 运行 Dev Container。节点容器运行时套接字和 Kubernetes 凭据不进入用户环境。模板中的 CPU、内存、磁盘和设备请求构成用户配置的上限。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
-<li>Router/Handler 中没有重复的状态机、权限和事务实现。</li>
-<li>接口对应真实替换边界，不为单个实现增加空抽象。</li>
-<li>较长流程按稳定业务阶段组织；提取的函数各自承载明确行为或不变量。</li>
-<li>静态检查与代码搜索能够确认入口、实现和文档一致。</li>
+<li>Kata 与 Sysbox 模板分别通过真实 RuntimeClass 启动测试。</li>
+<li>Runtime 内 Docker 可用，同时没有节点容器运行时访问能力和可用的 Kubernetes 身份。</li>
+<li>RuntimeClass、StorageClass 或设备缺失时，错误能够指出缺失能力。</li>
+<li>Dev Container 配置不能突破环境模板的资源上限。</li>
 </ul>
-<h2 id="测试层次"><a class="header" href="#测试层次">测试层次</a></h2>
-<p>测试按风险选择最小有效层次：</p>
-<div class="table-wrapper"><table><thead><tr><th>层次</th><th>覆盖重点</th></tr></thead><tbody>
-<tr><td>单元测试</td><td>解析、权限交集、状态转换、幂等键、缓存键和纯函数</td></tr>
-<tr><td>数据库测试</td><td>事务、条件更新、唯一索引和多数据库迁移</td></tr>
-<tr><td>组件集成测试</td><td>RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护</td></tr>
-<tr><td>Kubernetes 端到端测试</td><td>CR/PVC/Pod、Leader 切换、RuntimeClass、网络与恢复</td></tr>
-<tr><td>浏览器测试</td><td>创建确认、列表/详情、日志增量加载和管理界面交互</td></tr>
-</tbody></table>
-</div>
-<p>测试验证用户可观察行为和安全不变量，测试数量与真实风险相称，并使用正式生产路径完成验证。</p>
-<p>Gitea 测试严格使用其文档规定的 Make 目标和测试环境，尤其集成测试不直接运行 <code>go test</code>。Codespace 使用项目 Makefile 统一执行 Go、前端和端到端测试。</p>
+<h2 id="镜像存储与缓存"><a class="header" href="#镜像存储与缓存">镜像、存储与缓存</a></h2>
+<p>Manager、Gateway、Cache 和 Runtime 镜像在发布阶段构建，并以可追踪摘要部署。项目 Dev Container 镜像由 Runtime 内的专属 Docker 构建；测试集群无法访问镜像仓库时，可以导出镜像并通过 <code>ctr</code> 导入 containerd，同时保留原摘要用于核对。</p>
+<p>每个 Codespace 使用独立 PVC 保存工作区和 Runtime 数据。StorageClass 需要适配所选 RuntimeClass、节点和扩容策略。Cache 使用独立持久卷或 S3，属于可重新生成的性能数据，不进入业务恢复备份。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
-<li>关键状态机至少覆盖成功、并发抢占、非当前操作版本和恢复路径。</li>
-<li>权限测试覆盖修改对象 ID、跨用户、跨站点和凭据重放。</li>
-<li>前端测试在 Chromium 与 Firefox 中稳定，不依赖脆弱的定时假设。</li>
-<li>本地与自动化使用相同的公开测试入口。</li>
+<li>部署清单引用发布镜像及其预期摘要。</li>
+<li>Pod 替换后工作区和 Runtime 持久数据保持一致。</li>
+<li>删除 Codespace 最终回收对应 PVC，清理失败时保留可诊断状态。</li>
+<li>Cache 清空后可以回源重建，不影响已有 PVC 恢复。</li>
 </ul>
-<h2 id="真实环境验证"><a class="header" href="#真实环境验证">真实环境验证</a></h2>
-<p>Kubernetes 端到端测试使用项目维护的 k3s 测试环境，镜像可预先构建并导入 containerd。Kata 和 Sysbox 都需要真实 RuntimeClass 场景；不具备相应硬件时可以跳过并明确记录，不能用普通容器测试冒充隔离验证。</p>
-<p>端到端测试创建独立命名空间和唯一资源名，完成后清理 CR、PVC、Pod、Service、路由与测试凭据。失败时保留必要诊断，后续清理仍应可重复执行。</p>
+<h2 id="网络与身份"><a class="header" href="#网络与身份">网络与身份</a></h2>
+<p>Gitea、Manager、Gateway 和 Cache 使用各自 Service。Runtime 连接 Manager、Gitea/Git、镜像源和项目所需外部服务；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。每个 Runtime 不需要公开 Service 或 LoadBalancer。</p>
+<p>站点命名空间使用 NetworkPolicy 隔离。外部 DNS、TLS 和监听器由 Ingress 或 Gateway API 管理。Gitea 注册 Secret、组件身份、对象存储凭据和状态加密密钥通过 Kubernetes Secret 投递；开发默认值会产生安全警告，生产部署使用独立高熵值并纳入轮换流程。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
-<li>测试开始前检查集群、RuntimeClass、StorageClass 和镜像是否可用。</li>
-<li>Kata 与 Sysbox 各自完成 create、stop、resume、delete 和访问验证。</li>
-<li>Leader 切换、Pod 删除和 Cache 丢失均有真实恢复验证。</li>
-<li>测试结束后自动检查无孤立资源。</li>
+<li>Runtime 无法访问其他站点的 Runtime 网络。</li>
+<li>HTTP、WebSocket、SSH 和 SFTP 用户流量都先经过 Gateway。</li>
+<li>Secret 不出现在 ConfigMap、CR、资源标签或普通日志中。</li>
+<li>凭据轮换后旧身份在规定时间内失效。</li>
 </ul>
-<h2 id="完成标准"><a class="header" href="#完成标准">完成标准</a></h2>
-<p>一次功能变更完成时应满足：</p>
-<ol>
-<li>设计章节与实际职责、流程和原因一致；</li>
-<li>Proto、Gitea 和 Codespace 使用同一协议；</li>
-<li>格式化、静态检查、单元、集成和适用的端到端测试通过；</li>
-<li>配置示例、管理页面和部署清单同步更新；</li>
-<li>入口、代码、测试和文档保持同一当前设计；</li>
-<li>安全边界经过权限与凭据测试；</li>
-<li>工作树没有意外生成物和测试资源残留。</li>
-</ol>
+<h2 id="容量升级与恢复"><a class="header" href="#容量升级与恢复">容量、升级与恢复</a></h2>
+<p><code>EnvironmentTemplate</code> 定义单个 Runtime 的资源请求，<code>GiteaSite</code> 定义站点配额。Manager 统计 Kubernetes 实际资源和正在创建的任务，Kubernetes 调度器负责最终节点放置；Manager 不复制节点装箱算法。</p>
+<p>升级时先应用兼容的新 CRD，再滚动更新 Manager、Gateway 和 Cache，最后更新环境模板镜像。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 及必要 Secret。Leader 恢复和旧写入者确认遵循<a href="runtime-platform.html#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B8%8E%E6%95%85%E9%9A%9C%E6%81%A2%E5%A4%8D">运行平台的故障恢复流程</a>。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
-<li>审阅者可从设计验收点定位对应代码和测试。</li>
-<li>自动化检查与本地使用同一公开命令。</li>
-<li>未执行的真实环境测试在变更说明中明确列出原因和剩余风险。</li>
-<li>测试创建的命名空间、凭据和外部资源在任务完成后清理。</li>
+<li>站点配额统计包含 running 和正在创建的 Runtime。</li>
+<li>容量不足时任务排队或在截止时间后给出明确资源原因。</li>
+<li>滚动升级期间只有一个 Leader，已有会话具有明确重连行为。</li>
+<li>从备份恢复后，站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。</li>
+</ul>
+<h2 id="上线验收"><a class="header" href="#上线验收">上线验收</a></h2>
+<p>正式启用前，在目标集群完成以下场景：</p>
+<ol>
+<li>从两个隔离站点分别创建和删除 Codespace；</li>
+<li>使用计划启用的每种 RuntimeClass 完成 create、stop、resume 和 delete；</li>
+<li>验证 Web IDE、PTY、SSH、SFTP、HTTP Endpoint 和回环端口转发；</li>
+<li>替换 Runtime Pod，确认旧访问失效且 PVC 数据可恢复；</li>
+<li>切换 Manager Leader，确认操作不会重复；</li>
+<li>清空 Cache，确认构建可以回源；</li>
+<li>审计 NetworkPolicy、RBAC、Secret 和测试资源清理结果。</li>
+</ol>
+<h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
+<ul>
+<li>验收记录包含组件版本、RuntimeClass、StorageClass、镜像摘要和结果。</li>
+<li>每个失败场景能从页面和日志定位到明确阶段。</li>
+<li>写入者停止确认使用当前 CR UID、<code>resourceVersion</code> 和 Pod UID。</li>
+<li>验收结束后不存在孤立 CR、PVC、Pod、凭据或路由。</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="deployment-requirements.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="rpc-spec.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
+                            <a rel="next prefetch" href="implementation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -245,10 +244,13 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="deployment-requirements.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="rpc-spec.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
+                    <a rel="next prefetch" href="implementation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>
