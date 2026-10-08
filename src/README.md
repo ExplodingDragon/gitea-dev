@@ -2,7 +2,7 @@
 
 ## 产品目标
 
-Gitea Codespace 为 Gitea 用户提供与仓库和提交绑定的远程开发环境。用户选择运行环境和 Dev Container 配置后，可以创建、访问、停止、恢复和删除 Codespace。仓库权限、Secret、Git 身份和访问授权继续由 Gitea 管理，运行资源由独立 Manager 管理。
+Gitea Codespace 为 Gitea 用户提供与仓库和提交绑定的远程开发环境。用户选择运行环境和 Dev Container 配置后，可以创建、访问、停止、恢复和删除 Codespace。Gitea 管理仓库权限、Secret、Git 身份和访问授权，Manager 管理运行资源。
 
 Dev Container 是开发环境的统一描述格式。仓库配置、个人模板、站点模板和平台默认配置进入同一解析流程。项目构建在 Runtime Pod 内完成，不使用 Kubernetes 节点的容器运行时。
 
@@ -10,18 +10,18 @@ Dev Container 是开发环境的统一描述格式。仓库配置、个人模板
 
 ### 实现验收点
 
-- 用户可以从仓库、提交和 Pull Request 进入同一创建流程。
+- 用户可以从仓库、提交和合并请求进入同一创建流程。
 - 没有仓库配置时可以使用默认配置或命名模板创建环境。
 - Gitea 不保存 Kubernetes、Docker 或 RuntimeClass 的实现细节。
 
 ## 系统组成
 
-| 组件 | 职责 |
+| 组件 | 核心职责 |
 | --- | --- |
 | Gitea | 用户授权、业务状态、操作队列、开发凭据、日志和访问判定 |
 | codespace-proto-go | Gitea、Manager、Agent、Gateway 和 Cache 的共享协议 |
 | Manager | 管理页面、站点接入、Kubernetes 控制器、操作协调和状态报告 |
-| Kubernetes | 调度、Namespace、配额、持久卷、服务发现和 Leader Lease |
+| Kubernetes | 调度、命名空间、配额、持久卷、服务发现和 Leader Lease |
 | Codespace Agent | Runtime Pod 的 PID 1，管理专属 Docker、Dev Container 和访问流 |
 | Gateway | HTTP/WebSocket、SSH、SFTP 和本地端口转发入口 |
 | Cache | 可重新生成的镜像代理与构建缓存 |
@@ -42,7 +42,7 @@ flowchart LR
     D --> C[Cache]
 ```
 
-Gitea 保存用户意图和业务结果，Kubernetes 保存平台资源，PVC 保存开发环境，Agent 报告容器内执行结果。恢复时按这一所有权顺序核对，不从单次心跳反推全部状态。
+Gitea 保存用户意图和业务结果，Kubernetes 保存平台资源，PVC 保存开发环境，Agent 报告容器内执行结果。恢复时按这一所有权顺序核对。
 
 ### 实现验收点
 
@@ -52,26 +52,36 @@ Gitea 保存用户意图和业务结果，Kubernetes 保存平台资源，PVC �
 
 ## 运行与隔离
 
-每个 Gitea 站点对应一个 `GiteaSite` 集群资源和一个 `codespace-<site-name>` Namespace。Codespace CR、Runtime Pod、PVC、身份和网络策略都位于该 Namespace；Manager、Gateway 和 Cache 位于管理 Namespace。
+每个 Gitea 站点对应一个 `GiteaSite` 集群资源和一个 `codespace-<site-name>` 命名空间。Codespace CR、Runtime Pod、PVC、身份和网络策略位于站点命名空间；Manager、Gateway 和 Cache 位于管理命名空间。
 
-Runtime Pod 使用预先发布的固定镜像。Kata 提供虚拟机隔离，Sysbox 用于无法提供硬件虚拟化的节点；环境模板明确选择其中一种，不在运行中自动切换。Pod 内的专属 Docker 构建并运行实际 Dev Container，workspace、Docker 数据和 IDE 状态保存在专属 PVC，短期 Token、Secret 和 socket 保存在易失目录。
+Manager、Gateway、Cache 和 Runtime Pod 使用同一份摘要固定的平台镜像。Kata 提供虚拟机隔离，Sysbox 用于无法提供硬件虚拟化的节点；环境模板明确选择其中一种，不在运行中自动切换。Pod 内的专属 Docker 构建并运行实际 Dev Container，工作区、Docker 数据和 IDE 状态保存在专属 PVC，短期 Token、Secret 和 socket 保存在易失目录。
 
 **设计如此：**Kata 与 Sysbox 的安全边界和存储条件不同，明确选择比自动降级更容易审计。PVC 保存可恢复事实，Cache 只提高构建效率，因此清空 Cache 不影响已有环境恢复。
 
 ### 实现验收点
 
-- 站点删除只回收该站点 Namespace 内的资源。
-- stop 保留 PVC，resume 使用同一 workspace 和内部容器数据。
-- RuntimeClass、存储和镜像组合通过真实部署验证后才声明为可用环境。
+- 站点删除只回收该站点命名空间内的资源。
+- stop 保留 PVC，resume 使用同一工作区和内部容器数据。
+- RuntimeClass、存储、平台镜像和 Dev Container 注入组合通过真实部署验证后才声明为可用环境。
 
 ## 阅读路径
 
-先阅读 [Gitea 服务端](gitea-server.md) 和 [运行平台](runtime-platform.md) 理解组件职责，再通过 [生命周期](lifecycle.md) 核对端到端行为。[数据模型](data-model.md) 和 [RPC 接口](rpc-spec.md) 说明跨模块合同，[部署要求](deployment-requirements.md) 与 [实施和测试](implementation.md) 面向运维与开发。
+文档按用途分层，避免在不同章节重复维护同一设计：
 
-代码级字段以 Go 模型、CRD 和 `.proto` 为准。设计文档记录需要跨模块共同理解的语义、原因和验收行为，避免复制会随实现变化的字段清单。
+| 文档 | 面向对象 | 说明 |
+| --- | --- | --- |
+| [Gitea 服务端](gitea-server.md) | Gitea 开发者 | 用户体验、权限和业务控制面 |
+| [运行平台](runtime-platform.md) | Codespace 开发者 | Kubernetes、Runtime、Gateway 与 Cache |
+| [生命周期](lifecycle.md) | 两侧开发者 | create、stop、resume、delete 和恢复语义 |
+| [数据模型](data-model.md) | 模型与控制器开发者 | 数据所有权、标识和持久化不变量 |
+| [RPC 接口](rpc-spec.md) | 协议开发者 | 跨进程职责、安全与重试语义 |
+| [部署要求](deployment-requirements.md) | 集群管理员 | 平台依赖、上线和恢复要求 |
+| [实施与测试](implementation.md) | 贡献者 | 仓库边界、测试层次和完成标准 |
+
+具体字段、命令参数和默认值由源码、Proto、Helm values 与组件 README 维护；设计文档只保留跨模块必须一致的行为及其原因。
 
 ### 实现验收点
 
-- 同一规则只在一个主题文档中完整定义，其他文档使用链接引用。
-- 文档保持当前目标设计，代码与 Proto 承担函数和字段级说明。
-- 每个设计章节都提供可验证的实现验收点。
+- 每个主题有唯一的主要文档，其他章节通过链接引用。
+- 新设计能在对应章节找到原因、行为和可验证结果。
+- 字段、命令和默认值变化不要求复制修改多份设计说明。

@@ -43,6 +43,7 @@ Codespace 按可独立理解的领域组织：控制面、Kubernetes 资源、Ru
 | 组件集成测试 | RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护 |
 | Kubernetes 端到端测试 | CR/PVC/Pod、Leader 切换、RuntimeClass、网络与恢复 |
 | 浏览器测试 | 创建确认、列表/详情、日志增量加载和管理界面交互 |
+| Helm 渲染测试 | 单镜像摘要、RBAC、身份、内部/管理 Service 和默认入口边界 |
 
 测试验证用户可观察行为和安全不变量，测试数量与真实风险相称，并使用正式生产路径完成验证。
 
@@ -65,6 +66,7 @@ Kubernetes 端到端测试使用项目维护的 k3s 测试环境，镜像可预�
 
 - 测试开始前检查集群、RuntimeClass、StorageClass 和镜像是否可用。
 - Kata 与 Sysbox 各自完成 create、stop、resume、delete 和访问验证。
+- Helm lint 和模板渲染使用摘要固定镜像及现有 Secret 引用完成。
 - Leader 切换、Pod 删除和 Cache 丢失均有真实恢复验证。
 - 测试结束后自动检查无孤立资源。
 
