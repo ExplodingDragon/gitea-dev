@@ -156,120 +156,69 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="gitea-服务端"><a class="header" href="#gitea-服务端">Gitea 服务端</a></h1>
-<p>Gitea 是 Codespace 的业务控制面：它判断谁可以创建和访问环境，保存用户可见状态，签发短期凭据，并把生命周期操作交给 Manager。运行环境的实现细节由 Manager 负责，Gitea 不感知 Kubernetes、容器网络或存储布局。</p>
-<h2 id="用户入口"><a class="header" href="#用户入口">用户入口</a></h2>
-<p>Codespace 入口遵循 Gitea 现有的信息结构：</p>
-<div class="table-wrapper"><table><thead><tr><th>入口</th><th>用途</th></tr></thead><tbody>
-<tr><td>仓库代码页</td><td>从当前分支、标签或提交创建，并打开该仓库已有的 Codespace</td></tr>
-<tr><td>提交和合并请求页面</td><td>从明确的提交创建，或打开匹配该提交的环境</td></tr>
-<tr><td><code>/-/codespaces</code></td><td>查看当前用户的全部环境并执行常用操作</td></tr>
-<tr><td>Codespace 详情页</td><td>查看状态、资源使用、访问方式和按偏移加载的操作日志</td></tr>
-<tr><td>用户设置</td><td>管理个人 Manager、Dev Container 模板和 Codespace Secret</td></tr>
-<tr><td>站点管理</td><td>管理全局 Manager 和全局 Dev Container 模板</td></tr>
-</tbody></table>
-</div>
-<p>列表只显示作出决定所需的信息。内部 UUID、路由目标和运行平台对象留在诊断日志或 Manager 管理面，不进入日常页面。</p>
-<p>**设计如此：**创建入口依附于仓库和提交上下文，而集中列表负责跨仓库管理。这样用户不需要在一个通用表单中重新寻找仓库，也能在一个页面处理全部已有环境。</p>
+<p>Gitea 是 Codespace 的业务控制面：它判断谁可以创建和访问环境，保存用户可见状态，签发短期凭据，并把生命周期操作交给 Manager。运行平台的实现见<a href="runtime-platform.html">运行平台</a>。</p>
+<h2 id="用户体验"><a class="header" href="#用户体验">用户体验</a></h2>
+<p>Codespace 使用 Gitea 现有的信息结构：仓库、提交和合并请求页面提供当前上下文的创建入口；<code>/-/codespaces</code> 提供跨仓库列表；详情页展示状态、访问入口、资源使用、设置和操作日志；用户设置与站点管理分别维护个人和全局对象。</p>
+<p>创建使用“解析后确认”流程。Gitea 锁定提交并解析 Dev Container 配置，然后让用户确认运行环境、配置来源、附加仓库权限、会注入的 Secret 名称和自动停止设置。运行环境必须明确选择；短暂离线的 Manager 不会让环境选项消失，因为操作可以排队等待恢复。</p>
+<p>列表与详情只展示用户作出决定所需的信息。Runtime UUID、Pod、路由目标等平台诊断数据留在 Manager 管理面和服务日志。</p>
+<p>**设计如此：**创建入口依附仓库上下文，集中列表负责管理已有环境。这样创建时无需重复选择仓库，跨仓库管理也有稳定入口。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
-<li>用户能从仓库、提交和合并请求的明确引用进入创建流程。</li>
-<li>集中列表只返回当前用户有权查看的 Codespace，并支持分页和状态筛选。</li>
-<li>详情页不会暴露 Kubernetes、容器地址或内部凭据。</li>
-<li>指向 Manager/Gateway 的访问链接在新标签页打开，当前页面状态保持稳定。</li>
-</ul>
-<h2 id="创建确认"><a class="header" href="#创建确认">创建确认</a></h2>
-<p>创建采用“解析后确认”流程。Gitea 先锁定仓库提交并解析可用的 Dev Container 配置，再展示：</p>
-<ol>
-<li>仓库和引用；</li>
-<li>可用运行环境标签；</li>
-<li>Dev Container 配置来源；</li>
-<li>需要的附加仓库权限；</li>
-<li>启动时会注入的 Secret 名称；</li>
-<li>自动停止设置。</li>
-</ol>
-<p>运行环境必须由用户明确选择。环境标签来自站点全局 Manager 和当前用户的个人 Manager；相同标签合并展示，说明来自 Manager 声明。在线状态用于提示，短暂离线不会删除选项，因为任务可以排队等待 Manager 恢复。</p>
-<p>仓库内配置使用锁定提交和原始路径标识；用户或管理员创建的模板使用名称和配置正文标识。提交时重新解析并校验确认摘要。Codespace 保存后续执行所需的已确定输入：仓库来源保存提交与路径，模板来源保存当时的正文。</p>
-<p>**设计如此：**运行环境选择不参与配置摘要。它是最终表单的直接输入，服务端会重新验证可见性；把它加入摘要只会制造无收益的二次确认。</p>
-<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
-<ul>
-<li>没有可用环境标签时页面说明基础设施暂不可用，并且不创建数据库记录。</li>
-<li>用户必须明确选择环境；非法、不可见或已消失的标签在写入前被拒绝。</li>
-<li>分支在确认后发生变化时，创建使用已锁定提交，或要求用户重新确认。</li>
-<li>配置变化、附加权限和 Secret 名称在创建前清楚展示。</li>
+<li>用户可以从分支、标签、提交和合并请求进入同一创建确认流程。</li>
+<li>没有可用环境时页面给出基础设施状态，并且不创建业务记录。</li>
+<li>配置、权限或 Secret 范围变化时，提交要求重新确认。</li>
+<li>集中列表只返回当前用户的数据，并支持分页和状态筛选。</li>
 </ul>
 <h2 id="权限与身份"><a class="header" href="#权限与身份">权限与身份</a></h2>
-<p>Codespace 归创建用户所有。仓库成员关系、组织身份和管理员身份不会隐式转移所有权。所有页面、表单和令牌接口均从当前登录用户重新查找对象，路径中的数字或 UUID 不能替代权限检查。</p>
-<p>创建时至少要求对主仓库具有代码读取权限。Dev Container 声明的附加仓库由用户逐项授权；运行时令牌的有效权限是“用户当前权限”与“已授权范围”的交集。用户失去权限后，后续换发的凭据同步收窄或停止签发。</p>
-<p>个人 Manager 只接收其所有者的任务；站点全局 Manager 可以接收任意用户的匹配任务。站点管理员负责全局 Manager 和全局模板，普通用户只管理自己的对象。</p>
+<p>Codespace 归创建用户所有。页面、表单和令牌接口都从当前登录用户重新查找对象，URL 中的 ID 或 UUID 只用于定位，不能代替权限检查。</p>
+<p>创建至少要求主仓库代码读取权限。Dev Container 需要的附加仓库由用户逐项授权；运行时权限是用户当前权限与已确认范围的交集。个人 Manager 只服务其所有者，站点全局 Manager 可以服务任意用户。</p>
+<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<ul>
+<li>修改请求中的对象、仓库、用户或 Runtime 标识不能访问他人数据。</li>
+<li>用户失去仓库权限后，后续签发的运行凭据同步收窄或停止。</li>
+<li>附加仓库授权不会扩大用户原有权限。</li>
+<li>普通用户无法管理全局 Manager、模板或他人的个人对象。</li>
+</ul>
+<h2 id="manager-与调度"><a class="header" href="#manager-与调度">Manager 与调度</a></h2>
+<p>用户或站点管理员在 Gitea 创建并命名 Manager 记录，再生成一次性注册 Secret。Gitea 只保存 Secret 摘要；Manager 注册后声明访问地址、主机指纹和环境标签。</p>
+<p>创建操作先以未绑定状态入队。Manager 拉取任务时提交当前可接受的标签和容量，Gitea 按所有权、标签和排队顺序选择候选，并用条件更新保证唯一领取。Manager 分配 Runtime UUID 并完成绑定，后续 resume、stop 和 delete 都回到同一 Manager。</p>
+<p>环境标签只参与首次创建和调度。已有环境使用创建时确定的运行配置，标签变化不会迁移环境。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
-<li>修改请求中的对象 ID、仓库 ID、用户 ID 或 UUID 不能读取或操作他人的数据。</li>
-<li>用户失去主仓库读取权限后，新的运行时访问凭据不能继续授予该仓库权限。</li>
-<li>附加仓库只按用户确认的范围授权，且不会扩大用户原有权限。</li>
-<li>个人 Manager 的领取查询在数据库条件中限定为其所有者。</li>
+<li>注册 Secret 只在生成时显示，刷新页面无法再次取得明文。</li>
+<li>并发领取同一操作时只有一个 Manager 成功。</li>
+<li>个人 Manager 无法领取其他用户的操作。</li>
+<li>Runtime UUID 绑定后保持稳定，后续操作不重新调度。</li>
 </ul>
-<h2 id="manager-注册与调度"><a class="header" href="#manager-注册与调度">Manager 注册与调度</a></h2>
-<p>Manager 记录由用户或站点管理员在 Gitea 页面创建并命名。注册 Secret 仅在重置后展示一次；Gitea 只保存不可逆摘要。Manager 使用该 Secret 建立身份，随后声明地址、能力和环境标签。</p>
-<p>创建操作先以未绑定状态入队。Manager 拉取任务时提交本轮可接受的标签和容量，Gitea 按所有权、标签、由时间字段推导的执行阶段和创建顺序选择候选，并通过条件更新保证只有一个 Manager 领取。Manager 分配 Runtime UUID 后，使用绑定接口把它写入 Codespace；后续恢复、停止和删除始终回到已绑定 Manager。</p>
-<p>标签只用于创建时选择和首次调度。已有环境保存其有效运行配置，Manager 后续修改标签不会迁移或阻断已有环境。</p>
+<h2 id="生命周期与展示"><a class="header" href="#生命周期与展示">生命周期与展示</a></h2>
+<p>Gitea 为 create、resume、stop 和 delete 建立带版本的操作。Manager 的领取、续期、日志、Runtime 信息和结果必须匹配当前身份、绑定和操作版本。完整转换规则见<a href="lifecycle.html">生命周期</a>。</p>
+<p>操作日志是带单调字节偏移的追加流。页面按偏移增量加载，并在用户查看历史时保持滚动位置。CPU、内存、磁盘和 Endpoint 属于带代数的展示数据；过期时显示暂不可用，不改变业务状态。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
-<li>新建或重置 Manager 后，Secret 只显示一次，刷新页面无法再次取回明文。</li>
-<li>两个 Manager 并发领取同一操作时只有一个成功。</li>
-<li>个人 Manager 无法领取其他用户的任务。</li>
-<li>Runtime UUID 由 Manager 分配并且在绑定后保持稳定。</li>
-<li>恢复、停止和删除不因当前标签声明变化而改派 Manager。</li>
-</ul>
-<h2 id="生命周期操作"><a class="header" href="#生命周期操作">生命周期操作</a></h2>
-<p>Gitea 为 create、resume、stop 和 delete 建立带版本的操作，并根据主状态和操作时间恢复当前操作。Manager 的领取、续期、日志、Runtime 信息和最终结果都需要匹配身份、绑定与版本。页面只读取持久事实，不从按钮点击或单次心跳猜测状态。</p>
-<p>协议携带操作类型是为了确认 Manager 回报的是收到的命令；数据库通过主状态推导同一信息，避免保存重复字段。完整转换规则和端到端时序见<a href="lifecycle.html">生命周期</a>。</p>
-<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
-<ul>
 <li>非法状态转换在创建操作前返回明确错误。</li>
-<li>旧操作版本的续租、日志、Runtime 信息和终态不会覆盖新操作。</li>
-<li>页面刷新和服务重启后仍能从数据库恢复当前状态和操作。</li>
-<li>数据库可以从主状态和操作时间恢复待领取、执行中和稳定状态。</li>
-<li>delete 可以在 create 或 resume 进行时成为新的有效意图，并最终收敛到资源删除。</li>
+<li>旧操作版本的续期、日志、Runtime 信息和结果不会覆盖当前状态。</li>
+<li>长日志按上限分页获取，不阻塞页面交互。</li>
+<li>展示数据过期不把 running 推测为 stopped 或 failed。</li>
 </ul>
 <h2 id="凭据与访问"><a class="header" href="#凭据与访问">凭据与访问</a></h2>
-<p>Gitea 按用途签发不同凭据：</p>
-<div class="table-wrapper"><table><thead><tr><th>凭据</th><th>用途</th><th>生命周期</th></tr></thead><tbody>
-<tr><td>Gitea Token</td><td>Git 和 API 的最小授权访问</td><td>运行时按需签发并轮换，停止或删除时撤销</td></tr>
-<tr><td>Git SSH Key</td><td>该 Codespace 的 Git SSH 身份</td><td>首次创建后保留在环境持久卷，公钥始终上报</td></tr>
-<tr><td>Open Code</td><td>从 Gitea 页面打开 Gateway 私有入口</td><td>一次性、短时</td></tr>
-<tr><td>Gateway 会话</td><td>已认证浏览器或 SSH 会话</td><td>短时并可重新校验</td></tr>
-</tbody></table>
-</div>
-<p>SSH Key 类型由 Manager 配置决定，Gitea 保存公钥和主机指纹所需数据，不把算法写成数据库业务约束。HTTP Git 不要求 SSH <code>known_hosts</code>；选择外部 SSH Git 时，缺少可信主机配置会在启动前给出明确错误。</p>
-<p>用户 Secret 独立加密保存，页面和日志只展示名称。Manager 在 create、resume 或稳定环境恢复需要补充易失材料时请求访问数据；Gitea 每次按当前用户权限和 Secret 仓库范围解析并返回。持久 workspace 不保存这些明文，停止后由下一次合法恢复重新取得。</p>
-<h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
+<p>Gitea 按用途签发运行期 Git/API Token、一次性浏览器 Open Code 和 Gateway 会话授权。Git SSH 私钥由 Runtime 生成并保存在 PVC，Gitea 只接收公钥；用户 Secret 加密保存，运行时只按名称与当前仓库范围请求。</p>
+<p>Manager 在 create、resume 或恢复运行材料时向 Gitea 请求当前有效内容，并将明文写入 Runtime 易失目录。stop 和 delete 撤销运行期 Token；resume 重新签发。HTTP Git 与 SSH Git 各自使用对应信任配置，SSH 主机信任只在选择 SSH 传输时参与校验。</p>
+<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
-<li>Token 的范围不超过创建时授权与用户当前权限的交集。</li>
-<li>一次性 Open Code 不能重放，并且不能打开其他 Codespace。</li>
-<li>私钥和 Secret 明文不进入 Gitea 日志、操作日志或读取页面响应。</li>
-<li>停止和删除会撤销运行期 Token；恢复时签发新凭据。</li>
-<li>Secret 撤权后，后续访问材料请求不再包含该值。</li>
-</ul>
-<h2 id="状态日志与资源指标"><a class="header" href="#状态日志与资源指标">状态、日志与资源指标</a></h2>
-<p>Codespace 页面显示 CPU、内存和磁盘使用量。Manager 上报结构化 Runtime 信息，Gitea 只缓存用户界面需要的数据，并通过 Runtime UUID、当前操作和 Metadata 代数拒绝错误或乱序报告。</p>
-<p>操作日志保存为带单调字节偏移的追加日志流。页面按偏移增量加载：用户停留在末尾时持续跟随，查看历史内容时保持滚动位置；长输出分批获取和渲染。阶段与来源由普通日志文本表达，最终结果由状态区表达，日志协议不维护额外的展示分组。</p>
-<h3 id="实现验收点-6"><a class="header" href="#实现验收点-6">实现验收点</a></h3>
-<ul>
-<li>相同偏移重复请求返回相同内容；偏移冲突触发一次重新同步。</li>
-<li>长日志不会一次加载全部内容，也不会阻塞页面交互。</li>
-<li>不匹配当前 Runtime、操作或 Metadata 代数的指标和 Endpoint 报告不能覆盖当前展示。</li>
-<li>日志读取到暂时没有新增内容时按退避间隔继续，不产生紧密轮询。</li>
+<li>Token 权限不超过已确认范围与用户当前权限的交集。</li>
+<li>Open Code 只能使用一次，并且只打开指定 Codespace 与 Endpoint。</li>
+<li>私钥和 Secret 明文不进入 Gitea 日志、操作日志或读取响应。</li>
+<li>Secret 撤权后，后续运行材料不再包含该值。</li>
 </ul>
 <h2 id="配置与后台任务"><a class="header" href="#配置与后台任务">配置与后台任务</a></h2>
-<p>Gitea 的 Codespace 配置只包含业务入口和策略，例如启用状态、操作超时、日志限制、Git 传输以及 Gateway 对外地址。Kubernetes、镜像、缓存和 RuntimeClass 配置属于 Manager 管理面。</p>
-<p>后台任务负责处理排队超时、操作租约过期、自动停止、失效凭据和 Manager 状态核对。任务必须以数据库条件更新保持幂等；多个 Gitea 实例同时运行时，重复扫描不会产生重复操作。</p>
-<p>配置示例必须列出所有可用项目、默认值和使用原因。启动校验区分不可运行的配置错误与可诊断的部署警告；例如 Gateway Cookie 范围冲突会清楚记录，但不代替部署者作出拓扑选择。</p>
-<h3 id="实现验收点-7"><a class="header" href="#实现验收点-7">实现验收点</a></h3>
+<p>Gitea 配置只表达业务入口和策略，例如启用状态、操作超时、日志限制、Git 传输和 Gateway 对外地址。Kubernetes、镜像、RuntimeClass 和缓存配置由 Manager 管理。</p>
+<p>后台任务处理排队超时、操作租约、自动停止、失效凭据和 Manager 状态核对。任务使用数据库条件更新保持幂等，允许多个 Gitea 实例重复扫描。配置示例列出代码支持的全部项目、默认值和使用原因。</p>
+<h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
 <ul>
-<li><code>app.example.ini</code> 与代码中的配置项、默认值和语义一致。</li>
-<li>Gitea 启动不依赖 Manager 当前在线，但会拒绝自身无法安全运行的配置。</li>
-<li>后台任务并发执行不会创建重复操作或重复撤销凭据。</li>
-<li>Gitea 配置和页面只表达业务策略，运行平台配置集中在 Manager 管理面。</li>
+<li><code>app.example.ini</code> 与代码中的配置、默认值和语义一致。</li>
+<li>Gitea 启动不依赖 Manager 在线。</li>
+<li>多实例后台任务不会创建重复操作或重复撤销凭据。</li>
+<li>Gitea 页面和配置中不出现 Kubernetes 实现选项。</li>
 </ul>
 
                     </main>
