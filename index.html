@@ -156,75 +156,56 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="gitea-codespace-总体设计"><a class="header" href="#gitea-codespace-总体设计">Gitea Codespace 总体设计</a></h1>
-<h2 id="产品目标"><a class="header" href="#产品目标">产品目标</a></h2>
-<p>Gitea Codespace 为 Gitea 用户提供与仓库和提交绑定的远程开发环境。用户选择运行环境和 Dev Container 配置后，可以创建、访问、停止、恢复和删除 Codespace。Gitea 管理仓库权限、Secret、Git 身份和访问授权，Manager 管理运行资源。</p>
-<p>Dev Container 是开发环境的统一描述格式。仓库配置、个人模板、站点模板和平台默认配置进入同一解析流程。项目构建在 Runtime Pod 内完成，不使用 Kubernetes 节点的容器运行时。</p>
-<p>**设计如此：**Gitea 负责用户业务，Manager 负责运行资源，Dev Container 负责开发环境。三者各自只有一个权威来源，避免页面状态、集群状态和容器状态互相推导。</p>
+<h2 id="产品边界"><a class="header" href="#产品边界">产品边界</a></h2>
+<p>Gitea Codespace 为仓库、提交和合并请求提供可停止、恢复和删除的远程开发环境。用户选择运行环境与 Dev Container 配置，Gitea 完成权限确认并建立操作，Manager 再把操作收敛为 Kubernetes 资源和可访问的开发容器。</p>
+<p>Gitea 是用户、仓库权限和业务状态的权威来源；Manager 是运行资源的控制面；Dev Container 描述仓库需要的开发环境。明确这三个边界，可以让 Gitea 在不了解 Kubernetes 的情况下完成授权，也让运行平台在不了解 Gitea 内部模型的情况下恢复资源。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
-<li>用户可以从仓库、提交和合并请求进入同一创建流程。</li>
-<li>没有仓库配置时可以使用默认配置或命名模板创建环境。</li>
-<li>Gitea 不保存 Kubernetes、Docker 或 RuntimeClass 的实现细节。</li>
+<li>分支、标签、提交和合并请求使用同一创建流程。</li>
+<li>仓库没有 Dev Container 配置时，用户可以选择可见的命名模板。</li>
+<li>Gitea 页面、模型和 RPC 不包含 Kubernetes、RuntimeClass 或容器网络字段。</li>
 </ul>
-<h2 id="系统组成"><a class="header" href="#系统组成">系统组成</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>组件</th><th>核心职责</th></tr></thead><tbody>
-<tr><td>Gitea</td><td>用户授权、业务状态、操作队列、开发凭据、日志和访问判定</td></tr>
-<tr><td>codespace-proto-go</td><td>Gitea、Manager、Agent、Gateway 和 Cache 的共享协议</td></tr>
-<tr><td>Manager</td><td>管理页面、站点接入、Kubernetes 控制器、操作协调和状态报告</td></tr>
-<tr><td>Kubernetes</td><td>调度、命名空间、配额、持久卷、服务发现和 Leader Lease</td></tr>
+<h2 id="系统边界"><a class="header" href="#系统边界">系统边界</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>组件</th><th>权威职责</th></tr></thead><tbody>
+<tr><td>Gitea</td><td>用户授权、业务状态、操作、运行凭据、日志和访问判定</td></tr>
+<tr><td>Manager</td><td>站点接入、资源控制器、操作协调和状态报告</td></tr>
+<tr><td>Kubernetes</td><td>调度、命名空间、配额、持久卷、工作负载和 Leader Lease</td></tr>
 <tr><td>Codespace Agent</td><td>Runtime Pod 的 PID 1，管理专属 Docker、Dev Container 和访问流</td></tr>
-<tr><td>Gateway</td><td>HTTP/WebSocket、SSH、SFTP 和本地端口转发入口</td></tr>
-<tr><td>Cache</td><td>可重新生成的镜像代理与构建缓存</td></tr>
+<tr><td>Gateway</td><td>HTTP/WebSocket、SSH、SFTP 和回环端口转发入口</td></tr>
+<tr><td>Cache</td><td>可重新生成的镜像代理和构建缓存</td></tr>
+<tr><td>codespace-proto-go</td><td>Gitea 与 Manager 共享的公共业务协议</td></tr>
 </tbody></table>
 </div><pre class="mermaid">flowchart LR
-    U[Browser / SSH client] --&gt; G[Gitea]
-    U --&gt; I[Cluster ingress]
+    U[用户] --&gt; G[Gitea]
+    U --&gt; I[集群入口]
     I --&gt; W[Gateway]
-    W --&gt;|authorize| M[Manager Leader]
-    M &lt;--&gt;|ManagerService| G
+    W --&gt;|访问授权| M[Manager Leader]
+    M &lt;--&gt;|业务操作| G
     M --&gt; K[Kubernetes API]
     K --&gt; P[Runtime Pod]
-    P --&gt; A[Codespace Agent]
-    A --&gt; D[Docker / Dev Container]
-    A --&gt; V[Codespace PVC]
-    W --&gt;|ticketed stream| A
+    P --&gt; A[Agent]
+    A --&gt; D[Dev Container]
+    A --&gt; V[PVC]
+    W --&gt;|短期票据| A
     D --&gt; C[Cache]
 </pre>
-<p>Gitea 保存用户意图和业务结果，Kubernetes 保存平台资源，PVC 保存开发环境，Agent 报告容器内执行结果。恢复时按这一所有权顺序核对。</p>
+<p>用户流量由 Gateway 直接连接当前 Agent，Manager 只处理控制与授权。Gitea 保存用户意图和结果，Kubernetes 保存运行资源，PVC 保存可恢复的环境数据；进程内缓存均可从这些权威来源重建。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
 <li>同一操作版本贯穿 Gitea、Codespace 自定义资源和 Agent 任务。</li>
-<li>Gateway 用户流量直达当前 Agent，不经过 Manager 转发数据。</li>
-<li>Pod 替换后旧身份、旧路由和旧访问票据立即失效。</li>
+<li>Gateway 数据流不经过 Manager 转发。</li>
+<li>Gateway 只接受与当前 Pod 身份、路由和目标版本匹配的票据。</li>
+<li>Manager 重启后能从 Gitea 与 Kubernetes 恢复协调状态。</li>
 </ul>
-<h2 id="运行与隔离"><a class="header" href="#运行与隔离">运行与隔离</a></h2>
-<p>每个 Gitea 站点对应一个 <code>GiteaSite</code> 集群资源和一个 <code>codespace-&lt;site-name&gt;</code> 命名空间。Codespace CR、Runtime Pod、PVC、身份和网络策略位于站点命名空间；Manager、Gateway 和 Cache 位于管理命名空间。</p>
-<p>Manager、Gateway、Cache 和 Runtime Pod 使用同一份摘要固定的平台镜像。Kata 提供虚拟机隔离，Sysbox 用于无法提供硬件虚拟化的节点；环境模板明确选择其中一种，不在运行中自动切换。Pod 内的专属 Docker 构建并运行实际 Dev Container，工作区、Docker 数据和 IDE 状态保存在专属 PVC，短期 Token、Secret 和 socket 保存在易失目录。</p>
-<p>**设计如此：**Kata 与 Sysbox 的安全边界和存储条件不同，明确选择比自动降级更容易审计。PVC 保存可恢复事实，Cache 只提高构建效率，因此清空 Cache 不影响已有环境恢复。</p>
+<h2 id="运行原则"><a class="header" href="#运行原则">运行原则</a></h2>
+<p>每个 Gitea 站点使用独立命名空间。Runtime Pod 在明确选择的 Kata 或 Sysbox RuntimeClass 中运行专属 Docker，实际 Dev Container 由该 Docker 构建和启动。工作区、Docker 数据和 IDE 数据保存在独立 PVC；短期 Token、Secret 和 socket 保存在易失目录。</p>
+<p>RuntimeClass 在环境模板中显式选择。Kata 与 Sysbox 具有不同的隔离条件，恢复继续使用创建时确定的配置，从而保持安全边界稳定。环境恢复以 PVC 中的持久数据为准，Cache 只保存可以重新生成的加速数据。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
-<li>站点删除只回收该站点命名空间内的资源。</li>
-<li>stop 保留 PVC，resume 使用同一工作区和内部容器数据。</li>
-<li>RuntimeClass、存储、平台镜像和 Dev Container 注入组合通过真实部署验证后才声明为可用环境。</li>
-</ul>
-<h2 id="阅读路径"><a class="header" href="#阅读路径">阅读路径</a></h2>
-<p>文档按用途分层，避免在不同章节重复维护同一设计：</p>
-<div class="table-wrapper"><table><thead><tr><th>文档</th><th>面向对象</th><th>说明</th></tr></thead><tbody>
-<tr><td><a href="gitea-server.html">Gitea 服务端</a></td><td>Gitea 开发者</td><td>用户体验、权限和业务控制面</td></tr>
-<tr><td><a href="runtime-platform.html">运行平台</a></td><td>Codespace 开发者</td><td>Kubernetes、Runtime、Gateway 与 Cache</td></tr>
-<tr><td><a href="lifecycle.html">生命周期</a></td><td>两侧开发者</td><td>create、stop、resume、delete 和恢复语义</td></tr>
-<tr><td><a href="data-model.html">数据模型</a></td><td>模型与控制器开发者</td><td>数据所有权、标识和持久化不变量</td></tr>
-<tr><td><a href="rpc-spec.html">RPC 接口</a></td><td>协议开发者</td><td>跨进程职责、安全与重试语义</td></tr>
-<tr><td><a href="deployment-requirements.html">部署要求</a></td><td>集群管理员</td><td>平台依赖、上线和恢复要求</td></tr>
-<tr><td><a href="implementation.html">实施与测试</a></td><td>贡献者</td><td>仓库边界、测试层次和完成标准</td></tr>
-</tbody></table>
-</div>
-<p>具体字段、命令参数和默认值由源码、Proto、Helm values 与组件 README 维护；设计文档只保留跨模块必须一致的行为及其原因。</p>
-<h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
-<ul>
-<li>每个主题有唯一的主要文档，其他章节通过链接引用。</li>
-<li>新设计能在对应章节找到原因、行为和可验证结果。</li>
-<li>字段、命令和默认值变化不要求复制修改多份设计说明。</li>
+<li>不同站点的资源、凭据和网络策略位于各自命名空间。</li>
+<li>stop 保留 PVC，resume 使用同一工作区和内部 Docker 数据。</li>
+<li>Runtime Pod 不获得节点容器运行时套接字或 Kubernetes API 凭据。</li>
+<li>清空 Cache 不影响已有 Codespace 从 PVC 恢复。</li>
 </ul>
 
                     </main>

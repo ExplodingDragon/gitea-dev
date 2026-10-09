@@ -167,12 +167,15 @@
 </tbody></table>
 </div>
 <p>操作创建时间大于零表示存在操作；开始时间为零表示 queued，否则表示 running。操作完成后写入新的主状态并清空触发来源和操作时间。操作类型与阶段由主状态和时间唯一推导，不在数据库中保存第二份相同事实。</p>
-<p>每个新意图增加操作版本。续期、日志、Runtime 绑定、状态报告和最终提交都需要匹配 Codespace、Manager、操作类型与版本。delete 可以用更高版本替代进行中的 create、resume 或 stop，因为它代表用户的最终清理意图；其他冲突操作返回当前状态。</p>
+<p>每个新意图增加操作版本。续期、日志、Runtime 绑定、状态报告和最终提交都需要匹配 Codespace、Manager、操作类型与版本。数据库写入同时比较读取时的主状态、操作版本和操作阶段，只有仍为当前状态时才生效。delete 可以用更高版本替代进行中的 create、resume 或 stop，因为它代表用户的最终清理意图；其他冲突操作返回当前状态。</p>
+<p>用户活动代数独立保护活动递增和自动停止取消，Manager 的操作完成则只比较生命周期快照。这样打开 Endpoint 与 stop 完成并发发生时，活动请求保持环境的既定主状态，stop 也保留已经记录的活动代数。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
 <li>一个 Codespace 同时最多有一个有效操作。</li>
 <li>同一持久行能够唯一推导操作类型和 queued/running 阶段。</li>
-<li>旧版本的日志、Runtime 信息和最终结果不能覆盖当前操作。</li>
+<li>日志、Runtime 信息和最终结果只接受当前操作版本。</li>
+<li>并发状态写入只有一个能够匹配读取时的生命周期快照。</li>
+<li>用户活动递增和 Manager 操作完成分别按各自的条件更新生效。</li>
 <li>重复提交相同意图保持幂等，不增加操作版本。</li>
 </ul>
 <h2 id="创建"><a class="header" href="#创建">创建</a></h2>
@@ -221,18 +224,18 @@
 <li>手动停止与自动停止使用同一状态转换，并发扫描不会创建重复操作。</li>
 </ul>
 <h2 id="删除"><a class="header" href="#删除">删除</a></h2>
-<p>delete 生效后，旧操作不能再发布 ready 或改变终态。Manager 依次撤销访问、停止执行并删除 Pod、PVC、CR 和路由信息；确认平台资源消失后，Gitea 清理业务关系、凭据、日志和展示数据。</p>
-<p>删除步骤以资源身份和稳定名称保持幂等。资源已经不存在表示该步骤完成；无法确认是否存在时保持 deleting，等待后续协调，而不是提前宣告成功。</p>
+<p>delete 生效后，只有当前 delete 版本可以发布状态。Manager 依次撤销访问、停止执行并删除 Pod、PVC、CR 和路由信息；确认平台资源消失后，Gitea 清理业务关系、凭据、日志和展示数据。</p>
+<p>删除步骤以资源身份和稳定名称保持幂等。资源已经不存在表示该步骤完成；资源状态尚未确认时保持 deleting，并由后续协调继续核对。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
 <li>create、resume 或 stop 期间发起 delete 最终能够收敛。</li>
 <li>重复 delete 不会重建资源，也不会因资源已经不存在而失败。</li>
-<li>旧操作结果不能覆盖 deleting。</li>
+<li>deleting 只接受当前 delete 版本的操作结果。</li>
 <li>平台资源确认清理前，业务状态保持可诊断。</li>
 </ul>
 <h2 id="超时与恢复"><a class="header" href="#超时与恢复">超时与恢复</a></h2>
 <p>create 和 resume 的排队或执行期限用于结束无法启动的请求：create 进入 failed，resume 回到 stopped。stop 和 delete 表达必须完成的收敛意图；执行许可到期后以更高操作版本重新排队，并保留首次创建时间用于诊断。</p>
-<p>Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清单并核对 Gitea、CR、PVC、Pod 和 Agent。已成功且持久记录的 Agent 阶段只重复上报结果；开始后未记录完成的阶段明确失败，因为盲目重放可能重复修改用户环境。旧 Pod 是否仍可能写入 PVC 的处理见<a href="runtime-platform.html#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B8%8E%E6%95%85%E9%9A%9C%E6%81%A2%E5%A4%8D">运行平台</a>。</p>
+<p>Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清单并核对 Gitea、CR、PVC、Pod 和 Agent。已成功且持久记录的 Agent 阶段只重复上报结果；开始后未记录完成的阶段明确失败，因为盲目重放可能重复修改用户环境。旧 Pod 是否仍可能写入 PVC 的处理见<a href="runtime-platform.html#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B8%8E%E6%81%A2%E5%A4%8D">运行平台</a>。</p>
 <h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
 <ul>
 <li>create/resume 超时进入明确稳定状态，stop/delete 超时继续收敛。</li>
