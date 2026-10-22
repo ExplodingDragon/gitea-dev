@@ -21,7 +21,7 @@ Gitea 是 Codespace 的业务控制面：它确认用户权限、保存用户可
 
 Codespace 归创建用户所有。页面、表单和令牌接口都从当前登录身份重新查找对象；URL 中的 ID 或 UUID 只用于定位。创建至少要求主仓库代码读取权限，附加仓库授权取用户当前权限与已确认范围的交集。
 
-Codespace Token 由独立认证方法优先识别，并始终按 Codespace 权限模型处理。访问授权范围外的公开仓库时，请求保留 Codespace 用户身份用于审计，同时使用匿名只读的仓库权限。
+Codespace Token 由独立认证方法优先识别。通用 Token scope 与凭据标识通过 Gitea 的 `Doer.ExtDoerData` 传递，Codespace 仓库授权仍在请求上下文中校验。这样通用权限判断可以沿用 Gitea 的实现，管理员持有的 Codespace Token 也不会获得管理员的完整权限。访问授权范围外的公开仓库时，请求保留 Codespace 用户身份用于审计，同时使用匿名只读的仓库权限。
 
 身份用于说明“谁在请求”，仓库权限用于说明“这次能做什么”。两者分开后，公开仓库读取不会扩大 Token 范围，也不会丢失真实请求者。
 
@@ -31,6 +31,7 @@ Codespace Token 由独立认证方法优先识别，并始终按 Codespace 权�
 - 用户失去仓库权限后，后续运行凭据同步收窄或停止签发。
 - 附加仓库授权不会扩大用户原有权限。
 - Codespace Token 只按 Codespace 权限模型处理。
+- Token scope 和仓库授权同时生效，管理员身份不会绕过 Token 限制。
 - 公开仓库回退仅允许读取，同时保留真实用户身份。
 
 ## Manager 与调度

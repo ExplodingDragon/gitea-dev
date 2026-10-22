@@ -12,7 +12,7 @@
 | `AgentAccessService`     | Gateway ↔ Agent        | Codespace 内部       | PTY、SFTP、HTTP 和回环端口转发                         |
 | `RuntimeEndpointService` | Dev Container → Agent   | Codespace 内部       | 通过本地 Unix socket 管理 HTTP Endpoint                |
 
-Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端留在 Manager 与内部协议。平台使用同一个二进制交付各组件，但 Manager、Agent、Gateway、Cache 和 Runtime 命令运行在不同进程或 Pod 中，仍需要明确的进程间通信。统一使用 Connect/gRPC 可以复用双向流、取消、背压、消息限制和 mTLS，避免维护额外的自定义传输格式。
+Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端留在 Manager 与内部协议。平台使用同一个二进制交付各组件，但 Manager、Agent、Gateway、Cache 和 Runtime 命令运行在不同进程或 Pod 中，仍需要明确的进程间通信。生成代码和调用端统一使用 Connect v2，通过 HTTP 传输适配器承载 Connect/gRPC，复用双向流、取消、背压、消息限制和 mTLS，避免维护额外的自定义传输格式。身份从请求元数据传入认证上下文，协议版本在接收消息时校验，业务方法直接接收和返回 Proto 消息。
 
 ### 实现验收点
 
@@ -49,6 +49,7 @@ Gateway 使用按能力签发的短期票据访问 PTY、SFTP、HTTP Endpoint �
 
 - Gateway 与 Cache 分别使用绑定自身角色的身份和能力。
 - 控制流重连后可以从完整快照恢复配置。
+- 控制流建立失败和运行中断都进入现有重连流程，取消请求会释放连接。
 - Agent 票据只适用于一个 Runtime、Pod、目标版本和访问能力。
 - 日志背压不会阻止控制命令。
 - Dev Container 可以通过本地 socket 增删和查询 Endpoint。
