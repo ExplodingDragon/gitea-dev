@@ -223,7 +223,7 @@
 </ul>
 <h2 id="权限与身份"><a class="header" href="#权限与身份">权限与身份</a></h2>
 <p>Codespace 归创建用户所有。页面、表单和令牌接口都从当前登录身份重新查找对象；URL 中的 ID 或 UUID 只用于定位。创建至少要求主仓库代码读取权限，附加仓库授权取用户当前权限与已确认范围的交集。</p>
-<p>Codespace Token 由独立认证方法优先识别，并始终按 Codespace 权限模型处理。访问授权范围外的公开仓库时，请求保留 Codespace 用户身份用于审计，同时使用匿名只读的仓库权限。</p>
+<p>Codespace Token 由独立认证方法优先识别。通用 Token scope 与凭据标识通过 Gitea 的 <code>Doer.ExtDoerData</code> 传递，Codespace 仓库授权仍在请求上下文中校验。这样通用权限判断可以沿用 Gitea 的实现，管理员持有的 Codespace Token 也不会获得管理员的完整权限。访问授权范围外的公开仓库时，请求保留 Codespace 用户身份用于审计，同时使用匿名只读的仓库权限。</p>
 <p>身份用于说明“谁在请求”，仓库权限用于说明“这次能做什么”。两者分开后，公开仓库读取不会扩大 Token 范围，也不会丢失真实请求者。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
@@ -231,6 +231,7 @@
 <li>用户失去仓库权限后，后续运行凭据同步收窄或停止签发。</li>
 <li>附加仓库授权不会扩大用户原有权限。</li>
 <li>Codespace Token 只按 Codespace 权限模型处理。</li>
+<li>Token scope 和仓库授权同时生效，管理员身份不会绕过 Token 限制。</li>
 <li>公开仓库回退仅允许读取，同时保留真实用户身份。</li>
 </ul>
 <h2 id="manager-与调度"><a class="header" href="#manager-与调度">Manager 与调度</a></h2>
@@ -473,7 +474,7 @@
 <tr><td><code>RuntimeEndpointService</code></td><td>Dev Container → Agent</td><td>Codespace 内部</td><td>通过本地 Unix socket 管理 HTTP Endpoint</td></tr>
 </tbody></table>
 </div>
-<p>Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端留在 Manager 与内部协议。平台使用同一个二进制交付各组件，但 Manager、Agent、Gateway、Cache 和 Runtime 命令运行在不同进程或 Pod 中，仍需要明确的进程间通信。统一使用 Connect/gRPC 可以复用双向流、取消、背压、消息限制和 mTLS，避免维护额外的自定义传输格式。</p>
+<p>Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端留在 Manager 与内部协议。平台使用同一个二进制交付各组件，但 Manager、Agent、Gateway、Cache 和 Runtime 命令运行在不同进程或 Pod 中，仍需要明确的进程间通信。生成代码和调用端统一使用 Connect v2，通过 HTTP 传输适配器承载 Connect/gRPC，复用双向流、取消、背压、消息限制和 mTLS，避免维护额外的自定义传输格式。身份从请求元数据传入认证上下文，协议版本在接收消息时校验，业务方法直接接收和返回 Proto 消息。</p>
 <h3 id="实现验收点-23"><a class="header" href="#实现验收点-23">实现验收点</a></h3>
 <ul>
 <li>每个请求都能从认证上下文和消息确定调用者与目标。</li>
@@ -501,6 +502,7 @@
 <ul>
 <li>Gateway 与 Cache 分别使用绑定自身角色的身份和能力。</li>
 <li>控制流重连后可以从完整快照恢复配置。</li>
+<li>控制流建立失败和运行中断都进入现有重连流程，取消请求会释放连接。</li>
 <li>Agent 票据只适用于一个 Runtime、Pod、目标版本和访问能力。</li>
 <li>日志背压不会阻止控制命令。</li>
 <li>Dev Container 可以通过本地 socket 增删和查询 Endpoint。</li>
