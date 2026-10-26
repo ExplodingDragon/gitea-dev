@@ -182,12 +182,16 @@
 </ul>
 <h2 id="gateway-与访问"><a class="header" href="#gateway-与访问">Gateway 与访问</a></h2>
 <p>Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。它从 Manager 获取当前路由，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。Manager 不转发用户数据。</p>
+<p>路由快照只包含站点已就绪、绑定有效且 Pod 和访问目标可用的实例。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。</p>
 <p>Gateway SSH 主机密钥由 Manager 生成，私钥保存在 Kubernetes Secret 中。轮换时创建新的 Secret 和 Gateway 工作负载，再发布新的公钥指纹。Agent 提供 PTY、命令、SFTP、HTTP Endpoint 和回环端口转发；Dev Container 通过本地 Unix socket 管理 Endpoint。</p>
+<p>SSH 命令正常退出时先有界排空输出再发送退出状态；断连时同时关闭 RPC 与本地管道，释放被慢客户端阻塞的读取和写入。完成通知可以重复观察，重复关闭保持幂等。TCP 的输入半关闭仍允许读取剩余响应，避免截断请求完成后的数据。</p>
 <p>外部 DNS、TLS 和监听器由 Kubernetes Ingress 或 Gateway API 管理，使应用授权与平台证书分别由对应组件负责。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>每个数据流都需要当前有效的用户授权和 Agent 票据。</li>
 <li>SSH 主机私钥只存在于对应 Secret。</li>
+<li>单个实例不可用不影响其他实例的路由，Pod 被替换或目标失效后不能获得访问票据。</li>
+<li>SSH 正常退出保留输出和退出码；断连释放阻塞任务，TCP 半关闭后仍可接收响应。</li>
 <li>每张票据只绑定一种访问能力。</li>
 <li>本地端口转发只访问当前 Dev Container 的回环地址。</li>
 <li>Pod 或目标版本变化后，旧路由和票据失效。</li>
@@ -195,10 +199,12 @@
 <h2 id="cache"><a class="header" href="#cache">Cache</a></h2>
 <p>Cache 是独立组件，支持本地文件系统或 S3。它为允许的上游镜像提供代理，并按站点、仓库和用户隔离构建缓存。Runtime 的 Docker 数据保存在 PVC，Cache 只减少重复下载与构建。</p>
 <p>Cache 从 Manager 获取配置、短期认证和维护许可。缓存丢失时允许在原授权范围内回源；维护许可保证同一存储同一时刻只有一个垃圾回收执行者。</p>
+<p>申请清理许可和提交清理完成均等待 Manager 按请求序号确认。等待受超时和调用取消控制，结束后释放请求记录；迟到的响应只对应原请求，连接故障同时结束尚未确认的维护请求。这样“已发送”与“已完成”有明确区别，重连也不会继续持有旧请求的等待资源。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
 <li>私有镜像和构建缓存按站点、仓库与用户范围隔离读取。</li>
 <li>Registry 与仓库组合不会产生缓存键冲突。</li>
+<li>清理完成在 Manager 确认后才返回成功；取消、超时和控制流关闭均结束等待，并可在后续有效连接上继续维护。</li>
 <li>Cache 清空后可以回源，已有 Codespace 仍可从 PVC 恢复。</li>
 <li>同一存储同一时刻只有一个垃圾回收执行者。</li>
 </ul>
