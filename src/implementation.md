@@ -46,13 +46,14 @@
 
 ## 真实环境验证
 
-Kubernetes 端到端测试使用摘要固定的平台镜像和独立命名空间。Kata 与 Sysbox 通过同一入口分别执行，使结果明确对应实际 RuntimeClass 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。
+Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata 与 Sysbox 通过同一入口分别执行，使结果明确对应实际 RuntimeClass 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。
 
 测试开始前检查集群能力、镜像和真实 Gitea 凭据，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。成功执行清理测试资源；失败执行先保留 Kubernetes 资源、事件和组件日志，便于定位后再清理。
 
 ### 实现验收点
 
 - 测试开始前检查集群 API、RuntimeClass、StorageClass、镜像和凭据。
+- 测试集群在执行期间由本轮测试安装的 Manager 控制面协调。
 - 每种支持的隔离模式完成 create、stop、resume、delete 和访问验证。
 - Leader 切换、Pod 删除与 Cache 丢失具有恢复验证。
 - Runtime Pod 内完成 Docker 数据恢复和 Dev Container 官方场景验证。
