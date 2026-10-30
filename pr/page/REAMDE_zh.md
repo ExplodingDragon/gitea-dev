@@ -15,9 +15,4 @@
 ![通过 Gitea Actions 发布 Pages](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/page/pages-actions.png)
 ![Pages 实例管理](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/page/pages-instances.png)
 
-## 验证
-
-- Gitea：`make checks`、`make lint`、`make build`、`make test-backend`、`make test-frontend`、`make test-migration` 和 `make test-e2e`。
-- gitea-pages：`make format`、`make tidy`、`make check`、`go test -race ./...` 和 `golangci-lint run ./...`。
-
 相关内容：https://github.com/go-gitea/gitea/issues/302、https://github.com/go-gitea/gitea/issues/23521、https://github.com/go-gitea/gitea/issues/28907

@@ -15,9 +15,4 @@ Adds repository Pages backed by the separately deployed [gitea-pages](https://gi
 ![Pages publication from Gitea Actions](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/page/pages-actions.png)
 ![Pages instance administration](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/page/pages-instances.png)
 
-## Validation
-
-- Gitea: `make checks`, `make lint`, `make build`, `make test-backend`, `make test-frontend`, `make test-migration`, and `make test-e2e`.
-- gitea-pages: `make format`, `make tidy`, `make check`, `go test -race ./...`, and `golangci-lint run ./...`.
-
 Related: https://github.com/go-gitea/gitea/issues/302, https://github.com/go-gitea/gitea/issues/23521, https://github.com/go-gitea/gitea/issues/28907
