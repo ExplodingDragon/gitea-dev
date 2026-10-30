@@ -170,9 +170,9 @@
 </div>
 <p>Pages 使用 <code>github.com/go-acme/lego/v5</code> 处理 ACME 协议。Gitea 侧遵循 <code>gitea/AGENTS.md</code> 和 Gitea 测试规范；Pages 侧遵循自身模块的 Make 目标和 Go 检查工具。</p>
 <p>Pages 根包同时作为可执行程序的核心库。模块根目录的 <code>page.go</code> 是稳定公共门面，公开接口以 <code>Config</code>、<code>Service</code>、<code>Content</code>、<code>Deployment</code>、<code>Publication</code> 和 <code>Publisher</code> 为核心，并提供启动模式、服务选项、启动恢复迭代器和两个内置发布器所需的配套类型。<code>internal/runtime/</code> 保存具体运行实现和内置资源，Gitea 通信结构、同步客户端、etcd 存储、证书与 ACME 管理方法保持包内可见，只通过 <code>Service</code> 和内置发布器参与运行。<code>cmd/</code> 使用 Cobra 组织命令，<code>main.go</code> 只建立进程上下文，<code>root.go</code> 只声明命令结构，<code>standalone/</code> 和 <code>nginx/</code> 分别装配对应运行模式。这样嵌入方可以接管网页入口和遍历已确认部署，依赖范围保持在稳定公共门面内，命令也能按运行职责扩展而无需把进程逻辑放入公共库。</p>
-<p>运行实现保持为一个内聚的内部包，因为同步状态、候选内容事务、证书回调和发布器恢复共同组成同一条部署状态机；把它们拆成多个只转发内部结构的小包会增加包间接口，却不能形成可以独立使用的能力。<code>internal/runtime/store.go</code> 保存 etcd 事实，<code>store_content.go</code> 维护候选与已确认内容；<code>sync_protocol.go</code> 处理全量和增量同步，<code>sync_deploy.go</code> 处理部署事务，<code>sync_certificates.go</code> 处理证书；<code>address.go</code> 统一计算所有者 Host、主页路径和项目路径；<code>server.go</code> 与 <code>nginx.go</code> 实现同一个 <code>Publisher</code>，<code>nginx_render.go</code> 只负责生成配置。</p>
+<p>运行实现集中在一个内聚的内部包，同步状态、候选内容事务、证书回调和发布器恢复共同组成同一条部署状态机。包内文件按职责组织：<code>internal/runtime/store.go</code> 保存 etcd 事实，<code>store_content.go</code> 维护候选与已确认内容；<code>sync_protocol.go</code> 处理全量和增量同步，<code>sync_deploy.go</code> 处理部署事务，<code>sync_certificates.go</code> 处理证书；<code>address.go</code> 统一计算所有者 Host、主页路径和项目路径；<code>server.go</code> 与 <code>nginx.go</code> 实现同一个 <code>Publisher</code>，<code>nginx_render.go</code> 只负责生成配置。共享状态机保留在同一包内，使事务边界和内部类型直接对应，公共包只暴露可独立使用的能力。</p>
 <p><code>Service</code> 负责注册、同步、下载、TAR.GZ 检查、展开、TXT 校验和结果上报。发布器只接收已经检查并展开的不可变 <code>Content</code>，负责把 <code>Deployment</code> 映射为实际入口。standalone 发布器提供共享当前路由和挑战状态的 HTTP 处理器；Nginx 发布器维护配置、路由标记、证书输出和重载。外部 Go 程序也可以实现 <code>Publisher</code>，通过 <code>Content.Open</code> 或只读目录接入自己的 Web 框架。这个边界让三种入口共用同一部署流程，接入新的 Web 服务无需复制 Gitea 同步和归档安全代码。</p>
-<p>有界部署队列只保存 <code>repo_id</code>。部署工作线程开始处理时从本地状态读取该仓库的最新事实，因此排队期间到达的新摘要、名称或域名状态会自然生效；同一仓库正在部署时再次收到更新，会在当前任务结束后再排入一次。下载和展开先产生候选内容，<code>Publisher.Publish</code> 成功后才保存当前安装摘要并清理旧内容；发布器返回硬错误时恢复之前的入口，核心随后删除失败候选。关闭或删除先由发布器移除入口，再清理内容并保存结果。结果写入再次核对站点时间、摘要和路由事实，使迟到任务不能覆盖更新后的站点。</p>
+<p>有界部署队列只保存 <code>repo_id</code>。部署工作线程开始处理时从本地状态读取该仓库的最新事实，因此排队期间到达的新摘要、名称或域名状态会自然生效；同一仓库正在部署时再次收到更新，会在当前任务结束后再排入一次。下载和展开先产生候选内容，<code>Publisher.Publish</code> 成功后才保存当前安装摘要并清理旧内容；发布器返回硬错误时恢复之前的入口，核心随后删除失败候选。关闭或删除先由发布器移除入口，再清理内容并保存结果。结果写入再次核对站点时间、摘要和路由事实，使迟到任务不能覆盖更新后的站点；本地结果无法写入时继续通过现有接口报告失败，部署超时只停止部署工作，不会取消受 HTTP 超时约束的错误报告。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
 <li>顶层工作区使用 <code>main</code>，Gitea 仓库使用从更新后 <code>origin/main</code> 创建的 <code>feat-pages</code>。</li>
@@ -193,6 +193,7 @@
 <li>启动恢复通过迭代器交给发布器，单仓库更新只提交该仓库的部署，不复制完整站点集合。</li>
 <li>候选内容只有在发布器确认后才成为当前内容；发布硬错误保留旧入口，关闭操作先移除入口再清理内容。</li>
 <li>实例以通信协议中的唯一常量上报错误码，Gitea 按同一取值显示原因。</li>
+<li>本地部署结果无法持久化时仍上报当前错误，部署超时后的上报受客户端固定超时约束。</li>
 </ul>
 <h2 id="工程依赖关系"><a class="header" href="#工程依赖关系">工程依赖关系</a></h2>
 <p>Gitea 的数据表和版本对象存储提供管理事实，实例鉴权、状态查询和当前成品下载把需要部署的扁平事实交给 Pages。Pages 的内嵌 etcd、TAR.GZ 安全展开和主动部署形成本机状态，路由、TXT、证书和 Nginx 再基于该状态产生实际入口结果。这个依赖关系使每层都能以明确输入和输出独立验证。</p>
