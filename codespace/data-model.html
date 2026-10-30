@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>部署要求 - Gitea Codespace 设计文档</title>
+        <title>数据模型 - Gitea Pages 与 Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -12,32 +12,32 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="highlight.css">
-        <link rel="stylesheet" href="tomorrow-night.css">
-        <link rel="stylesheet" href="ayu-highlight.css">
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root to javascript -->
         <script>
-            var path_to_root = "";
+            var path_to_root = "../";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="body-container">
@@ -89,7 +89,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -120,10 +120,10 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">Gitea Codespace 设计文档</h1>
+                    <h1 class="menu-title">Gitea Pages 与 Codespace 设计文档</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
                         <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
@@ -155,78 +155,67 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="部署要求"><a class="header" href="#部署要求">部署要求</a></h1>
-<p>本文面向集群管理员，说明上线所需的平台能力和验收场景。安装命令与 values 由 <a href="../codespace/charts/gitea-codespace/README.html">Helm chart README</a> 维护。</p>
-<h2 id="kubernetes-基础能力"><a class="header" href="#kubernetes-基础能力">Kubernetes 基础能力</a></h2>
-<p>Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass、Service，以及入口使用的 Ingress 或 Gateway API。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。</p>
-<p>管理服务默认为 <code>ClusterIP</code>，首次配置通过 <code>kubectl port-forward</code> 完成。Manager 多副本使用 Lease 选举；健康副本保持 Ready，内部 RPC 与管理服务只选择当前 Leader。Ready 表示副本可以参与接替，Leader 标签表示副本可以处理有状态请求，这两个信号分别服务可用性和单写者约束。</p>
+                        <h1 id="数据模型"><a class="header" href="#数据模型">数据模型</a></h1>
+<p>本文定义数据归属、稳定标识和持久化不变量。列名、索引和自定义资源字段以模型、数据库迁移和 CRD 为准。</p>
+<h2 id="数据归属"><a class="header" href="#数据归属">数据归属</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>数据层</th><th>权威内容</th><th>恢复方式</th></tr></thead><tbody>
+<tr><td>Gitea 数据库</td><td>所有权、仓库提交、授权、业务状态、操作和 Manager 绑定</td><td>从数据库恢复</td></tr>
+<tr><td>Kubernetes API</td><td>站点、环境模板、运行意图和资源状态</td><td>由 Manager 控制器重新核对</td></tr>
+<tr><td>Codespace PVC</td><td>工作区、Git 私钥、内部 Docker 和 IDE 数据</td><td>由新的 Runtime Pod 重新挂载</td></tr>
+<tr><td>组件内存</td><td>连接、Leader 工作集和短期授权缓存</td><td>从权威来源重建</td></tr>
+</tbody></table>
+</div>
+<p>每项持久事实只有一个权威来源。展示缓存过期只影响信息是否可见，不改变业务状态。这样恢复过程只需核对权威数据，不需要比较多个副本的更新时间。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
-<li>启动检查能指出缺失的 API、CRD 或 RBAC 权限。</li>
-<li>默认安装只提供集群内管理入口，端口转发可以完成首次配置。</li>
-<li>内部 RPC 与管理服务只把流量发送给当前 Leader。</li>
-<li>Leader 和 Cache 维护 Lease 位于管理命名空间。</li>
+<li>每项持久数据都能指出唯一权威来源。</li>
+<li>Manager 丢失进程内状态后能从 Gitea 与 Kubernetes 恢复。</li>
+<li>Gitea 不访问 Kubernetes API 也能执行权限判断和展示业务状态。</li>
+<li>Pod 重建不会丢失 PVC 中的用户数据。</li>
 </ul>
-<h2 id="隔离存储与设备"><a class="header" href="#隔离存储与设备">隔离、存储与设备</a></h2>
-<p>每个环境模板绑定经过验证的 RuntimeClass、StorageClass、资源限制和 Dev Container 附加配置。Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。设备通过 Kubernetes 扩展资源和设备插件分配。</p>
-<p>Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选 RuntimeClass、节点和扩容策略。</p>
+<h2 id="gitea-业务数据"><a class="header" href="#gitea-业务数据">Gitea 业务数据</a></h2>
+<p>Gitea 保存 Codespace、Manager、Dev Container 模板、运行期凭据、用户 Secret 和附加仓库授权。全局对象与个人对象通过所有者区分，并由查询和数据库约束共同限制可见范围。</p>
+<p>Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与锁定提交、环境、当前状态、操作版本、Manager 与 Runtime 绑定，以及确认后的 Dev Container 来源。仓库配置引用锁定提交中的路径；命名模板保存创建时选定的正文，之后修改模板只影响新环境。</p>
+<p>Runtime UUID 在 Manager 领取前为空，绑定后全局唯一。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
-<li>每个启用模板都有 RuntimeClass、StorageClass 和平台镜像的真实验证记录。</li>
-<li>Runtime 内 Docker 可用，并且无法访问节点容器运行时或 Kubernetes API 身份。</li>
-<li>CPU、内存、磁盘和设备使用受模板限制。</li>
-<li>Pod 替换后 PVC 数据可以由新的 Runtime 恢复。</li>
+<li>多个未领取的 Codespace 可以同时排队，每个已绑定 Runtime UUID 只对应一个 Codespace。</li>
+<li>创建失败不会留下半条 Codespace、孤立授权或明文凭据。</li>
+<li>模板修改不会改变已有 Codespace 的恢复输入。</li>
+<li>Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。</li>
 </ul>
-<h2 id="镜像缓存与网络"><a class="header" href="#镜像缓存与网络">镜像、缓存与网络</a></h2>
-<p>Manager、Gateway、Cache 和 Runtime 使用同一个摘要固定的平台镜像，但作为独立工作负载运行。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。</p>
-<p>Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS、TLS 和监听器由集群入口管理。</p>
+<h2 id="平台数据"><a class="header" href="#平台数据">平台数据</a></h2>
+<p><code>GiteaSite</code> 和 <code>EnvironmentTemplate</code> 是集群级资源；Codespace CR 位于站点命名空间。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。</p>
+<p>PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
-<li>部署镜像与 Manager 固定的工作负载镜像使用同一摘要。</li>
-<li>私有仓库凭据只投递给需要它的工作负载。</li>
-<li>Runtime 无法访问其他站点的 Runtime 网络。</li>
-<li>HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。</li>
-<li>Cache 清空后可以在原授权范围内回源。</li>
+<li>不同站点的 Codespace 资源位于不同命名空间。</li>
+<li>CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。</li>
+<li>删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。</li>
+<li>Cache 丢失后可以回源，不影响 PVC 中的环境数据。</li>
 </ul>
-<h2 id="身份容量与恢复"><a class="header" href="#身份容量与恢复">身份、容量与恢复</a></h2>
-<p>Manager 和组件身份由 cert-manager 签发。管理员令牌、Gitea 注册 Secret、组件身份、Gateway SSH 主机密钥、对象存储凭据和镜像凭据通过 Kubernetes Secret 投递并纳入轮换。</p>
-<p>环境模板定义单个 Runtime 的资源请求，Gitea 站点定义总配额。Manager 统计实际资源和正在创建的任务，Kubernetes 调度器负责节点放置。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。</p>
-<p>升级先更新 CRD，再更新平台组件。新环境使用新镜像摘要；已有环境使用创建时保存的摘要，因此镜像仓库需要保留仍被引用的版本。</p>
+<h2 id="标识并发与清理"><a class="header" href="#标识并发与清理">标识、并发与清理</a></h2>
+<p>Gitea ID 表示业务关系，Runtime UUID 表示跨站点运行身份，操作版本区分连续用户意图，Kubernetes UID 区分同名资源实例，目标版本区分 Agent 的连续发布。跨站点查找 Runtime 时同时使用站点身份和 Runtime UUID。</p>
+<p>创建事务原子保存 Codespace、初始操作和用户确认的授权。领取、完成、超时与恢复通过读取时的状态、操作版本和绑定关系进行条件更新；更新不到记录表示其他请求已经推进状态。用户活动代数独立保护活动更新和自动停止取消，因此用户活动与 Manager 操作结果可以各自收敛。</p>
+<p>日志按操作版本和单调偏移追加。指标、Endpoint 和 ready 信息属于可重建展示数据。delete 完成后清理业务关系、运行凭据、日志和展示数据。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
-<li>Secret 不出现在 ConfigMap、CR、标签或普通日志中。</li>
-<li>凭据轮换后旧身份和旧会话按有效期失效。</li>
-<li>站点配额包含运行中和正在创建的 Runtime。</li>
-<li>恢复后站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。</li>
-</ul>
-<h2 id="上线验收"><a class="header" href="#上线验收">上线验收</a></h2>
-<p>正式启用前应在目标集群完成：</p>
-<ol>
-<li>两个站点分别完成创建和删除，验证资源与网络隔离；</li>
-<li>每种启用的 RuntimeClass 完成 create、stop、resume 和 delete；</li>
-<li>验证 Web IDE、PTY、SSH、SFTP、HTTP Endpoint 与回环端口转发；</li>
-<li>替换 Runtime Pod，验证旧访问失效和 PVC 数据恢复；</li>
-<li>切换 Manager Leader，验证操作保持唯一执行；</li>
-<li>清空 Cache，验证授权回源；</li>
-<li>审计 RBAC、NetworkPolicy、Secret 和测试资源清理结果。</li>
-</ol>
-<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
-<ul>
-<li>验收记录包含组件版本、RuntimeClass、StorageClass、镜像摘要和结果。</li>
-<li>失败能够从页面与日志定位到具体阶段。</li>
-<li>写入者停止确认绑定当前 CR 与 Pod 身份。</li>
-<li>验收结束后没有孤立的 CR、PVC、Pod、凭据或路由。</li>
+<li>状态写入只接受当前操作版本、Pod 身份和目标版本。</li>
+<li>并发领取和完成依靠数据库条件更新与唯一约束只产生一个结果。</li>
+<li>日志只由当前操作按单调偏移追加。</li>
+<li>展示数据过期不触发主状态转换。</li>
+<li>delete 完成后旧 Token、Open Code 和日志不可继续使用。</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="rpc-spec.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../codespace/lifecycle.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="implementation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../codespace/rpc-spec.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -236,11 +225,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="rpc-spec.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../codespace/lifecycle.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="implementation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../codespace/rpc-spec.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -255,17 +244,17 @@
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="mermaid.min.js"></script>
-        <script src="mermaid-init.js"></script>
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
 
 
     </div>

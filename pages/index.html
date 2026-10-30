@@ -1,0 +1,253 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>总体设计 - Gitea Pages 与 Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Pages 与 Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="gitea-pages-总体设计"><a class="header" href="#gitea-pages-总体设计">Gitea Pages 总体设计</a></h1>
+<p>Gitea Pages 由 Gitea 管理面和独立 Pages 实例组成。Gitea 保存站点当前事实、接收或生成网站成品，并把事实提供给所有登记实例；每个 Pages 实例在自己的机器上主动同步、展开并提供静态网站。访客请求只访问已经部署的本地内容，因此 Gitea 暂时不可用不会影响已经生效的网站。</p>
+<p>Pages 网站使用公开访问方式。源码仓库可以是私有仓库，但启用 Pages 后网站仍然公开；公开仓库转为私有仓库时，Gitea 会关闭已经启用的站点，仓库管理员可以再次确认并启用公开网站。</p>
+<h2 id="文档入口"><a class="header" href="#文档入口">文档入口</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>文档</th><th>负责内容</th></tr></thead><tbody>
+<tr><td><a href="implementation.html">实施准备与工程入口</a></td><td>两个仓库的位置、启动方式、工程依赖和验证入口。开发工作从这里开始。</td></tr>
+<tr><td><a href="github-pages-research.html">GitHub Pages 调研</a></td><td>参考能力及其在 Gitea Pages 中的对应设计。</td></tr>
+<tr><td><a href="communication.html">通信、同步与状态展示</a></td><td>实例鉴权、当前状态查询、TAR.GZ 下载、结果上报和管理页面状态。</td></tr>
+<tr><td><a href="publishing.html">发布、TAR.GZ 存储与访问</a></td><td>两种自动发布方式、三种版本产生方式、Gitea 存储、归档检查和主动部署。</td></tr>
+<tr><td><a href="access-and-domains.html">公开访问、自定义域名与 HTTP/HTTPS</a></td><td>GitHub 风格地址、路由、自定义域名、TXT 所有权和内容开放条件。</td></tr>
+<tr><td><a href="certificates.html">证书管理与部署</a></td><td>Pages 侧证书来源、ACME、HTTP-01、DNS-01 和证书失败处理。</td></tr>
+<tr><td><a href="lifecycle.html">实例与站点生命周期</a></td><td>实例登记、站点启停、改名转移、域名释放和故障恢复。</td></tr>
+<tr><td><a href="data-and-validation.html">数据、Pages 本地架构与验证</a></td><td>五张 Gitea 表、内嵌 etcd、统一发布器、内置服务模式、环境变量和限额。</td></tr>
+</tbody></table>
+</div>
+<h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
+<ul>
+<li>开发人员可以从工程入口进入代码和验证流程，从专题章节进入具体行为契约。</li>
+<li>每个专题只负责自己的数据和流程，跨章节内容通过链接引用。</li>
+</ul>
+<h2 id="核心行为"><a class="header" href="#核心行为">核心行为</a></h2>
+<p>每个仓库最多一个 Pages 站点，创建后默认关闭。仓库名为 <code>.pages</code> 时提供所有者主页，其他仓库提供项目站点：</p>
+<pre><code class="language-text">https://&lt;owner&gt;.&lt;pages-instance&gt;/&lt;repo&gt;/
+https://&lt;owner&gt;.&lt;pages-instance&gt;/       # &lt;owner&gt;/.pages
+</code></pre>
+<p>外部地址使用当前所有者和仓库名称，内部目录、结果和清理使用 <code>repo_id</code>。改名、所有者改名和转移会更新外部路由，但不会复制网站内容或改变站点身份。</p>
+<p>仓库设置提供两种自动发布方式：<code>artifact</code> 接受同仓库 Actions 成品，<code>branch</code> 定期把指定分支目录打包。网页/API 上传是随时可用的显式版本操作，不会改变自动发布方式。分支、Actions 和上传产生的内容最终都形成一个网站根目录 TAR.GZ。Gitea 按摘要保存可恢复的内容版本并为站点选择一个当前版本；相同内容复用已有版本。Pages 实例只同步当前摘要，因此内容历史不会增加实例协议和本机部署状态。Gitea 先确认版本已保存，再由每个 Pages 实例主动下载、检查、展开和发布；版本已准备、内容已安装和地址已可访问是三个独立状态。</p>
+<p>全局管理员登记 Pages 实例。所有实例都处理所有启用站点，实例之间不组成集群，也不由 Gitea 选择某台机器承载某个站点。实例使用单机内嵌 etcd 保存本机状态，网站文件、证书和服务配置保存在本机数据目录。Gitea 使用现有存储抽象保存 TAR.GZ，Pages 通过带实例凭据的 Gitea 内部接口下载，不需要访问 Gitea 存储后端。</p>
+<p>自定义域名先由 Gitea 定期检查业务 TXT 所有权，Pages 也在本机持续检查。全局管理员通过 Gitea <code>[pages]</code> 配置统一设置两端是否要求这项条件；两端各自配置递归 DNS 和刷新周期，默认每 15 分钟检查一次。域名成功验证后，后续解析失败在最近成功后的 24 小时内保留当前入口，避免一次 DNS 故障立即中断网站；从未成功的域名不能启用。这不改变 ACME 向证书颁发机构证明域名控制权的过程。用户自定义域名只用 HTTP-01，Pages 默认域名可以使用 DNS-01；证书及私钥始终由 Pages 保存和处理。</p>
+<p>Gitea 的两个 Pages 计划任务分别负责分支来源检查和业务 TXT 检查，最短周期为 1 分钟。Pages 的部署、归档展开、证书和 Nginx 维护在实例本地异步完成；访客请求只读取已经部署的本地内容。Pages 根包也可以作为 Go 依赖使用：同步和安全检查保持不变，使用者通过统一发布器把已检查内容接入自己的 Web 服务。网站成品只要求包含普通文件，不以 <code>index.html</code> 作为发布条件。</p>
+<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<ul>
+<li>文档入口能把一个实现问题定位到唯一的职责章节；交叉章节只引用最终行为，不复制同一套字段或流程。</li>
+<li>新仓库的 Pages 站点默认关闭，<code>.pages</code> 和普通仓库的地址、改名转移规则符合本章定义。</li>
+<li>两种自动发布方式与显式上传都能产生同一种 TAR.GZ，并分别显示成品准备、内容安装和地址发布结果。</li>
+<li>Gitea 保留可配置数量的内容版本，历史版本可以恢复；实例只接收恢复后选定的当前摘要。</li>
+<li>每个登记实例都主动部署全部启用站点；访客请求只访问本机已部署内容。</li>
+<li>Gitea 存储后端、Pages 本地状态、证书材料和路由配置按职责分离，Pages 不读取 Gitea 后端凭据。</li>
+<li>自定义域名业务 TXT、ACME 证书和实例入口结果分别可见，业务 TXT 关闭不会跳过 CA 自身的域名控制验证。</li>
+<li>Gitea 和 Pages 使用各自配置的递归 DNS 与刷新周期；已经成功的域名在校验失败后的 24 小时宽限期内保持入口，从未成功的域名不能发布。</li>
+<li>内置 standalone、内置 Nginx 和外部 Go 发布器使用同一主动部署流程；没有 <code>index.html</code> 的成品仍能发布并访问实际文件。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../pages/implementation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../pages/implementation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>

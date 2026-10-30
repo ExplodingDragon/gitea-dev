@@ -1,0 +1,361 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>发布、TAR.GZ 存储与访问 - Gitea Pages 与 Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Pages 与 Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="发布targz-存储与访问"><a class="header" href="#发布targz-存储与访问">发布、TAR.GZ 存储与访问</a></h1>
+<p>站点保存一种自动发布方式：<code>branch</code> 由 Gitea 读取固定分支目录并打包，<code>artifact</code> 接受同仓库 Actions 成品。网页/API 上传是独立的版本操作，在两种方式下都可用。分支、Actions 和上传最终都生成一个可以直接展开为网站根目录的 TAR.GZ。TAR.GZ 只负责传输和存储，Pages 取得后在本机检查、展开和主动部署；网站访问不依赖 Gitea 或存储后端。</p>
+<p>Gitea 使用现有 storage 抽象保存仍被版本记录引用的成品，默认可以使用本地存储，也可以使用 Gitea 已支持的其他后端。Pages 不读取后端路径或凭据，而是用实例凭据通过 Gitea 内部接口下载当前摘要。接口地址支持 HTTP 和 HTTPS，使同机、受控内网及反向代理后的部署可以使用实际可达地址；跨越不可信网络时由运维配置 HTTPS。Gitea 负责版本保留和无引用对象清理，Pages 负责本机暂存目录和已部署目录清理。</p>
+<h2 id="来源版本与当前内容"><a class="header" href="#来源版本与当前内容">来源、版本与当前内容</a></h2>
+<p>每次通过检查并完整保存的不同内容形成一个仓库级版本。<code>pages_site.current_version_id</code> 指向当前版本，<code>pages_version</code> 保存摘要、首次来源和创建时间。版本按 <code>(repo_id, tar_gz_sha256)</code> 唯一，因此相同内容重复提交会复用版本，也不会推进站点更新时间；恢复历史版本只切换当前指针，实例协议仍然只接收一个当前摘要。</p>
+<div class="table-wrapper"><table><thead><tr><th>版本产生方式</th><th>触发与处理</th></tr></thead><tbody>
+<tr><td>分支目录</td><td>保存完整分支名和仓库目录。启用和来源变更使计划任务立即可处理，推送由最短一分钟的周期检查发现；Gitea 随后固定提交 SHA，读取目录并生成 TAR.GZ。</td></tr>
+<tr><td>Actions 成品</td><td>同仓库工作流生成静态目录，上传为符合约定的 Artifact；部署步骤把同一运行和同一尝试的 Artifact 交给 Gitea，Gitea 检查后创建或复用版本。</td></tr>
+<tr><td>网页/API 上传</td><td>仓库管理员或授权外部构建系统上传完整 TAR.GZ，Gitea 同步接收、检查、保存并创建或复用版本。</td></tr>
+</tbody></table>
+</div>
+<p>成品准备、当前版本、内容安装和地址发布分别记录。自动来源失败时继续使用已经确认的当前版本；首次没有版本时实例保持平台 404。分支候选和 Actions 成品在提交前重新核对自动发布方式及其来源事实，方式已经变化的候选不能提交。网页/API 上传是管理员或 API 调用者明确发起的当前版本操作，因此只核对仓库状态，不改变 <code>source_type</code>、分支配置或分支处理进度。</p>
+<p>仓库 Pages 设置页负责站点开关、实例发布结果、自动发布方式和自定义域名；版本页负责上传与历史管理。版本按 ID 从新到旧稳定分页，每项显示可复制摘要、首次产生方式和创建时间，当前版本在所在页标记。Actions 首次来源在运行仍存在时链接到对应 run，运行已清理时仍显示 <code>Gitea Actions</code>。历史项可以通过确认操作恢复或删除；恢复不改变来源配置、启用状态或域名，只推进当前站点事实并触发现有实例重新发布。当前版本不能删除，避免站点指向已经移除的内容。</p>
+<h3 id="当前内容状态机"><a class="header" href="#当前内容状态机">当前内容状态机</a></h3>
+<pre class="mermaid">stateDiagram-v2
+    [*] --&gt; Empty: 站点创建
+    Empty --&gt; Ready: 版本检查、保存和当前指针提交成功
+    Empty --&gt; SourceError: 来源处理失败
+    Ready --&gt; Ready: 新版本提交或历史版本恢复
+    Ready --&gt; SourceError: 新来源失败，当前版本继续可用
+    SourceError --&gt; Ready: 新版本提交或历史版本恢复
+</pre>
+<p>状态机只描述 Gitea 当前内容；Pages 实例是否安装和地址是否可访问由通信结果单独表示。</p>
+<h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
+<ul>
+<li>分支、Actions 和网页/API 上传都形成同一种 TAR.GZ，并进入同一检查、版本、存储、下载和部署流程。</li>
+<li>每个仓库只有一个当前版本指针；相同摘要复用版本且不产生站点更新。</li>
+<li>来源失败不覆盖当前版本，首次无版本返回平台 404。</li>
+<li>站点设置与版本管理分别位于两个页面；版本按 ID 倒序分页，历史版本可以恢复和删除，当前版本不能删除。</li>
+<li>恢复和手动上传保持自动来源、启用状态和域名配置；分支候选与 Actions 成品在提交时重新核对自动来源。</li>
+<li>成品准备、当前版本和各实例地址发布是不同事实，页面不会把接收成功解释为网站已发布。</li>
+</ul>
+<h2 id="分支目录发布"><a class="header" href="#分支目录发布">分支目录发布</a></h2>
+<p>Gitea 固定分支头的提交 SHA，按 Git 树读取仓库根目录或指定目录；指定目录直接成为 TAR.GZ 根目录，不加入所有者、仓库或分支前缀。读取过程使用有界流式处理，边读取边计算文件大小、条目数、目录深度和符号链接边界。</p>
+<p>打包器只接收普通文件、目录和站点内安全的相对符号链接；子模块、设备文件和越界或循环链接产生来源错误。生成失败不改变当前成品。生成完成后重新取得来源配置和分支头，只有仍然匹配时才提交当前摘要；期间的新提交进入下一次处理。</p>
+<p>相同提交且当前对象仍可读时只更新下一次检查时间，不重复生成归档。启用和来源变更会把下一次检查设为可立即处理；推送和镜像变化由最短 1 分钟的计划任务发现。每轮只处理固定数量，到期但尚未处理的来源留到下一轮。</p>
+<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<ul>
+<li>每次生成固定一个提交 SHA，目录根和网站根一致，缺失分支或目录给出可定位错误。</li>
+<li>Git 树读取和归档生成受文件大小、条目数、深度以及任务上下文取消控制。</li>
+<li>分支头在提交前重新核对，旧提交、旧目录和旧来源不会覆盖新来源。</li>
+<li>相同提交和正确当前对象不会重复打包，分支变化能够在下一次检查处理。</li>
+<li>生成失败时旧成品和已发布网站保持不变。</li>
+</ul>
+<h2 id="actions-成品发布"><a class="header" href="#actions-成品发布">Actions 成品发布</a></h2>
+<p>Actions 工作流负责构建静态网站并上传约定的 Artifact。Gitea 只在已认证且仍处于运行状态的 Actions 任务中接受部署请求，并核对任务所属仓库、任务权限、OIDC 声明、完整分支引用、运行 ID、提交 SHA 和运行尝试。Artifact 必须属于该任务允许读取的尝试、状态为 <code>upload-confirmed</code>、名称和内容结构符合约定；其他 Artifact 不能成为当前成品。</p>
+<p>部署步骤使用 <code>pages: write</code> 和 <code>id-token: write</code>，把允许尝试中的 Artifact 和 OIDC 声明交给 Gitea。Gitea 可以兼容 <code>upload-pages-artifact</code> 与 <code>deploy-pages</code> 的协议，但可用 Action 版本必须在真实 Gitea URL、Runner 和 Gitea 版本组合上验证；兼容结果应记录实际版本，不把 GitHub 托管环境的默认保证扩展到 Gitea。</p>
+<p>Actions 的 Artifact 输入检查和最终 TAR.GZ 检查属于同一发布流程。Artifact 的外层 ZIP 只提取约定的 <code>artifact.tar</code> 作为网站成品输入；Gitea 不把外层 ZIP 的其他条目当作网站文件。缺少或重复 <code>artifact.tar</code>、归档结构不完整时直接报告成品错误。Gitea 读取 <code>artifact.tar</code> 后生成 TAR.GZ，完成摘要、存储、版本创建或复用和当前指针提交，再向部署步骤返回成品已准备。网站构建命令由工作流自行负责，Pages 从构建完成的静态成品开始发布。</p>
+<p>同一运行的尝试号用于区分重跑，任务允许读取的尝试集合决定 Artifact 输入，旧尝试的迟到 Artifact 不能绕过任务权限或来源核对。部署接口返回的是成品转换和当前摘要提交结果，不表示 Actions 任务本身或任何 Pages 实例已经完成网站发布；实例结果通过通信接口单独展示。</p>
+<p>Gitea 在同一个数据库事务中创建或复用版本、切换当前指针，并在所属 <code>action_run</code> 上设置 <code>has_pages_artifact=true</code>。这个单调标记表示该 workflow run 至少完成过一次 Pages 成品提交，与调用接口的具体 job 无关；字段名称特意使用 artifact，避免把成品提交误解为实例已经发布成功。重跑和多个部署 job 共享同一个运行标记。Actions run 的 Summary 根据标记显示 Pages 项，并按当前仓库名称和第一个有效实例根地址推导 <code>View current site</code>；没有可用地址时显示成品已提交。链接始终表示仓库当前网站，因此仓库改名、转移和实例根地址变化会自然得到新地址，历史 run 也不会保存旧地址或旧内容。</p>
+<p>运行标记属于 Actions 的执行事实。版本的 Actions 运行 ID 只记录该摘要的首次来源；后续运行提交相同摘要时复用版本，同时为后续运行设置自己的标记。Pages 实例结果仍只描述当前站点，仓库 Pages 设置页展示各实例的当前发布结果，版本页标记当前内容版本。</p>
+<p>Actions 部署结果在 Gitea 中分为“成品已提交”和“实际发布”。实际发布的 <code>success</code> 只在所有已登记且具有 <code>root_url</code> 的 Pages 实例都确认当前 TAR.GZ 摘要，并确认默认地址发布成功时产生；任一实例明确报告默认地址失败时为 <code>failure</code>；没有服务实例或仍有实例未完成确认时为 <code>in_progress</code>；站点关闭或该摘要已不再是当前摘要时为 <code>cancelled</code>。仅自定义域名失败不会阻塞默认地址成功，对应错误继续显示在仓库 Pages 状态中。</p>
+<h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
+<ul>
+<li>只有已认证的运行中任务、匹配的 OIDC 声明、权限和允许尝试中的 <code>upload-confirmed</code> Artifact 才能提交。</li>
+<li>重跑严格区分尝试号，旧尝试迟到结果不能覆盖新尝试。</li>
+<li>Artifact 外层 ZIP 只提取唯一的 <code>artifact.tar</code>；Artifact 读取、TAR.GZ 检查、存储和版本事务完成后才返回成品已准备。</li>
+<li>Action 的兼容版本经过真实 Gitea URL 验证，工作流完成构建，Pages 从静态成品开始发布。</li>
+<li>部署接口的成品提交结果、Actions 任务状态和实例实际发布结果分开处理。</li>
+<li>版本接收和 workflow run 幂等标记在一个事务中完成；run Summary 显示当前网站入口，没有实例地址时显示 Pages 内容已提交。</li>
+<li>多个运行提交相同摘要时只保留一个版本，每个成功运行仍保存提交标记，版本保留首次来源。</li>
+<li>run Summary 的链接由当前仓库和实例根地址推导，文案表达当前网站入口；实例发布结果继续由当前 Pages 状态展示。</li>
+<li>Actions 实际发布只有在全部有 <code>root_url</code> 的登记实例确认当前摘要和默认入口后才为 <code>success</code>；无服务实例或尚未完成时为 <code>in_progress</code>，默认入口明确失败时为 <code>failure</code>，关闭或摘要不再当前时为 <code>cancelled</code>；自定义域名错误单独展示。</li>
+</ul>
+<h2 id="网页与-api-上传"><a class="header" href="#网页与-api-上传">网页与 API 上传</a></h2>
+<p>网页使用 Gitea 会话和表单保护；API 使用现有 Gitea token，并要求调用者对目标仓库具有代码写权限。认证和权限沿用 Gitea，发布接口直接提交当前成品。</p>
+<p>网页上传复用 Gitea 的 Dropzone 和临时上传记录。浏览器异步暂存一个 TAR.GZ 并取得 UUID，用户提交上传表单后，Gitea 从应用数据临时目录读取该 UUID 对应的文件，执行 Pages 的压缩字节限制、SHA-256 和归档结构检查，并在处理结束后消费临时记录。Dropzone 显示完成只表示文件已经暂存；表单响应“成品已准备”才表示检查、storage 保存和当前摘要提交全部成功。API 请求直接以受限流进入同一个成品提交流程。</p>
+<p>统一临时目录让 Gitea 现有清理机制处理异常退出留下的文件。检查成功后通过 storage 抽象保存不可变对象，在短 SQL 事务中提交站点当前摘要；同步响应不等待 Pages 实例部署。</p>
+<p>网页和 API 每次把完整 TAR.GZ 交给同一个版本提交流程。仓库还没有 Pages 记录时，第一次上传会创建 <code>source_type=artifact</code> 的关闭站点并保存版本；站点保持关闭，由仓库管理员明确启用。已有站点时上传直接成为当前版本，同时保留 <code>artifact</code> 或 <code>branch</code> 自动发布方式、分支目录和已处理提交。这样上传既可以用于常规成品，也可以在自动来源暂时不可用时明确选择一个可发布版本；分支只有检测到新提交才会再次覆盖该版本。输入未完整接收时清理暂存并返回错误，重新提交时重新执行权限、摘要和归档检查。</p>
+<h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
+<ul>
+<li>网页会话和 API token 都按 Gitea 当前账号、token 和仓库代码写权限检查，权限变化会拒绝新的上传。</li>
+<li>网页使用 Gitea Dropzone 异步暂存一个文件，选择、进度、类型错误和移除操作与 Gitea 其他上传页面一致；表单提交消费唯一暂存 UUID。</li>
+<li>首次上传创建关闭的 <code>artifact</code> 站点；已有站点时上传保留自动来源配置和分支处理进度。</li>
+<li>完整接收、摘要检查、归档检查、对象保存和 SQL 当前摘要提交完成后才返回成品已准备。</li>
+<li>只有完整 storage 对象和已提交的当前版本可供实例下载；中断后的调用可以重新提交同一完整 TAR.GZ。</li>
+<li>API 和网页在同步响应中确认成品已准备，实例内容安装和地址发布继续单独展示。</li>
+</ul>
+<h2 id="targz-保存版本保留与对象路径"><a class="header" href="#targz-保存版本保留与对象路径">TAR.GZ 保存、版本保留与对象路径</a></h2>
+<p>Gitea 的现有 storage 抽象保存 TAR.GZ。对象由完整小写摘要和 <code>repo_id</code> 确定逻辑键，摘要前两段用于分散本地目录中的文件数量，例如：</p>
+<pre><code class="language-text">&lt;sha256[0:2]&gt;/&lt;sha256[2:4]&gt;/&lt;repo-id&gt;/&lt;sha256&gt;.tar.gz
+</code></pre>
+<p>每条 <code>pages_version</code> 引用一个对象，<code>pages_site.current_version_id</code> 决定实例可以下载哪一个对象。对象路径不随仓库改名、所有者改名、转移或当前版本切换变化；站点身份由 <code>repo_id</code> 保持。对象完整写入并复核摘要后，Gitea 才在 SQL 事务中创建版本并切换当前指针。</p>
+<p><code>MAX_VERSIONS_PER_SITE</code> 默认保留 10 个版本。每次成功提交或恢复都在同一 SQL 事务内裁剪版本记录：当前版本始终保留，剩余名额保留 ID 最新的历史版本。用户删除历史版本时，同样先在事务中核对仓库归属和当前指针，再删除版本引用。事务提交后再删除被裁剪或明确删除版本的对象，并在删除前重新确认没有版本引用；清理失败留下的对象由离线 storage doctor 识别。doctor 判断引用时查询全部版本，也会分别报告当前版本和历史版本缺失的对象。</p>
+<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
+<ul>
+<li>默认配置可以使用 Gitea 本地存储，其他后端复用 Gitea 已有配置。</li>
+<li>对象完整写入和摘要复核完成后才能创建版本，存储失败不会改变当前指针。</li>
+<li>对象键使用仓库 ID 和摘要，改名、转移和版本恢复不移动或复制对象。</li>
+<li>当前版本和保留历史版本的对象都被视为已引用；裁剪后失去引用的对象才进入清理。</li>
+<li>历史版本删除先提交数据库引用变化，当前版本拒绝删除，对象只在确认无引用后清理。</li>
+<li>Pages 只通过鉴权接口下载当前版本，响应不暴露后端路径或凭据。</li>
+<li>storage doctor 能保护全部版本引用，并区分报告当前与历史版本对象缺失。</li>
+</ul>
+<h2 id="同步提交版本恢复删除与保留"><a class="header" href="#同步提交版本恢复删除与保留">同步提交、版本恢复、删除与保留</a></h2>
+<p>三种版本产生方式最终都调用同一个提交流程：</p>
+<ol>
+<li>在事务外接收或生成 TAR.GZ，计算摘要并执行接收侧检查。</li>
+<li>使用按仓库 ID 区分的 Gitea 全局锁串行处理，重新校验仓库；分支和 Actions 还重新校验自动发布方式及来源特有事实。</li>
+<li>通过 Gitea storage 保存完整对象并确认可读。</li>
+<li>在短 SQL 事务中创建或复用版本；摘要与当前版本不同才切换 <code>current_version_id</code> 并推进站点时间。</li>
+<li>Actions 来源在同一事务设置运行标记；所有来源在事务中按保留数量裁剪版本记录。</li>
+<li>事务提交后清理被裁剪版本的对象，Pages 实例在下一次轮询取得当前摘要。</li>
+</ol>
+<p>相同摘要已经是当前版本时，调用保持幂等，不推进站点时间；Actions 的新运行仍在事务中取得自己的提交标记。事务返回错误时调用方可以重试完整提交，已被版本引用的对象不会作为未采用对象删除。慢的 Git、Artifact、压缩、存储和网络操作都在数据库事务外。</p>
+<p>恢复操作取得同一仓库锁，确认仓库、站点、版本归属和对象存在后，只在事务中切换当前指针、推进站点时间并应用保留数量。已经是当前版本时恢复幂等。删除操作取得相同锁，在事务中确认目标属于该仓库且不是当前版本后删除引用，提交后清理对象。关闭站点可以恢复或删除历史内容；归档或已经删除的仓库拒绝修改版本。API 提供分页版本列表、按版本 ID 恢复和删除，网页使用同一服务，因此权限、归属和状态检查保持一致。</p>
+<h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
+<ul>
+<li>所有来源共享同一版本提交流程，Pages 离线不影响 Gitea 接收和保存版本。</li>
+<li>只有完整对象和成功 SQL 事务才会成为当前版本；相同当前摘要不推进站点时间。</li>
+<li>Actions 运行标记与版本事务原子提交，同一摘要由多个运行提交时版本仍唯一。</li>
+<li>恢复只接受目标仓库仍保留且对象可读的版本，只改变当前指针和站点时间。</li>
+<li>恢复保持来源、启用状态和域名配置，关闭站点恢复后仍保持关闭。</li>
+<li>删除只接受目标仓库的历史版本，当前版本受保护；数据库提交后才清理无引用对象。</li>
+<li>当前版本和最新历史版本按配置数量保留，裁剪对象在事务提交后清理。</li>
+<li>成品准备成功不表示内容已经安装或地址已经发布。</li>
+</ul>
+<h2 id="targz-目录与安全检查"><a class="header" href="#targz-目录与安全检查">TAR.GZ 目录与安全检查</a></h2>
+<p>Gitea 在接收侧检查 gzip/TAR 结构、路径、条目类型和声明资源；Pages 下载后重新计算摘要并实际展开。两端重复路径检查是为了在不同信任边界上保护 Gitea 和 Pages 本地文件系统，职责如下：</p>
+<div class="table-wrapper"><table><thead><tr><th>阶段</th><th>检查</th></tr></thead><tbody>
+<tr><td>Gitea 接收</td><td>压缩大小、gzip/TAR 完整性、UTF-8 相对路径、重复路径、文件与目录冲突、条目类型、声明大小、条目数和目录深度。</td></tr>
+<tr><td>Pages 展开</td><td>SHA-256、实际展开大小、文件数、深度、路径边界、目标文件系统冲突、符号链接解析、部署超时和实际磁盘写入。</td></tr>
+</tbody></table>
+</div>
+<p>Gitea 在 <code>[pages]</code> 配置资源边界，并在每个同步响应中把当前值交给 Pages。默认值是压缩后最多 100 MiB、展开后最多 512 MiB、单个文件最多 100 MiB、最多 10,000 个条目；新接收和新部署使用当前值，配置变化不会主动重装已发布内容。规范化路径最多 1,024 字节、目录深度最多 32 层、符号链接解析最多 32 层属于固定格式安全规则。路径按 UTF-8 规则解析为站点内相对路径，危险路径、重复路径、文件与目录冲突和目标文件系统碰撞直接产生硬错误；检查过程不修复路径、不静默改名。普通文件、目录和站点内相对符号链接可以进入部署；站点内链接目标尚不存在时仍可部署，访问时按普通网站文件不存在返回 404。绝对链接、越界链接、循环、硬链接、设备文件和其他特殊文件直接产生硬错误。普通文件执行位清除，嵌套归档按普通文件保存，不继续展开。归档必须至少包含一个普通文件，普通文件可以位于任意安全相对路径；<code>index.html</code> 只是静态服务器读取目录时采用的常见首页，不是成品检查条件。Gitea 接收成功不等于 Pages 展开成功；损坏 CRC 或实际展开超限可能只在 Pages 侧发现，此时保留旧内容并报告部署失败。</p>
+<p>通过检查的内容先写入同一文件系统的临时目录，再改名为按摘要命名的不可变候选目录。核心把候选交给当前 <code>Publisher</code>；发布器确认入口应用后，核心保存当前安装摘要并清理旧目录。发布器返回硬错误时需要先恢复原有入口，核心随后删除失败候选。Nginx 发布器在自己的入口事务中原子切换 <code>current</code> 链接；standalone 和外部发布器可以直接引用不可变候选目录。任何磁盘或发布失败都保留之前确认的内容，磁盘预检不能替代实际写入失败处理。</p>
+<h3 id="实现验收点-6"><a class="header" href="#实现验收点-6">实现验收点</a></h3>
+<ul>
+<li>Gitea 和 Pages 分别执行各自阶段的 TAR.GZ 检查，任何危险路径和不支持类型都有可定位错误。</li>
+<li>Pages 实际校验摘要、展开量、条目数、深度、链接和文件系统边界；不把接收成功误报为发布成功。</li>
+<li>临时展开失败不替换当前目录，旧内容继续服务；没有旧内容时返回平台 404。</li>
+<li>Gitea 和 Pages 对新部署执行同一组配置资源边界；默认值为压缩 100 MiB、展开 512 MiB、单文件 100 MiB 和 10,000 条目。</li>
+<li>两端始终执行路径 1,024 字节、深度 32 层和符号链接解析 32 层的格式安全规则。</li>
+<li>站点内相对符号链接的目标可以尚不存在；越界或循环链接仍会使整个归档失败。</li>
+<li>只有普通文件而没有 <code>index.html</code> 的归档可以通过检查，目录首页缺失只影响该目录的访问结果。</li>
+<li>发布器硬错误发生时旧入口和旧内容保持有效，失败候选被清理。</li>
+</ul>
+<h2 id="主动部署与文件访问"><a class="header" href="#主动部署与文件访问">主动部署与文件访问</a></h2>
+<p>当前摘要提交后，每个启用实例主动下载、校验和展开候选内容，再通过统一发布器应用默认地址与可选自定义域名。部署由实例启动、同步到新摘要和持久扫描驱动；失败目标留在本地当前状态中，由后续扫描继续处理。队列有界但目标事实持久保存，访客请求只读取已发布内容。</p>
+<p>Pages 使用 <code>repo_id</code> 隔离目录，每个摘要目录都是已检查的不可变快照。发布器按 Host 和基础路径选择站点，再读取本地文件；访客请求不查询远端，也不创建部署任务。内置 standalone 用内存路由直接读取内容，内置 Nginx 生成配置和路由标记，外部发布器可以把同一个 <code>Content</code> 接入自己的 Go Web 服务。内置探测入口由发布器生成，不写入网站目录，因此网站文件不能伪造发布确认。内容安装、配置应用、证书/TXT 条件和实际入口分别形成结果。下载和展开失败时保留稳定旧入口与旧内容；没有旧内容时返回平台 404。</p>
+<h3 id="实现验收点-7"><a class="header" href="#实现验收点-7">实现验收点</a></h3>
+<ul>
+<li>成品提交后无需访客访问，所有启用实例主动处理当前目标。</li>
+<li>候选目录只有在完整检查后交给发布器，半成品不会被访问。</li>
+<li>候选入口应用或探测失败后关闭，失败结果不会保留候选发布标记。</li>
+<li>默认地址和自定义地址独立报告，某个地址失败不影响其他实例和地址。</li>
+<li>普通访问只使用本机状态和文件，未知 Host、关闭站点和缺失文件返回规定的 404。</li>
+<li>standalone、nginx 和外部发布器都接收同一种已检查内容与路由归属；Nginx 配置经过实际入口探测确认。</li>
+<li>内部发布探测内容由发布器直接提供，不存在于用户网站目录中。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../pages/communication.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../pages/access-and-domains.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../pages/communication.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../pages/access-and-domains.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>

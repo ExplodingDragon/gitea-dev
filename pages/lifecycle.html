@@ -1,0 +1,292 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>生命周期与故障恢复 - Gitea Pages 与 Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Pages 与 Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="实例与站点生命周期"><a class="header" href="#实例与站点生命周期">实例与站点生命周期</a></h1>
+<p>本章定义 Gitea 当前事实如何变化，以及 Pages 实例如何按当前事实收敛。实例结果表示当前状态；发布和通信的字段含义分别见<a href="publishing.html">发布章节</a>和<a href="communication.html">通信章节</a>。</p>
+<h2 id="实例登记与移除"><a class="header" href="#实例登记与移除">实例登记与移除</a></h2>
+<p>全局管理员登记 Pages 实例并注入实例凭据和根地址。Gitea 校验根地址格式、管理域冲突、实例默认域名命名空间以及证书和 DNS-01 所需的派生名称，再保存实例。实例注册成功后主动查询全部当前状态并部署所有启用站点。</p>
+<p>每个实例独立运行在一台机器上，使用自己的单成员内嵌 etcd、数据根目录和服务模式。Gitea 不为站点选择某台实例；所有实例都处理同一站点集合。管理员移除实例前先隔离其实际入口，随后即可删除登记；这使域名释放和删除清理继续依赖仍登记实例的确认。</p>
+<p>移除可以是最后一个登记实例。管理员完成入口隔离后即可执行，不增加全局 Pages 停用状态；已经进入 <code>releasing</code> 的域名由 Gitea 按现有释放事实继续完成释放，最后实例移除不会让待释放域名永久保留。</p>
+<h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
+<ul>
+<li>新实例只在根地址和命名空间检查通过后参与同步和域名释放条件。</li>
+<li>实例注册幂等，根地址变化产生新的实例时间并要求本地重新应用。</li>
+<li>所有实例主动处理全部启用站点，不保存单实例部署选择。</li>
+<li>管理员先隔离入口后可以移除最后实例；移除后不增加全局停用状态，待释放域名继续完成释放。</li>
+</ul>
+<h2 id="站点创建启用与来源"><a class="header" href="#站点创建启用与来源">站点创建、启用与来源</a></h2>
+<p>仓库首次保存 Pages 设置或首次上传成品时创建一条 <code>pages_site</code>，默认 <code>enabled=false</code>。首次上传自动选择 <code>artifact</code> 发布方式；设置页面可以选择“Actions 或上传”与“分支目录”两种自动发布方式。网页/API 上传属于版本操作，在任一方式下都可以把经过检查的 TAR.GZ 设为当前版本，同时保留自动发布配置。这样管理员可以紧急发布一个明确版本，分支后续只有出现新提交时才继续自动更新。</p>
+<p>启用时 Gitea 检查来源配置和仓库状态，推进站点更新时间。没有当前成品时可以保存启用意图，但实例保持平台 404，直到成品准备完成。来源失败只更新来源错误，不覆盖当前成品；来源切换时旧候选失效，实例按最新当前事实处理。</p>
+<h3 id="站点管理状态机"><a class="header" href="#站点管理状态机">站点管理状态机</a></h3>
+<pre class="mermaid">stateDiagram-v2
+    [*] --&gt; Disabled: 创建站点
+    Disabled --&gt; Enabled: 管理员启用
+    Enabled --&gt; Disabled: 管理员关闭或仓库公开转私有
+    Disabled --&gt; Enabled: 明确重新启用
+    Disabled --&gt; Deleted: 仓库删除
+    Enabled --&gt; Deleted: 仓库删除
+    Deleted --&gt; Deleted: 保留 repo_id 的删除记录
+</pre>
+<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<ul>
+<li>每个仓库最多一条站点记录，首次设置或上传创建后默认关闭。</li>
+<li>启用、关闭、来源变更和当前版本变化推进站点时间；相同当前摘要的重复提交保持时间不变。</li>
+<li>启用无成品时实例返回平台 404；成品准备成功后主动部署。</li>
+<li>来源错误、当前版本和实例结果相互独立。</li>
+<li>手动上传在任一自动发布方式下都可用，并保持来源配置和分支处理进度。</li>
+</ul>
+<h2 id="关闭重新启用与删除"><a class="header" href="#关闭重新启用与删除">关闭、重新启用与删除</a></h2>
+<p>关闭站点时 Gitea 设置 <code>enabled=false</code> 并推进站点时间。Pages 撤销站点路由；HTTPS 实例同时停止该站点的自定义域名挑战和续期。Gitea 保留当前成品和域名管理事实，页面显示实例配置是否已经落实。重新启用只处理最后当前状态，快速关闭再启用不会要求完成一个已经被新状态取代的中间状态。</p>
+<p>删除仓库沿用仓库工作锁和删除事务，把站点压缩为永久删除记录：保留 <code>repo_id</code>、删除标记和更新时间，清空来源、来源错误和当前版本指针；同一事务删除该仓库全部版本引用，并把摘要列表交给事务后的 storage 清理。这样仓库事务回滚时对象仍有引用，提交成功后又能一次清理当前和历史版本。实例收到删除记录后先撤销路由、挑战和续期，再清理目录并上报配置落实。待释放域名由实例确认后释放；Pages 本机物理文件清理由实例继续重试。</p>
+<p>关闭或删除后的旧目录不能被同名新仓库复用。路由和清理都核对 <code>repo_id</code>，新仓库使用新的 ID。</p>
+<h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
+<ul>
+<li>关闭状态停止站点入口并停止对应证书/挑战维护，当前成品仍可由管理面查询。</li>
+<li>重新启用处理最后当前状态，页面不会虚构中间关闭已全部完成。</li>
+<li>删除事务保留精简 <code>repo_id</code> 记录，在事务内清除全部版本引用，并在提交后清理 Gitea storage 对象。</li>
+<li>待验证域名可以直接释放，已授权域名进入 <code>releasing</code> 并等待实例确认。</li>
+<li>同名新仓库的路由、目录和启用标记不会被旧删除清理影响。</li>
+</ul>
+<h2 id="仓库归档改名转移与新仓库派生"><a class="header" href="#仓库归档改名转移与新仓库派生">仓库归档、改名、转移与新仓库派生</a></h2>
+<p>仓库改名、所有者改名和实际转移只改变外部地址和路由，推进站点更新时间；仓库 ID、当前及历史版本、本机目录和自定义域名绑定继续属于原站点。<code>.pages</code> 用途按当前仓库名自动变化，改为 <code>.pages</code> 成为主页，改离 <code>.pages</code> 成为项目站点。</p>
+<p>Pages 按仓库 ID 撤销当前配置中不存在的旧路由，再建立新路由；网站文件不由 Gitea 改写，绝对地址由来源构建流程负责。待验证和已授权的自定义域名绑定都随站点 ID 保留，转移只更新站点归属和路由事实。</p>
+<p>仓库归档会关闭 Pages 站点并推进站点时间，解档后也保持关闭，管理员需要明确重新启用；已经保存的成品和域名事实按关闭流程保留。派生、模板生成、外部导入和收养 Git 仓库创建新的仓库 ID，Pages 默认关闭且不复制来源、成品、域名或结果。镜像同步保留原 ID，只触发分支来源重新检查。</p>
+<h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
+<ul>
+<li>改名和实际转移推进站点时间并更新地址，内容和已授权域名保持关联。</li>
+<li><code>.pages</code> 用途完全由当前名称推导，显示昵称和转移申请不改变地址。</li>
+<li>旧路由清理按仓库 ID 进行，不能撤销同名新仓库。</li>
+<li>待验证和已授权域名都随站点 ID 转移，转移后的当前站点继续使用同一绑定事实。</li>
+<li>归档会关闭 Pages，解档后仍保持关闭，管理员明确重新启用后才恢复发布；派生和导入仓库获得新 ID、默认关闭且不复制 Pages 数据。</li>
+</ul>
+<h2 id="自定义域名变更与释放"><a class="header" href="#自定义域名变更与释放">自定义域名变更与释放</a></h2>
+<p>新 Host 通过 TXT 授权后，Gitea 在一个事务中把它设为当前绑定、把旧 Host 设为 <code>releasing</code> 并推进站点时间。Pages 取得新状态后按仓库 ID 撤销旧路由、挑战和续期，再应用新 Host；新 Host 失败不会恢复旧 Host，默认地址继续独立服务。</p>
+<p>旧 Host 释放要求每个已登记实例在当前站点时间和当前根地址时间下报告 <code>config_applied=true</code>。新登记实例完成全部查询、刚改根地址的实例完成重新应用前都参与条件。永久故障实例由运维先隔离实际入口，再移除登记。释放只确认入口已撤销，证书和文件残留由 Pages 按绑定 ID 继续清理。</p>
+<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
+<ul>
+<li>域名切换原子更新当前绑定、释放旧绑定并推进站点时间。</li>
+<li>每个实例按仓库 ID 清理旧绑定，并分别报告配置落实和新地址结果。</li>
+<li>旧 Host 释放不会等待物理文件删除，但必须确认入口、挑战和续期已停止。</li>
+<li>新实例、改址实例和永久故障实例分别按当前状态进入或退出释放条件。</li>
+<li>清理按绑定 ID 进行，不会重新开放已经释放的 Host。</li>
+</ul>
+<h2 id="失联重建与永久故障"><a class="header" href="#失联重建与永久故障">失联、重建与永久故障</a></h2>
+<p>Gitea 暂时失联时，Pages 使用最后确认的本机状态继续提供公开网站，并继续本机 TXT、证书和清理维护。Nginx 模式下 Pages 停止后，Nginx 继续使用最后成功的配置；standalone 入口随进程停止。恢复后从 etcd 游标继续同步并重新核对当前条件。</p>
+<p>本地 etcd 无法读取、游标超前或 Gitea 数据库恢复后现有游标已不能表示当前数据时，运维停止 Pages、清空该实例的 <code>GITEA_PAGES_DATA_ROOT</code>，再使用原有实例凭据启动。空状态从首次全部查询、补查和主动部署开始，通信凭据仅表示实例身份，不影响同步起点。</p>
+<p>失联期间同名新仓库可以暂时命中旧内容；恢复同步后先按旧 <code>repo_id</code> 撤销旧路由，新仓库部署成功后再开放相同外部路径，否则返回平台 404。永久故障实例先隔离真实入口，再从 Gitea 移除登记，其他实例和当前成品不受影响。</p>
+<h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
+<ul>
+<li>Gitea 失联时已确认网站继续服务，Pages 本机证书和 TXT 维护不依赖管理请求。</li>
+<li>Nginx 保持最后成功配置，Pages 恢复后重新同步；standalone 停止时直接入口停止。</li>
+<li>状态损坏、游标超前和数据库恢复都通过清空本机数据根目录触发首次全部查询，实例凭据保持不变。</li>
+<li>清空目录后从空配置开始，按 Gitea 返回的时间和仓库 ID 顺序重建，未部署站点返回平台 404。</li>
+<li>永久故障实例先隔离入口再移除登记，其他实例和 Gitea 当前成品保持可用。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../pages/certificates.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../pages/data-and-validation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../pages/certificates.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../pages/data-and-validation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>
