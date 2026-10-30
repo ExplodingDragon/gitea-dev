@@ -1,6 +1,6 @@
-This adds first-class repository Pages support to Gitea. Repository administrators can publish versioned static websites from a branch directory, a Gitea Actions artifact, or a TAR.GZ upload, then manage source settings, version history, custom domains, and per-instance deployment results in Gitea.
+This adds first-class repository Pages support to Gitea. Repository administrators can publish a static website from a branch directory, a Gitea Actions artifact, or a TAR.GZ upload, then manage its source, versions, custom domain, and deployment status from the repository settings.
 
-Gitea owns authorization, publication settings, immutable content versions, artifact storage, domain ownership checks, repository lifecycle changes, and deployment status. A separately deployed [gitea-pages](https://github.com/ExplodingDragon/gitea-pages) service actively synchronizes every enabled site, validates and extracts its current artifact, serves the confirmed local content, manages certificates, and reports deployment results to Gitea. Each registered instance is independent and deploys all sites, so existing websites remain available while Gitea is temporarily unreachable.
+Gitea stores publication settings and immutable content versions, verifies custom-domain ownership, and records the result reported by each registered instance. The separately deployed [gitea-pages](https://github.com/ExplodingDragon/gitea-pages) service downloads the current version, publishes it, manages HTTPS, and reports the result back to Gitea. Existing sites remain available when Gitea is temporarily unreachable.
 
 ## Screenshots
 
@@ -9,25 +9,19 @@ Gitea owns authorization, publication settings, immutable content versions, arti
 ![Pages publication from Gitea Actions](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/page/pages-actions.png)
 ![Pages instance administration](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/page/pages-instances.png)
 
-## Highlights
+## Behavior
 
-- GitHub-style project addresses at `https://<owner>.<pages-domain>/<repository>/` and owner sites at `https://<owner>.<pages-domain>/` from a repository named `.pages`.
-- Branch/directory and Actions publication sources, with web and API TAR.GZ uploads available from the version management page for either source.
-- Deduplicated content versions with stable pagination, restore, deletion, configurable retention, and a clear distinction between artifact readiness and deployment success.
-- Gitea Actions deployment endpoints compatible with the Pages artifact flow, plus a Pages entry in workflow run summaries after a run submits an artifact.
-- Custom domains with TXT ownership verification, per-instance publication status, operator certificates, and ACME through `go-acme/lego`.
-- Site settings and version history integrated into repository settings, with Pages instance registration and communication status in site administration.
+- Project sites use `https://<owner>.<pages-domain>/<repository>/`. A repository named `.pages` provides the owner site at `https://<owner>.<pages-domain>/`.
+- Content versions are deduplicated by digest and support pagination, restore, deletion, and configurable retention.
+- Gitea Actions can submit a Pages artifact and exposes that fact in the workflow run summary. Web and API TAR.GZ uploads remain available for either configured source.
+- Custom domains use TXT ownership verification. Certificate issuance and serving are handled by each Pages instance.
+- Pages sites are public, including sites built from private repositories. Making a public repository private disables its site until a repository administrator explicitly enables it again.
 
-Default Pages sites are public, including sites published from private repositories. When a public repository becomes private, Gitea disables its existing site and requires a repository administrator to explicitly enable the public website again.
-
-The separate service supports standalone HTTP/HTTPS serving, generated Nginx configuration, and embedding as the `gitea.dev/page` Go package through a `Publisher` interface. It stores local state in a single-member embedded etcd and deploys content before it reaches the request path. Nginx can continue serving the last confirmed deployment while the Pages process is unavailable.
-
-All publication sources enter the same bounded TAR.GZ validation pipeline. Gitea and the Pages service reject unsafe archive entry types, absolute or escaping paths, oversized content, excessive entries, and unsafe symbolic links. Relative symbolic links are accepted when their resolved path remains inside the site, including links whose target is not present, and executable permission bits are removed during extraction. A failed candidate keeps the previous confirmed website active.
+All sources use the same bounded TAR.GZ validation before a version becomes current. Invalid paths, unsafe archive entries, resource-limit violations, and symbolic links that escape the site are rejected; a rejected version does not replace the current site.
 
 ## Validation
 
-- Gitea: `make fmt`, `make lint`, `make test-backend`, `make test-frontend`, `make test-migration`, and `make test-e2e`.
-- Pages integration coverage: `TestAdminPagesInstances`, `TestAPIPagesVersions`, `TestPagesActionsDeploymentAPI`, and `TestActionsRoute`.
+- Gitea: `make checks`, `make lint`, `make build`, `make test-backend`, `make test-frontend`, `make test-migration`, and `make test-e2e`.
 - gitea-pages: `make format`, `make tidy`, `make check`, `go test -race ./...`, and `golangci-lint run ./...`.
 
 Related: https://github.com/go-gitea/gitea/issues/302
