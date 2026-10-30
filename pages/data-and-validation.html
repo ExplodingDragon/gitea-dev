@@ -183,7 +183,7 @@
 <tr><td><code>deleted</code>、<code>enabled</code></td><td>删除标记和当前启用状态。</td></tr>
 <tr><td><code>source_type</code>、<code>source_branch</code>、<code>source_path</code></td><td>自动发布方式及其配置；<code>source_type</code> 只有 <code>artifact</code> 和 <code>branch</code>。</td></tr>
 <tr><td><code>source_commit_id</code>、<code>source_next_check_unix</code>、<code>source_error_code</code></td><td>分支来源的已处理提交、下次检查时间和最近错误。</td></tr>
-<tr><td><code>current_version_id</code></td><td>当前内容版本 ID；<code>0</code> 表示尚无可部署内容。</td></tr>
+<tr><td><code>current_version_id</code></td><td>当前内容版本 ID；<code>0</code> 表示当前没有选择可部署内容。</td></tr>
 <tr><td><code>pages_updated_unix_nano</code></td><td>站点当前事实更新时间和同步分页依据；切换当前版本会推进此时间。</td></tr>
 </tbody></table>
 </div>
@@ -199,7 +199,7 @@
 <tr><td><code>created_unix</code></td><td>版本首次创建时间。</td></tr>
 </tbody></table>
 </div>
-<p>相同内容再次提交时复用原版本，因此首次来源保持稳定。Actions 的另一次运行提交相同内容时仍会记录该运行的提交标记，但不会复制版本。<code>[pages] MAX_VERSIONS_PER_SITE</code> 控制每个站点保留数量，默认 10，允许 1 到 100；每次成功提交或恢复时保留当前版本和其余最新版本，并在数据库事务提交后清理失去引用的对象。用户也可以删除一个历史版本：事务先确认版本属于目标仓库且不是当前版本，再删除引用；提交后才清理无引用对象。同步裁剪使配置降低后在下一次内容操作自然生效，不需要计划任务。</p>
+<p>相同内容再次提交时复用原版本，因此首次来源保持稳定。Actions 的另一次运行提交相同内容时仍会记录该运行的提交标记，但不会复制版本。<code>[pages] MAX_VERSIONS_PER_SITE</code> 控制每个站点保留数量，默认 10，允许 1 到 100；每次成功提交或恢复时保留当前版本和其余最新版本，并在数据库事务提交后清理失去引用的对象。用户可以删除任意版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。提交后才清理无引用对象。同步裁剪使配置降低后在下一次内容操作自然生效，不需要计划任务。</p>
 <h3 id="pages_instance"><a class="header" href="#pages_instance"><code>pages_instance</code></a></h3>
 <p>每行对应一个全局管理员登记的 Pages 实例。</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody>
@@ -246,7 +246,7 @@
 <li>相同内容重复提交复用版本；不同 Actions 运行提交相同内容时都保存运行标记，版本首次来源保持不变。</li>
 <li>Actions 运行标记、版本创建或复用和当前指针切换在一个事务中提交。</li>
 <li>每次内容提交或恢复后保留当前版本和配置数量内的最新历史版本；对象只在版本引用删除后清理。</li>
-<li>历史版本可以删除，当前版本始终受保护；删除事务提交后只清理已经没有版本引用的对象。</li>
+<li>任意版本都可以删除；删除当前版本同时关闭 Pages、清空当前指针并推进站点时间，删除事务提交后只清理已经没有版本引用的对象。</li>
 <li>删除仓库保留精简站点记录，清除该仓库全部版本引用，同名新仓库使用新 <code>repo_id</code>。</li>
 <li>自定义域名表只保存业务 TXT 管理事实，ACME 材料保存在 Pages 实例。</li>
 <li>实例最近通信时间由通过认证的内部接口请求更新，一分钟内连续请求合并写入；重置凭据后恢复为尚未通信。</li>

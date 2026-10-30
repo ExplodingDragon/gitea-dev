@@ -213,9 +213,9 @@
 <p><code>modules/setting</code> 按 Gitea 现有设置写法保存归档大小、条目数、版本保留数、批量大小、TXT 刷新周期和递归 DNS 地址等普通字段。<code>services/pages</code> 在使用归档能力时把资源字段组装为 <code>modules/pages.Limits</code>，在提交和恢复事务中应用版本保留数；域名服务直接使用已经校验和规范化的 TXT 设置。这样启动配置、归档安全校验、版本裁剪、TXT 到期筛选和发布事务可以分别测试。</p>
 <p>Pages 内容使用 Gitea 已有 storage 抽象，临时文件使用应用数据临时目录，仓库成品提交使用按仓库 ID 区分的全局锁抽象。实例凭据使用 Gitea 的安全随机数、HTTP Authorization 解析、SHA-256 编码和恒定时间比较工具，秒级与纳秒级更新时间使用统一时间工具。这样可以沿用 Gitea 已有的认证边界、清理、测试替换和锁配置能力，避免 Pages 再维护一套令牌解析、摘要编码、临时目录、锁表和安全工具。</p>
 <p>仓库页面的 TAR.GZ 上传复用 Gitea 的 <code>repo/upload</code> Dropzone 组件和临时上传模型，并使用组件的紧凑按钮样式。用户选择文件后，浏览器先异步暂存一个文件；组件收到暂存完成事件时立即用 UUID 提交 Pages 表单，服务端检查成品并消费临时文件。这样页面只有一次选择操作，文件类型、大小和上传错误仍沿用 Gitea 的统一处理。</p>
-<p>Pages 内容 API 的上传响应返回当前版本和站点更新时间；版本列表使用 Gitea 通用分页参数、<code>Link</code> 和 <code>X-Total-Count</code>，仓库读权限可以查看；恢复和删除接口要求仓库代码写权限并复用归档仓库限制。仓库 Pages 导航分为设置与版本两页：设置页只加载站点、实例结果和域名，版本页使用 Gitea 标准分页并一次批量读取当前页首次来源关联的 Actions 运行，避免逐版本查询。API 与网页分别共用 <code>services/pages.RestoreVersion</code> 和 <code>services/pages.DeleteVersion</code>，使版本归属、当前版本保护、对象检查和仓库状态检查只有一份实现。</p>
+<p>Pages 内容 API 的上传响应返回当前版本和站点更新时间；版本列表使用 Gitea 通用分页参数、<code>Link</code> 和 <code>X-Total-Count</code>，仓库读权限可以查看；恢复和删除接口要求仓库代码写权限并复用归档仓库限制。仓库 Pages 导航分为设置与版本两页：设置页只加载站点、来源错误和域名配置，版本页按 ID 倒序使用 Gitea 标准分页，并一次批量读取当前页首次来源关联的 Actions 运行，避免逐版本查询。API 与网页分别共用 <code>services/pages.RestoreVersion</code> 和 <code>services/pages.DeleteVersion</code>，使版本归属、当前版本关闭、对象检查和仓库状态检查只有一份实现。</p>
 <p>Pages 实例接口使用 Gitea 私有路由上下文生成 JSON、读取路径参数和记录服务端错误；实例令牌仍是该接口自己的 Bearer 凭据。认证中间件在成功识别实例后更新最近通信时间，并把一分钟内的连续请求合并为一次写入，使所有接口具有一致语义。两个计划任务标识为 <code>update_pages_branch_sources</code> 和 <code>verify_pages_domains</code>，名称直接说明操作；普通 cron 表达式复用 Gitea 的秒字段判断，<code>@every</code> 单独校验最短一分钟。</p>
-<p>仓库页面使用 Go 视图模型把实例结果归并为用户可理解的发布状态，模板只渲染地址、来源、域名和操作。全局管理页采用 Gitea 标准表格展示实例 ID、公开根地址、最近通信时间和紧凑操作；最近通信复用相对时间组件，操作列复用管理员列表的无边框图标样式。轻量视图结构只负责把数据库字段整理为模板需要的值。创建实例复用 Gitea 的操作确认框；创建或重置成功后把一次性明文暂存在当前管理员的服务端会话，POST 随即重定向到 GET，GET 显示并删除该值。这样刷新页面只重复读取，不会重复创建、重置凭据或触发浏览器的表单重提提示。来源选择的浏览器脚本只负责显示当前来源的输入项并停用其余输入项，服务端仍校验全部提交字段。该边界让仓库发布状态判定可以用 Go 单元测试覆盖，也避免模板自行换算时间或全局管理页增加专用前端脚本。</p>
+<p>仓库 Versions 页面使用 Gitea 标准表格和分页组件，展示摘要、首次来源、创建时间和紧凑操作。Current 行提供详情与删除，历史行提供恢复与删除；详情复用 Gitea 模态框和状态图标，服务端按现有实例结果生成每个默认地址与自定义域名的状态。状态推导位于 <code>services/pages</code>，Actions 部署轮询与 Versions 页面共同使用，较早结果不会在任一入口冒充当前结果。Settings 页面的查询限定为发布来源、来源错误和域名所有权配置。全局管理页采用 Gitea 标准表格展示实例 ID、公开根地址、最近通信时间和紧凑操作；最近通信复用相对时间组件，操作列复用管理员列表的无边框图标样式。轻量视图结构只负责把服务结果整理为模板需要的本地化值。创建实例复用 Gitea 的操作确认框；创建或重置成功后把一次性明文暂存在当前管理员的服务端会话，POST 随即重定向到 GET，GET 显示并删除该值。这样刷新页面只重复读取，不会重复创建、重置凭据或触发浏览器的表单重提提示。来源选择的浏览器脚本只负责显示当前来源的输入项并停用其余输入项，服务端仍校验全部提交字段。这些页面复用现有组件，避免为 Pages 增加单独的布局和交互实现。</p>
 <p>Actions 成品提交通过 Pages 服务的事务回调调用 Actions 模型，把所属 <code>ActionRun.HasPagesArtifact</code> 单调设置为真；版本创建或复用、当前指针和运行标记一起提交。运行详情 JSON 只在该标记存在时查询实例根地址，并返回当前默认 Pages URL；普通运行不会增加 Pages 查询。Vue 的 run Summary 复用现有状态摘要布局显示 Pages 项，链接文案明确指向当前网站，使运行提交事实和 Pages 当前发布事实分别由各自模型负责。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
@@ -230,12 +230,12 @@
 <li>Pages 临时文件、成品存储、仓库锁、安全随机数、HTTP Authorization 解析、SHA-256 编码、恒定时间比较和当前时间均复用 Gitea 现有工具。</li>
 <li>仓库网页使用 Gitea Dropzone 的单按钮样式选择一个 TAR.GZ，暂存成功后自动提交 UUID；完成 Pages 检查后形成当前成品并消费临时上传记录和文件。</li>
 <li>内容 API 返回版本身份和站点时间，版本列表支持 Gitea 标准分页，恢复和删除接口与网页共享服务和仓库写权限检查。</li>
-<li>设置页只读取发布与域名状态；版本页按 ID 倒序分页并批量取得当前页 Actions 运行，历史项可以确认恢复或删除且不会产生逐行数据库查询。</li>
+<li>设置页只读取站点、来源错误和域名配置；版本页按 ID 倒序分页并批量取得当前页 Actions 运行，历史项可以确认恢复或删除，Current 可以查看部署详情或删除，且不会产生逐行数据库查询。</li>
 <li>网页与 API 上传在任一自动发布方式下都可用，并保持来源配置；首次上传创建关闭的 <code>artifact</code> 站点。</li>
 <li>Pages 内部接口使用 Gitea 私有路由上下文，并以登记实例的通信凭据识别调用方。</li>
 <li>Pages 内部接口认证成功后更新实例最近通信时间，一分钟内连续请求合并为一次数据库写入；认证失败保持原通信时间。</li>
 <li>管理后台能以动作名称识别两个 Pages 计划任务，任何有效配置都不能以短于一分钟的周期运行。</li>
-<li>仓库页面的发布状态和站点最近变更时间由 Go 视图模型生成，默认地址和自定义域名分别核对各自需要的当前时间。</li>
+<li>Versions 复用 Gitea 标准表格、分页、模态框和状态图标；Current 详情按实例展示当前有效结果，Actions 状态使用同一判断；Current、历史版本和最后一个版本均可经过确认删除。</li>
 <li>全局管理页复用 Gitea 标准表格、相对时间、无边框操作图标和复制组件，展示实例总数、ID、公开根地址、最近通信时间和管理操作；创建实例先显示操作确认，创建和重置提交后重定向到 GET，一次性凭据刷新后不再出现，重置凭据后通信时间等待新凭据首次请求再更新。</li>
 <li>来源切换只启用当前来源的表单字段，关闭浏览器脚本时服务端校验仍能拒绝不完整或不匹配的配置。</li>
 <li>Actions 版本事务成功后设置 workflow run 标记，重复提交保持幂等；事务失败时版本指针和运行标记都不生效。</li>
@@ -247,7 +247,7 @@
 <pre><code class="language-text">gitea-pages standalone
 gitea-pages nginx
 </code></pre>
-<p>两种命令模式读取 <code>GITEA_PAGES_</code> 环境变量，启动单机内嵌 etcd，向 Gitea 注册实例根地址，主动同步站点并上报结果。<code>standalone</code> 直接提供 HTTP/HTTPS；<code>nginx</code> 生成同机 Nginx 配置并执行运维提供的配置检查和重载命令。作为 Go 依赖使用时，调用方直接构造 <code>Config</code> 和 <code>Service</code>，可以注入日志、HTTP 客户端和自定义 <code>Publisher</code>；配置默认值与命令模式一致。两个内置发布器的构造函数按自身类型确定服务模式，使嵌入方选择发布器时只有一个模式来源，入口探测不会因重复填写的模式不一致而选择错误地址。变量和目录见<a href="data-and-validation.html">数据与运行模式</a>。</p>
+<p>两种命令模式读取 <code>GITEA_PAGES_</code> 环境变量，启动单机内嵌 etcd，向 Gitea 注册实例根地址，主动同步站点并上报结果。<code>standalone</code> 直接提供 HTTP/HTTPS；<code>nginx</code> 生成同机 Nginx 配置并执行运维提供的配置检查和重载命令。作为 Go 依赖使用时，调用方直接构造 <code>Config</code> 和 <code>Service</code>，可以注入日志、HTTP 客户端和自定义 <code>Publisher</code>；配置默认值与命令模式一致。<code>LoadConfig</code> 的模式参数选择当前命令需要读取的环境变量，<code>Config</code> 只保存同步、发布和对应入口所需的实际参数。两个内置发布器直接使用各自的监听地址或 Nginx 探测地址，因此入口探测由实际发布器决定；外部发布器只需实现自己的入口。变量和目录见<a href="data-and-validation.html">数据与运行模式</a>。</p>
 <p>在 <code>gitea-page/</code> 执行：</p>
 <pre><code class="language-sh">make check
 make build
@@ -258,7 +258,7 @@ make build
 <ul>
 <li><code>make check</code> 完成 Pages 的测试、静态检查和编译，<code>make build</code> 生成 <code>bin/gitea-pages</code>。</li>
 <li><code>--help</code> 列出 <code>standalone</code> 和 <code>nginx</code>，缺少必填环境变量时返回具体配置错误。</li>
-<li>直接构造内置发布器时由发布器确定 standalone 或 Nginx 模式，不依赖调用方再次填写相同模式。</li>
+<li><code>LoadConfig</code> 只接受 standalone 和 Nginx；<code>Config</code> 只包含实际运行参数，内置发布器分别使用自己的监听地址或 Nginx 探测地址。</li>
 <li>外部包能够实现 <code>Publisher</code>、构造 <code>Service</code> 并读取 <code>Content</code>，无需访问任何内部状态类型。</li>
 <li>Gitea 测试通过仓库 Make 入口执行，并遵循 Gitea 测试规范。</li>
 <li>协议测试覆盖实例时间、仓库 ID、TAR.GZ 摘要、分页和结果字段；访问测试覆盖平台 404、已部署内容和关闭后的入口。</li>
