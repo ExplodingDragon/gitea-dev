@@ -1,6 +1,6 @@
 # 部署要求
 
-本文面向集群管理员，说明上线所需的平台能力和验收场景。安装命令与 values 由 [Helm chart README](../codespace/charts/gitea-codespace/README.md) 维护。
+本文面向集群管理员，说明上线所需的平台能力和验收场景。安装命令与 values 由 [Helm chart README](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md) 维护。
 
 ## Kubernetes 基础能力
 
