@@ -4,7 +4,7 @@
 
 ## 文档分组
 
-- [Gitea Pages](pages/)：由 Gitea 管理当前 TAR.GZ、`.pages` 所有者主页与仓库项目站点；每个单机实例在 Pages 进程内嵌入独立 etcd，使用一个数据根目录主动部署，并支持分支目录、Actions 成品与 TAR.GZ 上传、standalone 或 nginx 启动模式、自定义域名及 HTTP/HTTPS。
+- [Gitea Pages](pages/)：由 Gitea 管理当前 TAR.GZ、`.pages` 所有者主页与仓库项目站点；每个单机实例在 Pages 进程内嵌入独立 etcd，使用一个数据根目录主动部署，并支持分支目录、Actions 成品与 TAR.GZ 上传、内置 HTTP、前置代理源站、自管 HTTPS 和自定义域名。
 - [Gitea Codespace](codespace/)：远程开发环境的业务管理、运行平台、协议、部署要求和测试方式。
 
 各主题入口汇总相应章节，在线阅读时也可使用左侧目录。
