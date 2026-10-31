@@ -199,23 +199,24 @@
 </ul>
 <h2 id="gitea-代码边界"><a class="header" href="#gitea-代码边界">Gitea 代码边界</a></h2>
 <p>Gitea 侧沿用现有分层：<code>models/pages</code> 负责五张表和稳定查询，<code>modules/pages</code> 负责 TAR.GZ 检查与存储路径，<code>services/pages</code> 负责设置、版本提交、恢复、删除、生命周期和结果事务，路由层只完成请求解析、权限检查和响应转换。</p>
-<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。仓库设置页、版本页、Actions 摘要、实例登记和域名登记因此使用同一套地址函数。</p>
-<p><code>settings.go</code> 处理站点开关和自动发布来源，<code>publish.go</code> 处理成品检查、版本提交、恢复、删除和保留。两者复用同一个仓库站点锁和站点更新时间。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
+<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。仓库设置页、版本页、实例登记和域名登记因此使用同一套地址函数。</p>
+<p><code>settings.go</code> 处理站点开关和自动发布来源，<code>publish.go</code> 处理成品检查、版本提交、恢复、删除和保留。两者复用同一个仓库站点锁和站点更新时间。成品写入存储前与选择当前版本的事务内使用同一套仓库和站点状态判断，使归档、删除或来源切换期间完成的旧任务得到一致结果。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
 <p><code>modules/setting</code> 保存归档大小、条目数、版本保留数、批量大小、TXT 周期和 DNS 地址等启动配置。<code>services/pages</code> 把资源字段组装为 <code>modules/pages.Limits</code>。内容使用 Gitea storage 抽象，临时上传使用 Gitea Dropzone 和临时上传模型，仓库提交使用现有锁抽象；实例凭据复用安全随机数、HTTP Authorization、SHA-256 和恒定时间比较工具。</p>
 <p>Pages 内容 API 和网页共用版本服务。版本列表按 ID 倒序使用 Gitea 标准分页，并批量读取当前页的 Actions 来源。设置页只读取来源、来源错误和域名配置；版本页展示摘要、首次来源、创建时间与 Current 状态，Current 可查看实例详情或删除，历史版本可恢复或删除。全局管理页使用标准管理表格显示实例 ID、公开根地址、最近通信时间和紧凑操作。</p>
 <p>实例创建和重置使用 POST 后重定向到 GET。一次性明文令牌暂存在当前管理员会话，首次 GET 显示并消费，刷新不会重复操作。管理页面复制原始令牌，运维把它写入 Pages YAML 的 <code>gitea.token</code>。</p>
-<p>Actions 成品提交在 Pages 版本事务中把所属 <code>ActionRun.HasPagesArtifact</code> 单调设置为真。运行详情只有该标记存在时才查询当前默认 Pages 地址并显示提交事实；实例结果继续表示当前站点，而不解释为历史运行结果。</p>
+<p>Actions 成品提交创建或复用 Pages 版本，并在版本首次创建时保存来源运行 ID。版本页只在该运行仍然存在时提供来源链接；Actions 运行清理不影响版本、当前内容和实例部署。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>模型、通用模块、业务服务和路由保持 Gitea 现有依赖方向。</li>
 <li>地址规范化、所有者编码、项目路径和命名空间冲突由同一服务模块处理。</li>
 <li>来源设置与版本操作各有一个事务入口，并复用站点锁与更新时间。</li>
+<li>成品存储前和版本事务内使用相同的仓库、站点及来源状态判断。</li>
 <li>仓库生命周期变化和 Pages 状态在同一事务顺序中提交，失败时共同回滚。</li>
 <li>Pages 成品存储、临时上传、锁、凭据和时间工具复用 Gitea 现有实现。</li>
 <li>设置页与版本页各自只加载所需数据；版本分页批量读取 Actions 来源，没有逐行查询。</li>
 <li>Current、历史版本和最后一个版本都能按页面确认流程删除；Current 详情按实例显示当前结果。</li>
 <li>实例创建和重置重定向到 GET，一次性令牌只显示一次并可以复制到 YAML。</li>
-<li>Actions 标记、版本创建和当前指针在同一事务中生效，普通运行不增加 Pages 查询。</li>
+<li>Actions 成品创建或复用版本并保存首次运行来源；运行清理不影响 Pages 版本和当前内容。</li>
 </ul>
 <h2 id="启动文档与验证"><a class="header" href="#启动文档与验证">启动、文档与验证</a></h2>
 <p>标准程序从 YAML 得到 Gitea 地址、令牌、公开根地址、数据根目录、监听器、同步、DNS 与证书配置。DNS-01 使用一个 provider 名称和一组 lego 参数，标准构建包含完整 provider 注册表；关注依赖体积的自定义构建使用 lego 官方轻量标签选择所需 provider。三种 HTTPS 责任模式的配置和目录见<a href="data-and-validation.html">数据与本地架构</a>，证书行为见<a href="certificates.html">证书管理</a>。作为 Go 依赖时，调用方可以直接构造 <code>page.Config</code>，注入日志与 HTTP 客户端，并用自定义 <code>Publisher</code> 运行 <code>Service</code>。</p>

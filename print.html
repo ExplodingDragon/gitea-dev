@@ -250,23 +250,24 @@ https://&lt;owner&gt;.&lt;pages-instance&gt;/       # &lt;owner&gt;/.pages
 </ul>
 <h2 id="gitea-代码边界"><a class="header" href="#gitea-代码边界">Gitea 代码边界</a></h2>
 <p>Gitea 侧沿用现有分层：<code>models/pages</code> 负责五张表和稳定查询，<code>modules/pages</code> 负责 TAR.GZ 检查与存储路径，<code>services/pages</code> 负责设置、版本提交、恢复、删除、生命周期和结果事务，路由层只完成请求解析、权限检查和响应转换。</p>
-<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。仓库设置页、版本页、Actions 摘要、实例登记和域名登记因此使用同一套地址函数。</p>
-<p><code>settings.go</code> 处理站点开关和自动发布来源，<code>publish.go</code> 处理成品检查、版本提交、恢复、删除和保留。两者复用同一个仓库站点锁和站点更新时间。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
+<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。仓库设置页、版本页、实例登记和域名登记因此使用同一套地址函数。</p>
+<p><code>settings.go</code> 处理站点开关和自动发布来源，<code>publish.go</code> 处理成品检查、版本提交、恢复、删除和保留。两者复用同一个仓库站点锁和站点更新时间。成品写入存储前与选择当前版本的事务内使用同一套仓库和站点状态判断，使归档、删除或来源切换期间完成的旧任务得到一致结果。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
 <p><code>modules/setting</code> 保存归档大小、条目数、版本保留数、批量大小、TXT 周期和 DNS 地址等启动配置。<code>services/pages</code> 把资源字段组装为 <code>modules/pages.Limits</code>。内容使用 Gitea storage 抽象，临时上传使用 Gitea Dropzone 和临时上传模型，仓库提交使用现有锁抽象；实例凭据复用安全随机数、HTTP Authorization、SHA-256 和恒定时间比较工具。</p>
 <p>Pages 内容 API 和网页共用版本服务。版本列表按 ID 倒序使用 Gitea 标准分页，并批量读取当前页的 Actions 来源。设置页只读取来源、来源错误和域名配置；版本页展示摘要、首次来源、创建时间与 Current 状态，Current 可查看实例详情或删除，历史版本可恢复或删除。全局管理页使用标准管理表格显示实例 ID、公开根地址、最近通信时间和紧凑操作。</p>
 <p>实例创建和重置使用 POST 后重定向到 GET。一次性明文令牌暂存在当前管理员会话，首次 GET 显示并消费，刷新不会重复操作。管理页面复制原始令牌，运维把它写入 Pages YAML 的 <code>gitea.token</code>。</p>
-<p>Actions 成品提交在 Pages 版本事务中把所属 <code>ActionRun.HasPagesArtifact</code> 单调设置为真。运行详情只有该标记存在时才查询当前默认 Pages 地址并显示提交事实；实例结果继续表示当前站点，而不解释为历史运行结果。</p>
+<p>Actions 成品提交创建或复用 Pages 版本，并在版本首次创建时保存来源运行 ID。版本页只在该运行仍然存在时提供来源链接；Actions 运行清理不影响版本、当前内容和实例部署。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
 <li>模型、通用模块、业务服务和路由保持 Gitea 现有依赖方向。</li>
 <li>地址规范化、所有者编码、项目路径和命名空间冲突由同一服务模块处理。</li>
 <li>来源设置与版本操作各有一个事务入口，并复用站点锁与更新时间。</li>
+<li>成品存储前和版本事务内使用相同的仓库、站点及来源状态判断。</li>
 <li>仓库生命周期变化和 Pages 状态在同一事务顺序中提交，失败时共同回滚。</li>
 <li>Pages 成品存储、临时上传、锁、凭据和时间工具复用 Gitea 现有实现。</li>
 <li>设置页与版本页各自只加载所需数据；版本分页批量读取 Actions 来源，没有逐行查询。</li>
 <li>Current、历史版本和最后一个版本都能按页面确认流程删除；Current 详情按实例显示当前结果。</li>
 <li>实例创建和重置重定向到 GET，一次性令牌只显示一次并可以复制到 YAML。</li>
-<li>Actions 标记、版本创建和当前指针在同一事务中生效，普通运行不增加 Pages 查询。</li>
+<li>Actions 成品创建或复用版本并保存首次运行来源；运行清理不影响 Pages 版本和当前内容。</li>
 </ul>
 <h2 id="启动文档与验证"><a class="header" href="#启动文档与验证">启动、文档与验证</a></h2>
 <p>标准程序从 YAML 得到 Gitea 地址、令牌、公开根地址、数据根目录、监听器、同步、DNS 与证书配置。DNS-01 使用一个 provider 名称和一组 lego 参数，标准构建包含完整 provider 注册表；关注依赖体积的自定义构建使用 lego 官方轻量标签选择所需 provider。三种 HTTPS 责任模式的配置和目录见<a href="pages/data-and-validation.html">数据与本地架构</a>，证书行为见<a href="pages/certificates.html">证书管理</a>。作为 Go 依赖时，调用方可以直接构造 <code>page.Config</code>，注入日志与 HTTP 客户端，并用自定义 <code>Publisher</code> 运行 <code>Service</code>。</p>
@@ -435,7 +436,6 @@ make check
 <p>全局管理页使用 Gitea 标准管理表格，标题显示实例数量并提供创建入口。表格展示实例 ID、公开根地址、最近通信时间和操作：自动表格布局让 ID 按内容保持紧凑宽度，操作列只扩展到图标所需宽度，公开根地址和最近通信在中间平分剩余空间并居中显示；这种布局不会压缩 ID，也不会让操作列占用展示信息的空间。ID 用于将页面操作与日志、数据库记录对应；已经注册根地址的实例显示可访问地址；最近通信使用相对时间，悬停可以查看精确时间，尚未通信时显示 <code>Never</code>；末列沿用管理员列表的 <code>Op.</code> 标题和无边框图标操作。架构说明属于设计文档，不占用日常管理列表。</p>
 <p>创建实例先使用 Gitea 的操作确认框说明会生成一次性凭据。创建或重置成功后，Gitea 把明文暂存在当前管理员的服务端会话，并把 POST 重定向到管理页 GET；这个 GET 以只读输入框显示一次完整令牌、提供复制按钮并立即消费会话值，运维把它写入 Pages YAML 的 <code>gitea.token</code>。页面刷新因此只执行 GET，不会重复创建或重置，明文也不会再次显示。Gitea 后续只保留数据库中的摘要。重置会立即废止旧凭据并把最近通信时间恢复为 <code>Never</code>，新实例成功使用新凭据后再写入时间。根地址更新时间继续用于同步协议的并发控制，管理页使用最近通信时间表达运维需要的连接事实。移除实例前的确认信息要求运维先停止或隔离真实入口，因为删除 Gitea 登记不会停止外部 Pages 进程。归档限额和业务 TXT 要求属于 Gitea 启动配置，管理页只展示实例登记。</p>
 <p>Actions 部署状态仍同时表达“成品已提交”和“实际发布”。实际发布只有在所有已登记且具有 <code>root_url</code> 的实例确认当前摘要和默认入口成功时为 <code>success</code>；任一实例明确报告默认入口失败时为 <code>failure</code>；没有服务实例或仍有实例未完成时为 <code>in_progress</code>；站点关闭或摘要已不再当前时为 <code>cancelled</code>。仅自定义域名失败不会阻塞默认入口的成功状态。错误码映射为本地化说明，例如内容下载失败、归档无效、内容安装失败、入口应用失败、TXT 无效、证书等待、ACME 失败和入口探测失败。</p>
-<p>workflow run 成功提交过 Pages 成品时，Actions Summary 显示 Pages 项和当前默认网站入口。这个运行标记表达成品提交事实；网站链接按当前仓库与实例根地址生成，实例实际发布状态继续在仓库 Pages 页面按当前站点结果展示。这样历史运行页面始终提供可理解的当前入口，同时不会把后来变化的当前实例结果归因到某次历史运行。</p>
 <h3 id="实现验收点-15"><a class="header" href="#实现验收点-15">实现验收点</a></h3>
 <ul>
 <li>设置页只显示站点开关、两种自动发布方式、来源错误和自定义域名配置；版本页显示上传和分页版本管理。</li>
@@ -452,8 +452,7 @@ make check
 <li>管理列表用实例 ID 对应日志和数据库记录，用最近通信时间判断当前凭据是否连接过 Gitea；重置后时间清空，下一次通过认证的请求重新写入。</li>
 <li>创建实例、重置凭据和移除实例都有明确确认，移除说明真实入口需要先由运维停止或隔离。</li>
 <li>Actions 成品提交与实际发布分别展示；所有有 <code>root_url</code> 的登记实例确认当前摘要和默认入口后才显示 <code>success</code>，无服务实例或尚未完成时显示 <code>in_progress</code>，默认入口明确失败时显示 <code>failure</code>，关闭或摘要不再当前时显示 <code>cancelled</code>。</li>
-<li>Actions Summary 只在运行成功提交过 Pages 成品时显示 Pages 项；链接使用当前默认网站地址，没有实例地址时显示成品已提交。</li>
-<li>workflow run 标记、部署接口轮询状态和仓库 Pages 实例结果分别表达运行提交事实、当前摘要的等待结果和当前站点实际状态。</li>
+<li>Actions 部署接口轮询状态和仓库 Pages 实例结果分别表达当前摘要的等待结果和当前站点实际状态。</li>
 <li>实例结果对应旧站点、旧根地址或不同业务 TXT 要求时显示发布中，不会冒充当前发布结果。</li>
 <li>普通访问错误、访问量和文件 404 不写入部署结果。</li>
 </ul>
@@ -523,8 +522,7 @@ make check
 <p>部署步骤使用 <code>pages: write</code> 和 <code>id-token: write</code>，把允许尝试中的 Artifact 和 OIDC 声明交给 Gitea。Gitea 可以兼容 <code>upload-pages-artifact</code> 与 <code>deploy-pages</code> 的协议，但可用 Action 版本必须在真实 Gitea URL、Runner 和 Gitea 版本组合上验证；兼容结果应记录实际版本，不把 GitHub 托管环境的默认保证扩展到 Gitea。</p>
 <p>Actions 的 Artifact 输入检查和最终 TAR.GZ 检查属于同一发布流程。Artifact 的外层 ZIP 只提取约定的 <code>artifact.tar</code> 作为网站成品输入；Gitea 不把外层 ZIP 的其他条目当作网站文件。缺少或重复 <code>artifact.tar</code>、归档结构不完整时直接报告成品错误。Gitea 读取 <code>artifact.tar</code> 后生成 TAR.GZ，完成摘要、存储、版本创建或复用和当前指针提交，再向部署步骤返回成品已准备。网站构建命令由工作流自行负责，Pages 从构建完成的静态成品开始发布。</p>
 <p>同一运行的尝试号用于区分重跑，任务允许读取的尝试集合决定 Artifact 输入，旧尝试的迟到 Artifact 不能绕过任务权限或来源核对。部署接口返回的是成品转换和当前摘要提交结果，不表示 Actions 任务本身或任何 Pages 实例已经完成网站发布；实例结果通过通信接口单独展示。</p>
-<p>Gitea 在同一个数据库事务中创建或复用版本、切换当前指针，并在所属 <code>action_run</code> 上设置 <code>has_pages_artifact=true</code>。这个单调标记表示该 workflow run 至少完成过一次 Pages 成品提交，与调用接口的具体 job 无关；字段名称特意使用 artifact，避免把成品提交误解为实例已经发布成功。重跑和多个部署 job 共享同一个运行标记。Actions run 的 Summary 根据标记显示 Pages 项，并按当前仓库名称和第一个有效实例根地址推导 <code>View current site</code>；没有可用地址时显示成品已提交。链接始终表示仓库当前网站，因此仓库改名、转移和实例根地址变化会自然得到新地址，历史 run 也不会保存旧地址或旧内容。</p>
-<p>运行标记属于 Actions 的执行事实。版本的 Actions 运行 ID 只记录该摘要的首次来源；后续运行提交相同摘要时复用版本，同时为后续运行设置自己的标记。Pages 实例结果仍只描述当前站点，版本记录只描述内容和首次来源。</p>
+<p>Gitea 在同一个数据库事务中创建或复用版本并切换当前指针。版本的 Actions 运行 ID 只记录该摘要的首次来源；后续运行提交相同摘要时复用版本并保持首次来源。版本页在来源运行仍然存在时提供链接，运行清理不影响版本和当前内容。Pages 实例结果只描述当前站点，版本记录只描述内容和首次来源。</p>
 <p>Actions 部署结果在 Gitea 中分为“成品已提交”和“实际发布”。实际发布的 <code>success</code> 只在所有已登记且具有 <code>root_url</code> 的 Pages 实例都确认当前 TAR.GZ 摘要，并确认默认地址发布成功时产生；任一实例明确报告默认地址失败时为 <code>failure</code>；没有服务实例或仍有实例未完成确认时为 <code>in_progress</code>；站点关闭或该摘要已不再是当前摘要时为 <code>cancelled</code>。仅自定义域名失败不会阻塞默认地址成功，对应错误继续显示在仓库 Pages 状态中。</p>
 <h3 id="实现验收点-19"><a class="header" href="#实现验收点-19">实现验收点</a></h3>
 <ul>
@@ -533,9 +531,9 @@ make check
 <li>Artifact 外层 ZIP 只提取唯一的 <code>artifact.tar</code>；Artifact 读取、TAR.GZ 检查、存储和版本事务完成后才返回成品已准备。</li>
 <li>Action 的兼容版本经过真实 Gitea URL 验证，工作流完成构建，Pages 从静态成品开始发布。</li>
 <li>部署接口的成品提交结果、Actions 任务状态和实例实际发布结果分开处理。</li>
-<li>版本接收和 workflow run 幂等标记在一个事务中完成；run Summary 显示当前网站入口，没有实例地址时显示 Pages 内容已提交。</li>
-<li>多个运行提交相同摘要时只保留一个版本，每个成功运行仍保存提交标记，版本保留首次来源。</li>
-<li>run Summary 的链接由当前仓库和实例根地址推导，文案表达当前网站入口；实例发布结果继续由当前 Pages 状态展示。</li>
+<li>版本创建或复用和当前指针切换在一个事务中完成。</li>
+<li>多个运行提交相同摘要时只保留一个版本，版本保留首次来源。</li>
+<li>版本页在首次来源运行仍然存在时提供链接；运行清理不影响 Pages 版本和当前内容。</li>
 <li>Actions 实际发布只有在全部有 <code>root_url</code> 的登记实例确认当前摘要和默认入口后才为 <code>success</code>；无服务实例或尚未完成时为 <code>in_progress</code>，默认入口明确失败时为 <code>failure</code>，关闭或摘要不再当前时为 <code>cancelled</code>；自定义域名错误单独展示。</li>
 </ul>
 <h2 id="网页与-api-上传"><a class="header" href="#网页与-api-上传">网页与 API 上传</a></h2>
@@ -575,16 +573,16 @@ make check
 <li>使用按仓库 ID 区分的 Gitea 全局锁串行处理，重新校验仓库；分支和 Actions 还重新校验站点仍启用、自动发布方式及来源特有事实。</li>
 <li>通过 Gitea storage 保存完整对象并确认可读。</li>
 <li>在短 SQL 事务中创建或复用版本；摘要与当前版本不同才切换 <code>current_version_id</code> 并推进站点时间。</li>
-<li>Actions 来源在同一事务设置运行标记；所有来源在事务中按保留数量裁剪版本记录。</li>
+<li>Actions 来源在版本首次创建时保存运行 ID；所有来源在事务中按保留数量裁剪版本记录。</li>
 <li>事务提交后清理被裁剪版本的对象，Pages 实例在下一次轮询取得当前摘要。</li>
 </ol>
-<p>相同摘要已经是当前版本时，调用保持幂等，不推进站点时间；Actions 的新运行仍在事务中取得自己的提交标记。事务返回错误时调用方可以重试完整提交，已被版本引用的对象不会作为未采用对象删除。慢的 Git、Artifact、压缩、存储和网络操作都在数据库事务外。</p>
+<p>相同摘要已经是当前版本时，调用保持幂等，不推进站点时间，也不改变版本的首次来源。事务返回错误时调用方可以重试完整提交，已被版本引用的对象不会作为未采用对象删除。慢的 Git、Artifact、压缩、存储和网络操作都在数据库事务外。</p>
 <p>恢复操作取得同一仓库锁，确认仓库、站点、版本归属和对象存在后，只在事务中切换当前指针、推进站点时间并应用保留数量。已经是当前版本时恢复幂等。删除操作取得相同锁，在事务中确认目标属于该仓库；删除当前版本时同时关闭站点、清空指针并推进站点时间，删除历史版本时只删除引用，提交后再清理对象。关闭站点可以恢复或删除内容；恢复版本不会自动开启站点。归档或已经删除的仓库拒绝修改版本。API 提供分页版本列表、按版本 ID 恢复和删除，网页使用同一服务，因此权限、归属和状态检查保持一致。</p>
 <h3 id="实现验收点-22"><a class="header" href="#实现验收点-22">实现验收点</a></h3>
 <ul>
 <li>所有来源共享同一版本提交流程，Pages 离线不影响 Gitea 接收和保存版本。</li>
 <li>只有完整对象和成功 SQL 事务才会成为当前版本；相同当前摘要不推进站点时间。</li>
-<li>Actions 运行标记与版本事务原子提交，同一摘要由多个运行提交时版本仍唯一。</li>
+<li>Actions 版本保存首次运行来源，同一摘要由多个运行提交时版本仍唯一且首次来源保持不变。</li>
 <li>恢复只接受目标仓库仍保留且对象可读的版本，只改变当前指针和站点时间。</li>
 <li>恢复保持来源、启用状态和域名配置，关闭站点恢复后仍保持关闭。</li>
 <li>删除接受目标仓库的当前或历史版本；删除当前版本同时关闭 Pages、清空当前指针并推进站点时间，数据库提交后才清理无引用对象。</li>
@@ -945,7 +943,7 @@ make check
 <tr><td><code>created_unix</code></td><td>版本首次创建时间。</td></tr>
 </tbody></table>
 </div>
-<p>相同内容再次提交时复用原版本，因此首次来源保持稳定。Actions 的另一次运行提交相同内容时仍会记录该运行的提交标记，但不会复制版本。<code>[pages] MAX_VERSIONS_PER_SITE</code> 控制每个站点保留数量，默认 10，允许 1 到 100；每次成功提交或恢复时保留当前版本和其余最新版本，并在数据库事务提交后清理失去引用的对象。用户可以删除任意版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。提交后才清理无引用对象。同步裁剪使配置降低后在下一次内容操作自然生效，不需要计划任务。</p>
+<p>相同内容再次提交时复用原版本，因此首次来源保持稳定。Actions 的另一次运行提交相同内容时不会复制版本或改变首次来源。<code>[pages] MAX_VERSIONS_PER_SITE</code> 控制每个站点保留数量，默认 10，允许 1 到 100；每次成功提交或恢复时保留当前版本和其余最新版本，并在数据库事务提交后清理失去引用的对象。用户可以删除任意版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。提交后才清理无引用对象。同步裁剪使配置降低后在下一次内容操作自然生效，不需要计划任务。</p>
 <h3 id="pages_instance"><a class="header" href="#pages_instance"><code>pages_instance</code></a></h3>
 <p>每行对应一个全局管理员登记的 Pages 实例。</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody>
@@ -982,15 +980,12 @@ make check
 </tbody></table>
 </div>
 <p>Gitea 接收结果时通过 <code>current_version_id</code> 解析当前摘要，并核对站点时间、实例根地址时间和适用的业务 TXT 要求。旧结果返回 <code>state_changed</code>，使较早部署的结果不会覆盖当前状态。</p>
-<h3 id="actions-运行标记"><a class="header" href="#actions-运行标记">Actions 运行标记</a></h3>
-<p>现有 <code>action_run</code> 表增加 <code>has_pages_artifact</code> 布尔字段。Actions 成品接收时，版本创建或复用、当前指针切换和运行标记在同一个数据库事务完成。字段名称表达“该运行提交过 Pages 成品”，因为实例发布成功属于独立结果；这样接口成功时版本与运行标记一定同时可见，事务失败时两者都不生效。</p>
-<p>标记表示该 workflow run 至少成功提交过一次 Pages 内容。相同摘要由多个运行提交时只产生一个版本，但每个成功运行都有自己的标记。版本只记录首次 Actions 来源，当前地址仍由实例根地址和仓库名称推导，当前发布结果仍由 <code>pages_instance_site</code> 推导，因此 Actions 表无需复制站点状态。</p>
 <h3 id="实现验收点-46"><a class="header" href="#实现验收点-46">实现验收点</a></h3>
 <ul>
 <li>数据库包含 <code>pages_site</code>、<code>pages_version</code>、<code>pages_instance</code>、<code>pages_domain</code> 和 <code>pages_instance_site</code> 五张 Pages 业务表。</li>
 <li>站点使用 <code>current_version_id</code> 指向当前内容；版本表按仓库和摘要唯一，并只保存版本身份、首次来源和创建时间。</li>
-<li>相同内容重复提交复用版本；不同 Actions 运行提交相同内容时都保存运行标记，版本首次来源保持不变。</li>
-<li>Actions 运行标记、版本创建或复用和当前指针切换在一个事务中提交。</li>
+<li>相同内容重复提交复用版本，版本首次来源保持不变。</li>
+<li>版本创建或复用和当前指针切换在一个事务中提交。</li>
 <li>每次内容提交或恢复后保留当前版本和配置数量内的最新历史版本；对象只在版本引用删除后清理。</li>
 <li>任意版本都可以删除；删除当前版本同时关闭 Pages、清空当前指针并推进站点时间，删除事务提交后只清理已经没有版本引用的对象。</li>
 <li>删除仓库保留精简站点记录，清除该仓库全部版本引用，同名新仓库使用新 <code>repo_id</code>。</li>
