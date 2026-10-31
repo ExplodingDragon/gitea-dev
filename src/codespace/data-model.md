@@ -26,11 +26,12 @@ Gitea 保存 Codespace、Manager、Dev Container 模板、运行期凭据、用�
 
 Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与锁定提交、环境、当前状态、操作版本、Manager 与 Runtime 绑定，以及确认后的 Dev Container 来源。仓库配置引用锁定提交中的路径；命名模板保存创建时选定的正文，之后修改模板只影响新环境。
 
-Runtime UUID 在 Manager 领取前为空，绑定后全局唯一。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。
+Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保证全局唯一。`operation_r_version` 表示最新生命周期意图，`runtime_operation_r_version` 表示当前正在运行的实例由哪一次 create 或 resume 建立。两者分开保存，是因为排队中的 stop 已经增加操作版本，但在 stop 完成前访问入口仍应只接受原运行实例的 Metadata。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。
 
 ### 实现验收点
 
 - 多个未领取的 Codespace 可以同时排队，每个已绑定 Runtime UUID 只对应一个 Codespace。
+- running 状态始终具有有效的运行实例版本；进入 stopped、failed 或 deleting 后该版本清零。
 - 创建失败不会留下半条 Codespace、孤立授权或明文凭据。
 - 模板修改不会改变已有 Codespace 的恢复输入。
 - Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。
@@ -41,12 +42,15 @@ Runtime UUID 在 Manager 领取前为空，绑定后全局唯一。用户 Secret
 
 PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。
 
+块卷初始化事实保存于 CR Status，与已有卷 UID 绑定：空值表示尚未发放格式化许可，`started` 表示已经发放，`ready` 表示文件系统检查并挂载成功。该事实不能从 PVC 中的文件推导，因为格式化可能在创建第一个文件前中断；它随 CR 保留，直到数据删除流程完成。
+
 ### 实现验收点
 
 - 不同站点的 Codespace 资源位于不同命名空间。
 - CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。
 - 删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。
 - Cache 丢失后可以回源，不影响 PVC 中的环境数据。
+- 块卷初始化事实在首次设备写入前持久化，Pod 替换保留这一事实。
 
 ## 标识、并发与清理
 
@@ -54,7 +58,9 @@ Gitea ID 表示业务关系，Runtime UUID 表示跨站点运行身份，操作�
 
 创建事务原子保存 Codespace、初始操作和用户确认的授权。领取、完成、超时与恢复通过读取时的状态、操作版本和绑定关系进行条件更新；更新不到记录表示其他请求已经推进状态。用户活动代数独立保护活动更新和自动停止取消，因此用户活动与 Manager 操作结果可以各自收敛。
 
-日志按操作版本和单调偏移追加。指标、Endpoint 和 ready 信息属于可重建展示数据。delete 完成后清理业务关系、运行凭据、日志和展示数据。
+日志按当前操作版本和单调偏移追加。指标、Endpoint 和 ready 信息属于可重建展示数据；Gitea 以持久化的运行实例版本判断它们是否属于当前 Runtime，缓存缺失不阻止已经满足业务前置条件的操作完成。delete 完成后清理业务关系、运行凭据、日志和展示数据。
+
+Gitea 内部扫描和删除使用数据库主键定位 Codespace，再比较当前操作快照。Runtime UUID 用于跨组件身份，在 Manager 绑定前可以为空；用主键维护使尚未分配运行身份的记录也能正常超时和清理。
 
 ### 实现验收点
 
@@ -62,4 +68,6 @@ Gitea ID 表示业务关系，Runtime UUID 表示跨站点运行身份，操作�
 - 并发领取和完成依靠数据库条件更新与唯一约束只产生一个结果。
 - 日志只由当前操作按单调偏移追加。
 - 展示数据过期不触发主状态转换。
+- stop 排队或执行期间，Endpoint 只接受建立当前运行实例的 create/resume 版本；新操作版本不能冒充新的 Runtime。
 - delete 完成后旧 Token、Open Code 和日志不可继续使用。
+- 尚未绑定 Runtime UUID 的 queued/running 记录可以超时，Manager 删除也能清理这些记录。

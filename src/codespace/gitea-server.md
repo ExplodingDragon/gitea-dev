@@ -45,16 +45,19 @@ create 以未绑定状态入队。Manager 拉取任务时提交当前可接受�
 
 环境标签只决定首次调度。已有环境恢复时使用创建时保存的配置，因此标签变化不会隐式迁移环境。
 
+删除 Manager 会撤销其凭据并清理 Gitea 中绑定的业务记录。确认页面同时说明运行数据需在 Manager 管理面停用对应站点后清理，使业务身份撤销与不可逆的数据删除各自具有明确的操作人和确认步骤。
+
 ### 实现验收点
 
 - 注册 Secret 只在生成时显示，Gitea 只保存摘要。
 - 并发领取同一操作时只有一个 Manager 成功。
 - 个人 Manager 只能领取其所有者的操作。
 - Runtime UUID 绑定后保持稳定，后续操作不重新调度。
+- Manager 删除提示明确区分 Gitea 业务记录和运行平台数据的清理。
 
 ## 生命周期与可观测性
 
-Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、续期、日志、Runtime 信息和最终结果都需要匹配当前 Manager、Runtime 与操作版本。完整转换规则见[生命周期](lifecycle.md)。
+Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、续期、日志和最终结果需要匹配当前 Manager、Runtime 与操作版本；运行实例版本单独记录成功的 create/resume，使 stop 排队期间的 Runtime 信息仍能准确绑定原实例。完整转换规则见[生命周期](lifecycle.md)。
 
 操作日志按单调字节偏移追加，页面按偏移增量读取。CPU、内存、磁盘、Endpoint 和 ready 信息属于可重建的展示数据；过期时显示暂不可用，不据此推测新的业务状态。
 
@@ -62,6 +65,7 @@ Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、
 
 - 非法状态转换在创建操作前返回明确错误。
 - 续期、日志、Runtime 信息和最终结果只接受当前绑定与版本。
+- create/resume 的完成不以展示缓存作为事务前置条件，Endpoint 仍只使用与运行实例版本匹配的 Metadata。
 - 长日志可以分页读取，并保持用户查看历史时的滚动位置。
 - 展示数据过期不会把 running 改为 stopped 或 failed。
 
@@ -73,6 +77,8 @@ Manager 在 create、resume 或恢复运行材料时请求当前有效内容，�
 
 后台任务处理排队超时、操作租约、自动停止、失效凭据和 Manager 状态核对。任务通过数据库条件更新保持幂等，允许多个 Gitea 实例重复扫描。
 
+超时扫描和 Manager 记录清理使用 Codespace 的数据库主键定位，再校验当前版本和状态。Runtime UUID 在首次绑定前为空，不能作为这类数据库内部维护操作的唯一定位条件。
+
 ### 实现验收点
 
 - Token 权限不超过用户当前权限与确认范围的交集。
@@ -80,3 +86,4 @@ Manager 在 create、resume 或恢复运行材料时请求当前有效内容，�
 - 私钥和 Secret 明文不进入普通读取响应或日志。
 - Gitea 启动不依赖 Manager 在线，页面和配置不出现 Kubernetes 选项。
 - `app.example.ini` 与代码支持的业务配置保持一致。
+- 未绑定 Runtime UUID 的记录同样能够超时收敛和随 Manager 删除而清理。

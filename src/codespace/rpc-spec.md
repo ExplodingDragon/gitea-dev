@@ -24,7 +24,7 @@ Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端�
 
 ## Gitea 控制面
 
-Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。所有操作请求携带当前版本；Runtime 报告同时绑定 Manager 和 Runtime 身份。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。
+Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。
 
 没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。
 
@@ -36,6 +36,7 @@ ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公�
 - 领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。
 - 每个 Runtime UUID 只绑定一个 Codespace，未绑定请求可以正常排队。
 - 运行材料按请求时的用户和仓库权限生成。
+- create/resume 完成不依赖展示缓存命中，后续 Runtime 报告必须匹配持久化的运行实例版本。
 - 两端接受相同大小范围的 RPC 消息，资源保存仍执行自己的对象大小校验。
 
 ## 组件与 Agent
@@ -43,6 +44,10 @@ ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公�
 Gateway 和 Cache 使用各自身份连接 Manager，并接收版本化配置；发现版本缺口时重新获取完整快照。Gateway 建立用户流前请求业务授权和短期 Agent 票据。Cache 按配置限制上游、缓存范围和维护动作。
 
 Agent 以当前 Codespace CR 和 Pod 身份建立控制流。生命周期命令绑定操作版本，日志使用独立流，避免大量输出阻塞控制命令。Agent 先把阶段和结果原子写入 PVC，再向 Manager 上报，重连时复用已经完成的结果。
+
+块卷挂载前使用 `PrepareVolume` 请求确认。Manager 根据 mTLS 身份读取当前 CR、Pod 和 PVC，并校验操作许可；首次请求持久记录格式化已开始后返回成功，挂载后确认请求把状态更新为就绪。这个独立请求发生在 PVC 日志可用之前，使卷初始化也能获得持久化保护，Agent 仍只访问 Manager 服务。
+
+Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。
 
 Gateway 使用按能力签发的短期票据访问 PTY、SFTP、HTTP Endpoint 或回环端口。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。
 
@@ -57,6 +62,8 @@ Gateway 使用按能力签发的短期票据访问 PTY、SFTP、HTTP Endpoint �
 - 日志背压不会阻止控制命令。
 - Dev Container 可以通过本地 socket 增删和查询 Endpoint。
 - 公共业务类型在公共协议中只有一份定义。
+- `PrepareVolume` 只接受当前身份和操作许可；格式化请求重复调用明确失败，挂载成功确认可重复提交。
+- Cache 许可来自一次成功获取或续约租约的对应确认；发送、等待和服务运行均受许可到期控制。
 
 ## 错误、重试与关闭
 
