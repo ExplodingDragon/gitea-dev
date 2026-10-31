@@ -187,20 +187,23 @@
 <p>用户或站点管理员先创建并命名 Manager，再生成一次性注册 Secret。Gitea 只保存 Secret 摘要；注册完成后，Manager 声明访问地址、SSH 主机指纹和环境标签。</p>
 <p>create 以未绑定状态入队。Manager 拉取任务时提交当前可接受的标签和容量，Gitea 按所有权、标签和排队顺序选择候选，并通过条件更新完成唯一领取。Manager 分配 Runtime UUID 并绑定后，resume、stop 和 delete 都返回同一 Manager。</p>
 <p>环境标签只决定首次调度。已有环境恢复时使用创建时保存的配置，因此标签变化不会隐式迁移环境。</p>
+<p>删除 Manager 会撤销其凭据并清理 Gitea 中绑定的业务记录。确认页面同时说明运行数据需在 Manager 管理面停用对应站点后清理，使业务身份撤销与不可逆的数据删除各自具有明确的操作人和确认步骤。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>注册 Secret 只在生成时显示，Gitea 只保存摘要。</li>
 <li>并发领取同一操作时只有一个 Manager 成功。</li>
 <li>个人 Manager 只能领取其所有者的操作。</li>
 <li>Runtime UUID 绑定后保持稳定，后续操作不重新调度。</li>
+<li>Manager 删除提示明确区分 Gitea 业务记录和运行平台数据的清理。</li>
 </ul>
 <h2 id="生命周期与可观测性"><a class="header" href="#生命周期与可观测性">生命周期与可观测性</a></h2>
-<p>Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、续期、日志、Runtime 信息和最终结果都需要匹配当前 Manager、Runtime 与操作版本。完整转换规则见<a href="lifecycle.html">生命周期</a>。</p>
+<p>Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、续期、日志和最终结果需要匹配当前 Manager、Runtime 与操作版本；运行实例版本单独记录成功的 create/resume，使 stop 排队期间的 Runtime 信息仍能准确绑定原实例。完整转换规则见<a href="lifecycle.html">生命周期</a>。</p>
 <p>操作日志按单调字节偏移追加，页面按偏移增量读取。CPU、内存、磁盘、Endpoint 和 ready 信息属于可重建的展示数据；过期时显示暂不可用，不据此推测新的业务状态。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
 <li>非法状态转换在创建操作前返回明确错误。</li>
 <li>续期、日志、Runtime 信息和最终结果只接受当前绑定与版本。</li>
+<li>create/resume 的完成不以展示缓存作为事务前置条件，Endpoint 仍只使用与运行实例版本匹配的 Metadata。</li>
 <li>长日志可以分页读取，并保持用户查看历史时的滚动位置。</li>
 <li>展示数据过期不会把 running 改为 stopped 或 failed。</li>
 </ul>
@@ -208,6 +211,7 @@
 <p>Gitea 按用途签发 Git/API Token、一次性 Open Code 和 Gateway 会话授权。Open Code 只保存摘要，并在首次成功兑换时由数据库条件删除。Git SSH 私钥由 Runtime 生成并保存在 PVC，Gitea 只接收公钥；用户 Secret 加密保存，运行时按名称和当前仓库范围请求。</p>
 <p>Manager 在 create、resume 或恢复运行材料时请求当前有效内容，并写入 Runtime 易失目录。stop 和 delete 撤销运行期 Token，resume 重新签发。Gitea 配置只表达业务入口、Git 传输、超时和日志策略；集群、镜像、RuntimeClass 与 Cache 由 Manager 管理。</p>
 <p>后台任务处理排队超时、操作租约、自动停止、失效凭据和 Manager 状态核对。任务通过数据库条件更新保持幂等，允许多个 Gitea 实例重复扫描。</p>
+<p>超时扫描和 Manager 记录清理使用 Codespace 的数据库主键定位，再校验当前版本和状态。Runtime UUID 在首次绑定前为空，不能作为这类数据库内部维护操作的唯一定位条件。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
 <li>Token 权限不超过用户当前权限与确认范围的交集。</li>
@@ -215,6 +219,7 @@
 <li>私钥和 Secret 明文不进入普通读取响应或日志。</li>
 <li>Gitea 启动不依赖 Manager 在线，页面和配置不出现 Kubernetes 选项。</li>
 <li><code>app.example.ini</code> 与代码支持的业务配置保持一致。</li>
+<li>未绑定 Runtime UUID 的记录同样能够超时收敛和随 Manager 删除而清理。</li>
 </ul>
 
                     </main>

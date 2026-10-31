@@ -1243,20 +1243,23 @@ make check
 <p>用户或站点管理员先创建并命名 Manager，再生成一次性注册 Secret。Gitea 只保存 Secret 摘要；注册完成后，Manager 声明访问地址、SSH 主机指纹和环境标签。</p>
 <p>create 以未绑定状态入队。Manager 拉取任务时提交当前可接受的标签和容量，Gitea 按所有权、标签和排队顺序选择候选，并通过条件更新完成唯一领取。Manager 分配 Runtime UUID 并绑定后，resume、stop 和 delete 都返回同一 Manager。</p>
 <p>环境标签只决定首次调度。已有环境恢复时使用创建时保存的配置，因此标签变化不会隐式迁移环境。</p>
+<p>删除 Manager 会撤销其凭据并清理 Gitea 中绑定的业务记录。确认页面同时说明运行数据需在 Manager 管理面停用对应站点后清理，使业务身份撤销与不可逆的数据删除各自具有明确的操作人和确认步骤。</p>
 <h3 id="实现验收点-59"><a class="header" href="#实现验收点-59">实现验收点</a></h3>
 <ul>
 <li>注册 Secret 只在生成时显示，Gitea 只保存摘要。</li>
 <li>并发领取同一操作时只有一个 Manager 成功。</li>
 <li>个人 Manager 只能领取其所有者的操作。</li>
 <li>Runtime UUID 绑定后保持稳定，后续操作不重新调度。</li>
+<li>Manager 删除提示明确区分 Gitea 业务记录和运行平台数据的清理。</li>
 </ul>
 <h2 id="生命周期与可观测性"><a class="header" href="#生命周期与可观测性">生命周期与可观测性</a></h2>
-<p>Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、续期、日志、Runtime 信息和最终结果都需要匹配当前 Manager、Runtime 与操作版本。完整转换规则见<a href="codespace/lifecycle.html">生命周期</a>。</p>
+<p>Gitea 为 create、resume、stop 和 delete 建立带版本的操作。领取、续期、日志和最终结果需要匹配当前 Manager、Runtime 与操作版本；运行实例版本单独记录成功的 create/resume，使 stop 排队期间的 Runtime 信息仍能准确绑定原实例。完整转换规则见<a href="codespace/lifecycle.html">生命周期</a>。</p>
 <p>操作日志按单调字节偏移追加，页面按偏移增量读取。CPU、内存、磁盘、Endpoint 和 ready 信息属于可重建的展示数据；过期时显示暂不可用，不据此推测新的业务状态。</p>
 <h3 id="实现验收点-60"><a class="header" href="#实现验收点-60">实现验收点</a></h3>
 <ul>
 <li>非法状态转换在创建操作前返回明确错误。</li>
 <li>续期、日志、Runtime 信息和最终结果只接受当前绑定与版本。</li>
+<li>create/resume 的完成不以展示缓存作为事务前置条件，Endpoint 仍只使用与运行实例版本匹配的 Metadata。</li>
 <li>长日志可以分页读取，并保持用户查看历史时的滚动位置。</li>
 <li>展示数据过期不会把 running 改为 stopped 或 failed。</li>
 </ul>
@@ -1264,6 +1267,7 @@ make check
 <p>Gitea 按用途签发 Git/API Token、一次性 Open Code 和 Gateway 会话授权。Open Code 只保存摘要，并在首次成功兑换时由数据库条件删除。Git SSH 私钥由 Runtime 生成并保存在 PVC，Gitea 只接收公钥；用户 Secret 加密保存，运行时按名称和当前仓库范围请求。</p>
 <p>Manager 在 create、resume 或恢复运行材料时请求当前有效内容，并写入 Runtime 易失目录。stop 和 delete 撤销运行期 Token，resume 重新签发。Gitea 配置只表达业务入口、Git 传输、超时和日志策略；集群、镜像、RuntimeClass 与 Cache 由 Manager 管理。</p>
 <p>后台任务处理排队超时、操作租约、自动停止、失效凭据和 Manager 状态核对。任务通过数据库条件更新保持幂等，允许多个 Gitea 实例重复扫描。</p>
+<p>超时扫描和 Manager 记录清理使用 Codespace 的数据库主键定位，再校验当前版本和状态。Runtime UUID 在首次绑定前为空，不能作为这类数据库内部维护操作的唯一定位条件。</p>
 <h3 id="实现验收点-61"><a class="header" href="#实现验收点-61">实现验收点</a></h3>
 <ul>
 <li>Token 权限不超过用户当前权限与确认范围的交集。</li>
@@ -1271,6 +1275,7 @@ make check
 <li>私钥和 Secret 明文不进入普通读取响应或日志。</li>
 <li>Gitea 启动不依赖 Manager 在线，页面和配置不出现 Kubernetes 选项。</li>
 <li><code>app.example.ini</code> 与代码支持的业务配置保持一致。</li>
+<li>未绑定 Runtime UUID 的记录同样能够超时收敛和随 Manager 删除而清理。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="运行平台"><a class="header" href="#运行平台">运行平台</a></h1>
 <p>运行平台由 Manager、Runtime Agent、Gateway 和 Cache 组成。Manager 管理一个逻辑 Kubernetes 集群，Gitea 继续负责用户、权限和业务状态。</p>
@@ -1287,19 +1292,26 @@ make check
 <h2 id="runtime-与持久数据"><a class="header" href="#runtime-与持久数据">Runtime 与持久数据</a></h2>
 <p>Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 即使来自同一个平台镜像，也运行在不同 Pod 中；同一镜像用于统一发布和审计，不会合并各自的进程与权限边界。用户镜像运行在该 Docker 中，不直接成为 Kubernetes Pod 容器。</p>
 <p>环境模板显式选择 Kata 或 Sysbox RuntimeClass。失败时继续保留原隔离选择，因为自动切换会改变安全边界。仓库配置和命名模板进入同一 Dev Container 解析路径；环境模板可以追加 Web IDE 和标准 Feature。</p>
-<p>每个 Codespace 使用独立 PVC 保存工作区、内部 Docker、Git SSH 私钥和 IDE 数据。Token、用户 Secret、Unix socket 与进程状态写入易失目录。Agent 先在 PVC 记录操作阶段和结果，再向 Manager 上报，以便响应丢失后重报结果而不重复副作用。</p>
+<p>每个 Codespace 使用独立 PVC 保存工作区、内部 Docker、Git SSH 私钥和 IDE 数据。Token、用户 Secret、Unix socket 与进程状态写入易失目录。工作区准备是可重复的：未完成的克隆只使用临时目录，目标目录已存在时核对锁定提交并刷新 Git 凭据。任意 Dev Container 生命周期命令不具备通用幂等性，Agent 在 PVC 中持久记录其开始和结果，响应丢失后只重报已经完成的结果，结果未知时停止恢复并提供诊断。</p>
+<p>Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前 CR、Pod、PVC 和操作许可；首次格式化许可先以 <code>started</code> 写入 CR Status，再返回 Agent。文件系统检查和挂载成功后记录 <code>ready</code>。已有 ext4 卷经过检查后直接挂载；格式化已开始但无法识别文件系统时，保留卷并报告恢复错误。文件系统探测失败本身不能证明卷为空，这个持久化确认使进程崩溃或响应丢失也不会导致旧卷被重新格式化。</p>
+<p>生命周期输出直接流式写入操作日志；需要返回正文的元数据查询分别限制标准输出、错误输出为 1 MiB，超限明确失败。取消生命周期执行时，Agent 关闭 Docker 连接并停止专属 Docker 进程，再退出当前 Pod 的执行循环；后续操作由 Manager 在确认旧 Pod 停止后推进。这样关闭客户端连接不会被误认为容器内命令已经停止。</p>
 <h3 id="实现验收点-63"><a class="header" href="#实现验收点-63">实现验收点</a></h3>
 <ul>
 <li>Runtime 不挂载节点容器运行时套接字，也不持有 Kubernetes API 凭据。</li>
 <li>Kata 与 Sysbox 分别在对应 RuntimeClass 上通过真实启动验证。</li>
 <li>所有 Dev Container 来源使用同一解析和执行路径。</li>
 <li>Pod 替换后工作区、内部 Docker 和 IDE 数据保持一致。</li>
+<li>克隆中断不会留下被当作完成工作区的目标目录，已有工作区只在提交匹配时复用。</li>
+<li>Dev Container 生命周期命令不会因 Manager 重连或 Pod 内循环重启被盲目重放。</li>
 <li>ready 只在 Dev Container 与必要访问服务可用后发布。</li>
 <li>Agent 只能通过内部 RPC 接收操作和发布运行事实。</li>
+<li>块卷格式化前已有持久化许可；恢复挂载已有 ext4，未知文件系统保留数据并提供恢复诊断。</li>
+<li>大量生命周期日志不积累在内存中；元数据输出超限和执行取消都有确定结果。</li>
+<li>生命周期取消完成后，旧 Docker 执行环境已停止；普通用户访问断连只关闭对应连接。</li>
 </ul>
 <h2 id="gateway-与访问"><a class="header" href="#gateway-与访问">Gateway 与访问</a></h2>
 <p>Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。它从 Manager 获取当前路由，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。Manager 不转发用户数据。</p>
-<p>路由快照只包含站点已就绪、绑定有效且 Pod 和访问目标可用的实例。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。</p>
+<p>路由快照只包含当前 Gateway UID 关联的已就绪站点，以及这些站点命名空间中绑定有效、Pod 和访问目标可用的实例。Manager 使用组件 UID、站点 Gateway UID 和实例 Site UID 的缓存索引定位候选，避免每个 Gateway 周期扫描整个集群。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。</p>
 <p>Gateway SSH 主机密钥由 Manager 生成，私钥保存在 Kubernetes Secret 中。轮换时创建新的 Secret 和 Gateway 工作负载，再发布新的公钥指纹。Agent 提供 PTY、命令、SFTP、HTTP Endpoint 和回环端口转发；Dev Container 通过本地 Unix socket 管理 Endpoint。</p>
 <p>SSH 命令正常退出时先有界排空输出再发送退出状态；断连时同时关闭 RPC 与本地管道，释放被慢客户端阻塞的读取和写入。完成通知可以重复观察，重复关闭保持幂等。TCP 的输入半关闭仍允许读取剩余响应，避免截断请求完成后的数据。</p>
 <p>外部 DNS、TLS 和监听器由 Kubernetes Ingress 或 Gateway API 管理，使应用授权与平台证书分别由对应组件负责。</p>
@@ -1308,15 +1320,18 @@ make check
 <li>每个数据流都需要当前有效的用户授权和 Agent 票据。</li>
 <li>SSH 主机私钥只存在于对应 Secret。</li>
 <li>单个实例不可用不影响其他实例的路由，Pod 被替换或目标失效后不能获得访问票据。</li>
+<li>Gateway 快照只读取绑定到自身的站点和实例，站点数量增长不会扩大为全量 Runtime 扫描。</li>
 <li>SSH 正常退出保留输出和退出码；断连释放阻塞任务，TCP 半关闭后仍可接收响应。</li>
 <li>每张票据只绑定一种访问能力。</li>
 <li>本地端口转发只访问当前 Dev Container 的回环地址。</li>
 <li>Pod 或目标版本变化后，旧路由和票据失效。</li>
 </ul>
 <h2 id="cache"><a class="header" href="#cache">Cache</a></h2>
-<p>Cache 是独立组件，支持本地文件系统或 S3。它为允许的上游镜像提供代理，并按站点、仓库和用户隔离构建缓存。Runtime 的 Docker 数据保存在 PVC，Cache 只减少重复下载与构建。</p>
+<p>Cache 是独立组件，支持本地文件系统或 S3。它为允许的上游镜像提供代理，并按 GiteaSite UID、仓库 ID 和用户 ID 生成签名缓存目录。站点 UID 区分不同站点以及同名重建的站点，避免 Gitea 各自分配的数字 ID 重合造成跨站点共享。Runtime 的 Docker 数据保存在 PVC，Cache 只减少重复下载与构建。</p>
 <p>Cache 从 Manager 获取配置、短期认证和维护许可。缓存丢失时允许在原授权范围内回源；维护许可保证同一存储同一时刻只有一个垃圾回收执行者。</p>
 <p>申请清理许可和提交清理完成均等待 Manager 按请求序号确认。等待受超时和调用取消控制，结束后释放请求记录；迟到的响应只对应原请求，连接故障同时结束尚未确认的维护请求。这样“已发送”与“已完成”有明确区别，重连也不会继续持有旧请求的等待资源。</p>
+<p>Cache 执行许可在 Manager 首次获取 Kubernetes Lease 后生效，后续只由成功续约的对应请求确认延长。Cache 用请求发送时间加许可时长计算到期，并保留一秒余量；后续独立配置推送和重复确认只更新配置或被忽略，不会增加执行时间。独立到期计时器同时取消请求、上传和垃圾回收，即使控制流发送阻塞，旧进程也会停止使用共享存储。</p>
+<p>控制流结束后，Manager 保留已有 Lease 直到自然到期。断连无法证明远端进程已经停止，等待现有的 15 秒租期可以让旧进程先按本地许可退出，再允许新进程接管存储。停用后的 Cache 停止获取和续期租约；客户端遇到到期许可时重建连接，以便重新启用后正常恢复。管理面删除 Cache 组件时也检查这段租期：先停用 Cache 并等待租期结束，再删除组件，避免级联回收 Lease 使旧写入者提前失去保护。</p>
 <h3 id="实现验收点-65"><a class="header" href="#实现验收点-65">实现验收点</a></h3>
 <ul>
 <li>私有镜像和构建缓存按站点、仓库与用户范围隔离读取。</li>
@@ -1324,16 +1339,21 @@ make check
 <li>清理完成在 Manager 确认后才返回成功；取消、超时和控制流关闭均结束等待，并可在后续有效连接上继续维护。</li>
 <li>Cache 清空后可以回源，已有 Codespace 仍可从 PVC 恢复。</li>
 <li>同一存储同一时刻只有一个垃圾回收执行者。</li>
+<li>数字仓库和用户 ID 相同的不同站点仍使用不同缓存目录和授权。</li>
+<li>控制流单向中断、发送阻塞、迟到响应和重复响应均不能使 Cache 超过已确认的许可期限运行。</li>
+<li>停用后的 Cache 不再续约，组件在写入租期结束后才可删除。</li>
 </ul>
 <h2 id="高可用与恢复"><a class="header" href="#高可用与恢复">高可用与恢复</a></h2>
 <p>Manager 多副本通过 Kubernetes Lease 选举。只有 Leader 连接 Gitea、领取操作、协调 Runtime 和签发访问票据；备用副本保持可接替状态。新 Leader 先核对 Gitea 当前操作与 CR、PVC、Pod 和 Agent，再领取新任务。</p>
 <p>恢复不依赖节点本地文件。Kubernetes 无法证明旧 Pod 已停止写入 PVC 时，Manager 撤销其执行权和路由并保留数据，等待管理员针对当前资源身份确认，再把环境收敛到 stopped，通过普通 resume 启动新 Pod。</p>
+<p>Gitea 删除 Manager 身份与运行平台清理分别由各自管理员操作。Manager 管理面在站点停用后允许显式删除运行环境数据，请求携带当前 CR UID、资源版本和 Pod UID。控制器复用普通 delete 的停止确认和资源删除流程，避免失效凭据触发不可撤销的数据删除。</p>
 <h3 id="实现验收点-66"><a class="header" href="#实现验收点-66">实现验收点</a></h3>
 <ul>
 <li>同一时刻只有 Leader 推进生命周期操作。</li>
 <li>新 Leader 完成资源核对前不领取新 create。</li>
 <li>部分清单、未知归属或失联节点不会触发误删或双写。</li>
 <li>管理员确认只对当前 CR 和 Pod 身份生效。</li>
+<li>站点停用后的数据删除仍先确认旧写入者停止，再回收 PVC；同名替换或过期页面不能删除新资源。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="生命周期"><a class="header" href="#生命周期">生命周期</a></h1>
 <p>Gitea 保存用户可见的主状态和当前操作，Manager 负责让 Kubernetes 资源收敛，Agent 负责 Runtime 内的执行。操作版本贯穿三者，使网络重试、进程重启和 Leader 切换不会产生第二条执行链。</p>
@@ -1347,13 +1367,14 @@ make check
 </tbody></table>
 </div>
 <p>操作创建时间大于零表示存在操作；开始时间为零表示 queued，否则表示 running。操作完成后写入新的主状态并清空触发来源和操作时间。操作类型与阶段由主状态和时间唯一推导，不在数据库中保存第二份相同事实。</p>
-<p>每个新意图增加操作版本。续期、日志、Runtime 绑定、状态报告和最终提交都需要匹配 Codespace、Manager、操作类型与版本。数据库写入同时比较读取时的主状态、操作版本和操作阶段，只有仍为当前状态时才生效。delete 可以用更高版本替代进行中的 create、resume 或 stop，因为它代表用户的最终清理意图；其他冲突操作返回当前状态。</p>
+<p>每个新意图增加操作版本。领取、续期、日志和最终提交需要匹配 Codespace、Manager、操作类型与当前操作版本。create 或 resume 成功后，Gitea 另行记录建立当前 Runtime 的运行实例版本；running 状态的 Metadata 和 Endpoint 必须匹配该版本。这样 stop 入队后即使当前操作版本已经增加，也不会把旧 Runtime 的 Metadata 错判为新操作结果。数据库写入同时比较读取时的主状态、两个版本和操作阶段，只有仍为当前状态时才生效。delete 可以用更高版本替代进行中的 create、resume 或 stop，因为它代表用户的最终清理意图；其他冲突操作返回当前状态。</p>
 <p>用户活动代数独立保护活动递增和自动停止取消，Manager 的操作完成则只比较生命周期快照。这样打开 Endpoint 与 stop 完成并发发生时，活动请求保持环境的既定主状态，stop 也保留已经记录的活动代数。</p>
 <h3 id="实现验收点-67"><a class="header" href="#实现验收点-67">实现验收点</a></h3>
 <ul>
 <li>一个 Codespace 同时最多有一个有效操作。</li>
 <li>同一持久行能够唯一推导操作类型和 queued/running 阶段。</li>
 <li>日志、Runtime 信息和最终结果只接受当前操作版本。</li>
+<li>running 状态的 Runtime 信息只接受持久化的运行实例版本，stop 完成后清零。</li>
 <li>并发状态写入只有一个能够匹配读取时的生命周期快照。</li>
 <li>用户活动递增和 Manager 操作完成分别按各自的条件更新生效。</li>
 <li>重复提交相同意图保持幂等，不增加操作版本。</li>
@@ -1374,24 +1395,28 @@ make check
     M-&gt;&gt;G: 上报日志、Runtime 信息和结果
     G--&gt;&gt;U: running
 </pre>
-<p>Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和访问服务初始化后发布 ready，Manager 再提交 create 结果。</p>
+<p>Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和访问服务初始化后发布 ready，Manager 再提交 create 结果。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。</p>
 <p>输入和权限错误在持久化前返回。确定性执行错误进入 failed；可能已经创建的平台资源继续由同一 Runtime UUID 清理，避免重试生成另一套资源。</p>
+<p>块卷首次初始化由 Manager 先持久化格式化开始状态，再授权当前 Pod；Agent 完成 ext4 检查和挂载后确认就绪。初始化结果未知时保留数据，避免重复 create 或 Pod 重建把旧数据当成空卷。</p>
 <h3 id="实现验收点-68"><a class="header" href="#实现验收点-68">实现验收点</a></h3>
 <ul>
 <li>创建确认、授权和任务入队位于同一数据库事务。</li>
 <li>同一 create 只对应一个 Runtime UUID、一组 CR/PVC 和一个有效操作版本。</li>
 <li>Runtime UUID 绑定前不创建对外可用的 Runtime。</li>
 <li>页面在 create 完成前可以按偏移读取日志，成功后状态为 running。</li>
+<li>create 完成不依赖展示缓存是否命中，running 后只展示与运行实例版本匹配的 Runtime 信息。</li>
+<li>格式化授权先于设备写入持久化，同一卷不会因初始化响应丢失获得第二次格式化许可。</li>
 </ul>
 <h2 id="运行与访问"><a class="header" href="#运行与访问">运行与访问</a></h2>
 <p>running 状态下，Agent 向 Manager 发布当前 Pod 身份、访问目标和 Endpoint；Gateway 在每次连接前复核 Gitea 权限并取得短期票据。用户活动更新最后活动时间，用于自动停止；组件心跳和后台状态检查不计为用户活动。</p>
-<p>Runtime 信息是可重建的展示数据。暂时失联会让访问入口显示不可用，但不会把 running 推测为 stopped 或 failed。</p>
+<p>Runtime 信息是可重建的展示数据。暂时失联会让访问入口显示不可用，但不会把 running 推测为 stopped 或 failed。当前操作可能已经是 stop，而 Runtime 信息仍通过运行实例版本指向 stop 前的 create 或 resume；只有 stop 完成后才清除该身份。</p>
 <h3 id="实现验收点-69"><a class="header" href="#实现验收点-69">实现验收点</a></h3>
 <ul>
 <li>私有 Endpoint、Web IDE、SSH 和 SFTP 均需要当前用户授权。</li>
 <li>公共 Endpoint 仍需匹配当前 Runtime 和 Endpoint 声明。</li>
 <li>后台心跳不会延后自动停止。</li>
 <li>Runtime 信息过期不改变主状态。</li>
+<li>生命周期操作版本变化不会让旧 Runtime 获得新实例身份。</li>
 </ul>
 <h2 id="停止恢复与自动停止"><a class="header" href="#停止恢复与自动停止">停止、恢复与自动停止</a></h2>
 <p>stop 定向到已绑定 Manager。Manager 撤销路由和运行期凭据、停止 Runtime Pod 并保留 CR/PVC，确认完成后 Gitea 进入 stopped。resume 复用 Runtime UUID、CR、PVC 和已确定的环境配置，创建具有新 Pod UID、Agent 身份和访问目标版本的 Pod。</p>
@@ -1408,16 +1433,19 @@ make check
 <h2 id="删除"><a class="header" href="#删除">删除</a></h2>
 <p>delete 生效后，只有当前 delete 版本可以发布状态。Manager 依次撤销访问、停止执行并删除 Pod、PVC、CR 和路由信息；确认平台资源消失后，Gitea 清理业务关系、凭据、日志和展示数据。</p>
 <p>删除步骤以资源身份和稳定名称保持幂等。资源已经不存在表示该步骤完成；资源状态尚未确认时保持 deleting，并由后续协调继续核对。</p>
+<p>Gitea 删除 Manager 时立即撤销身份并清理其业务记录，运行平台数据由 Manager 管理员明确处理。管理员先停用站点，再针对当前 CR UID、资源版本和 Pod UID 确认删除；Manager 记录删除意图并沿用上述停止和删除流程。这也为 Gitea 记录已经不存在的环境提供了可审计的清理入口。</p>
 <h3 id="实现验收点-71"><a class="header" href="#实现验收点-71">实现验收点</a></h3>
 <ul>
 <li>create、resume 或 stop 期间发起 delete 最终能够收敛。</li>
 <li>重复 delete 不会重建资源，也不会因资源已经不存在而失败。</li>
 <li>deleting 只接受当前 delete 版本的操作结果。</li>
 <li>平台资源确认清理前，业务状态保持可诊断。</li>
+<li>身份撤销本身保留运行平台数据；停用站点后的显式清理最终删除对应 PVC 和 CR。</li>
 </ul>
 <h2 id="超时与恢复"><a class="header" href="#超时与恢复">超时与恢复</a></h2>
 <p>create 和 resume 的排队或执行期限用于结束无法启动的请求：create 进入 failed，resume 回到 stopped。stop 和 delete 表达必须完成的收敛意图；执行许可到期后以更高操作版本重新排队，并保留首次创建时间用于诊断。</p>
-<p>Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清单并核对 Gitea、CR、PVC、Pod 和 Agent。已成功且持久记录的 Agent 阶段只重复上报结果；开始后未记录完成的阶段明确失败，因为盲目重放可能重复修改用户环境。旧 Pod 是否仍可能写入 PVC 的处理见<a href="codespace/runtime-platform.html#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B8%8E%E6%81%A2%E5%A4%8D">运行平台</a>。</p>
+<p>Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清单并核对 Gitea、CR、PVC、Pod 和 Agent。工作区准备会核对现有仓库提交并重新配置当前凭据，因此崩溃后可以安全继续；任意 Dev Container 生命周期命令仍采用至多一次语义，已持久记录的结果只重复上报，开始后未记录完成则明确失败，因为盲目重放可能重复修改用户环境。旧 Pod 是否仍可能写入 PVC 的处理见<a href="codespace/runtime-platform.html#%E9%AB%98%E5%8F%AF%E7%94%A8%E4%B8%8E%E6%81%A2%E5%A4%8D">运行平台</a>。</p>
+<p>执行许可失效或操作被替换时，Agent 取消命令、停止专属 Docker 并退出当前执行循环。Manager 按旧 Pod 的停止事实决定后续操作能否继续，防止取消 RPC 后容器内命令仍在修改数据。SSH、SFTP 和端口转发的普通断连仅释放对应访问连接，不改变生命周期状态。</p>
 <p>操作续租与结果、Metadata 上报使用独立循环，避免慢上报占用续租时间。上报循环先通过本地资源缓存判断是否到达刷新周期或存在待确认结果，实际执行时再读取实时站点、凭据和资源列表。Watch 合并有关配置、身份、目标和结果的变化；单纯的上报代数与启动进度由定期刷新处理，减少无意义的实时读取和路由重建。</p>
 <h3 id="实现验收点-72"><a class="header" href="#实现验收点-72">实现验收点</a></h3>
 <ul>
@@ -1425,7 +1453,9 @@ make check
 <li>两个 Manager 竞争时只有一个能领取同一操作。</li>
 <li>新 Leader 不依赖前任进程内状态即可恢复协调。</li>
 <li>已完成阶段不会重放，结果未知的阶段提供明确诊断。</li>
+<li>工作区克隆中断后可以从临时目录重新准备，已完成的目标仓库会先核对提交再复用。</li>
 <li>空闲上报检查只读取本地缓存；有待上报内容时仍以实时身份和资源状态为准，慢上报不阻塞续租。</li>
+<li>旧操作取消后不在同一 Pod 中启动下一操作；新执行遵守原有旧 Pod 停止确认流程。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="数据模型"><a class="header" href="#数据模型">数据模型</a></h1>
 <p>本文定义数据归属、稳定标识和持久化不变量。列名、索引和自定义资源字段以模型、数据库迁移和 CRD 为准。</p>
@@ -1448,10 +1478,11 @@ make check
 <h2 id="gitea-业务数据"><a class="header" href="#gitea-业务数据">Gitea 业务数据</a></h2>
 <p>Gitea 保存 Codespace、Manager、Dev Container 模板、运行期凭据、用户 Secret 和附加仓库授权。全局对象与个人对象通过所有者区分，并由查询和数据库约束共同限制可见范围。</p>
 <p>Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与锁定提交、环境、当前状态、操作版本、Manager 与 Runtime 绑定，以及确认后的 Dev Container 来源。仓库配置引用锁定提交中的路径；命名模板保存创建时选定的正文，之后修改模板只影响新环境。</p>
-<p>Runtime UUID 在 Manager 领取前为空，绑定后全局唯一。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。</p>
+<p>Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保证全局唯一。<code>operation_r_version</code> 表示最新生命周期意图，<code>runtime_operation_r_version</code> 表示当前正在运行的实例由哪一次 create 或 resume 建立。两者分开保存，是因为排队中的 stop 已经增加操作版本，但在 stop 完成前访问入口仍应只接受原运行实例的 Metadata。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。</p>
 <h3 id="实现验收点-74"><a class="header" href="#实现验收点-74">实现验收点</a></h3>
 <ul>
 <li>多个未领取的 Codespace 可以同时排队，每个已绑定 Runtime UUID 只对应一个 Codespace。</li>
+<li>running 状态始终具有有效的运行实例版本；进入 stopped、failed 或 deleting 后该版本清零。</li>
 <li>创建失败不会留下半条 Codespace、孤立授权或明文凭据。</li>
 <li>模板修改不会改变已有 Codespace 的恢复输入。</li>
 <li>Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。</li>
@@ -1459,24 +1490,29 @@ make check
 <h2 id="平台数据"><a class="header" href="#平台数据">平台数据</a></h2>
 <p><code>GiteaSite</code> 和 <code>EnvironmentTemplate</code> 是集群级资源；Codespace CR 位于站点命名空间。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。</p>
 <p>PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。</p>
+<p>块卷初始化事实保存于 CR Status，与已有卷 UID 绑定：空值表示尚未发放格式化许可，<code>started</code> 表示已经发放，<code>ready</code> 表示文件系统检查并挂载成功。该事实不能从 PVC 中的文件推导，因为格式化可能在创建第一个文件前中断；它随 CR 保留，直到数据删除流程完成。</p>
 <h3 id="实现验收点-75"><a class="header" href="#实现验收点-75">实现验收点</a></h3>
 <ul>
 <li>不同站点的 Codespace 资源位于不同命名空间。</li>
 <li>CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。</li>
 <li>删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。</li>
 <li>Cache 丢失后可以回源，不影响 PVC 中的环境数据。</li>
+<li>块卷初始化事实在首次设备写入前持久化，Pod 替换保留这一事实。</li>
 </ul>
 <h2 id="标识并发与清理"><a class="header" href="#标识并发与清理">标识、并发与清理</a></h2>
 <p>Gitea ID 表示业务关系，Runtime UUID 表示跨站点运行身份，操作版本区分连续用户意图，Kubernetes UID 区分同名资源实例，目标版本区分 Agent 的连续发布。跨站点查找 Runtime 时同时使用站点身份和 Runtime UUID。</p>
 <p>创建事务原子保存 Codespace、初始操作和用户确认的授权。领取、完成、超时与恢复通过读取时的状态、操作版本和绑定关系进行条件更新；更新不到记录表示其他请求已经推进状态。用户活动代数独立保护活动更新和自动停止取消，因此用户活动与 Manager 操作结果可以各自收敛。</p>
-<p>日志按操作版本和单调偏移追加。指标、Endpoint 和 ready 信息属于可重建展示数据。delete 完成后清理业务关系、运行凭据、日志和展示数据。</p>
+<p>日志按当前操作版本和单调偏移追加。指标、Endpoint 和 ready 信息属于可重建展示数据；Gitea 以持久化的运行实例版本判断它们是否属于当前 Runtime，缓存缺失不阻止已经满足业务前置条件的操作完成。delete 完成后清理业务关系、运行凭据、日志和展示数据。</p>
+<p>Gitea 内部扫描和删除使用数据库主键定位 Codespace，再比较当前操作快照。Runtime UUID 用于跨组件身份，在 Manager 绑定前可以为空；用主键维护使尚未分配运行身份的记录也能正常超时和清理。</p>
 <h3 id="实现验收点-76"><a class="header" href="#实现验收点-76">实现验收点</a></h3>
 <ul>
 <li>状态写入只接受当前操作版本、Pod 身份和目标版本。</li>
 <li>并发领取和完成依靠数据库条件更新与唯一约束只产生一个结果。</li>
 <li>日志只由当前操作按单调偏移追加。</li>
 <li>展示数据过期不触发主状态转换。</li>
+<li>stop 排队或执行期间，Endpoint 只接受建立当前运行实例的 create/resume 版本；新操作版本不能冒充新的 Runtime。</li>
 <li>delete 完成后旧 Token、Open Code 和日志不可继续使用。</li>
+<li>尚未绑定 Runtime UUID 的 queued/running 记录可以超时，Manager 删除也能清理这些记录。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="rpc-接口"><a class="header" href="#rpc-接口">RPC 接口</a></h1>
 <p>本文定义跨进程职责、安全边界和重试语义。Gitea 与 Manager 的公共接口以 <code>codespace-proto-go</code> 为准；Manager、Agent、Gateway、Cache 与 Runtime 命令之间的接口由 <code>codespace/internal/rpc</code> 维护。两类接口分别归属跨仓库业务边界和 Codespace 内部运行边界，因此可以独立演进。</p>
@@ -1499,7 +1535,7 @@ make check
 <li>公共协议模块只生成 <code>codespace/v1</code>，内部协议只能由 Codespace 导入。</li>
 </ul>
 <h2 id="gitea-控制面"><a class="header" href="#gitea-控制面">Gitea 控制面</a></h2>
-<p>Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。所有操作请求携带当前版本；Runtime 报告同时绑定 Manager 和 Runtime 身份。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。</p>
+<p>Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。</p>
 <p>没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。</p>
 <p>ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公共协议包中的常量。传输限制与 Kubernetes 单个持久化对象的大小限制分别生效：前者容纳资源清单等批量消息，后者控制资源保存成本。</p>
 <h3 id="实现验收点-78"><a class="header" href="#实现验收点-78">实现验收点</a></h3>
@@ -1508,11 +1544,14 @@ make check
 <li>领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。</li>
 <li>每个 Runtime UUID 只绑定一个 Codespace，未绑定请求可以正常排队。</li>
 <li>运行材料按请求时的用户和仓库权限生成。</li>
+<li>create/resume 完成不依赖展示缓存命中，后续 Runtime 报告必须匹配持久化的运行实例版本。</li>
 <li>两端接受相同大小范围的 RPC 消息，资源保存仍执行自己的对象大小校验。</li>
 </ul>
 <h2 id="组件与-agent"><a class="header" href="#组件与-agent">组件与 Agent</a></h2>
 <p>Gateway 和 Cache 使用各自身份连接 Manager，并接收版本化配置；发现版本缺口时重新获取完整快照。Gateway 建立用户流前请求业务授权和短期 Agent 票据。Cache 按配置限制上游、缓存范围和维护动作。</p>
 <p>Agent 以当前 Codespace CR 和 Pod 身份建立控制流。生命周期命令绑定操作版本，日志使用独立流，避免大量输出阻塞控制命令。Agent 先把阶段和结果原子写入 PVC，再向 Manager 上报，重连时复用已经完成的结果。</p>
+<p>块卷挂载前使用 <code>PrepareVolume</code> 请求确认。Manager 根据 mTLS 身份读取当前 CR、Pod 和 PVC，并校验操作许可；首次请求持久记录格式化已开始后返回成功，挂载后确认请求把状态更新为就绪。这个独立请求发生在 PVC 日志可用之前，使卷初始化也能获得持久化保护，Agent 仍只访问 Manager 服务。</p>
+<p>Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。</p>
 <p>Gateway 使用按能力签发的短期票据访问 PTY、SFTP、HTTP Endpoint 或回环端口。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。</p>
 <p>内部 Proto 生成到 <code>codespace/internal/rpc</code>，从 Go 包边界上阻止其他仓库依赖运行实现。需要跨越 Gitea 与 Manager 的业务类型由公共协议定义，内部协议直接引用这些类型，避免维护重复消息。</p>
 <h3 id="实现验收点-79"><a class="header" href="#实现验收点-79">实现验收点</a></h3>
@@ -1524,6 +1563,8 @@ make check
 <li>日志背压不会阻止控制命令。</li>
 <li>Dev Container 可以通过本地 socket 增删和查询 Endpoint。</li>
 <li>公共业务类型在公共协议中只有一份定义。</li>
+<li><code>PrepareVolume</code> 只接受当前身份和操作许可；格式化请求重复调用明确失败，挂载成功确认可重复提交。</li>
+<li>Cache 许可来自一次成功获取或续约租约的对应确认；发送、等待和服务运行均受许可到期控制。</li>
 </ul>
 <h2 id="错误重试与关闭"><a class="header" href="#错误重试与关闭">错误、重试与关闭</a></h2>
 <p>接口使用标准 RPC 状态区分参数、认证、权限、对象、状态冲突和暂时不可用。写操作通过操作版本、资源 UID、Metadata 代数或稳定资源键实现幂等。</p>
@@ -1614,8 +1655,19 @@ make check
 <li>每项功能有唯一仓库和领域归属。</li>
 <li>Router/Handler 不重复实现状态机、权限或事务。</li>
 <li>公共与内部 Proto 均可重复生成，Gitea 与 Codespace 使用已发布的公共模块。</li>
-<li>Gitea 不导入 Agent、Gateway 或 Cache 的内部协议包。</li>
+<li>Gitea 只依赖公共业务协议；Agent、Gateway 与 Cache 的内部协议由 Codespace 项目维护。</li>
 <li>接口对应真实替换边界，较长流程按稳定业务阶段组织。</li>
+</ul>
+<h2 id="管理配置与集群投影"><a class="header" href="#管理配置与集群投影">管理配置与集群投影</a></h2>
+<p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
+<p>Gateway 和 Cache 组件以 ConfigMap 中的 <code>config</code> JSON 作为唯一配置正文，Secret 字段只保存凭据资源引用。管理 API、组件控制器、站点协调器和组件控制流共用严格解析与校验，避免监听地址、公开地址和限额同时出现在多组扁平键中而发生漂移。</p>
+<p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
+<h3 id="实现验收点-87"><a class="header" href="#实现验收点-87">实现验收点</a></h3>
+<ul>
+<li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
+<li>组件配置只从一份 <code>config</code> 正文解析，所有消费方执行相同的未知字段和有效性检查。</li>
+<li>Gateway 快照不会列出绑定其他 Gateway 的站点或其他站点命名空间中的 Runtime。</li>
+<li>缓存索引命中后仍核对当前资源身份，删除或同名重建的资源不能沿用旧授权。</li>
 </ul>
 <h2 id="测试层次"><a class="header" href="#测试层次">测试层次</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>层次</th><th>覆盖重点</th></tr></thead><tbody>
@@ -1628,7 +1680,7 @@ make check
 </tbody></table>
 </div>
 <p>测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 对外提供三个测试入口：<code>make test</code> 运行完整的非端到端测试，<code>make test-smoke</code> 快速验证主要后端包，<code>make test-e2e</code> 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。</p>
-<h3 id="实现验收点-87"><a class="header" href="#实现验收点-87">实现验收点</a></h3>
+<h3 id="实现验收点-88"><a class="header" href="#实现验收点-88">实现验收点</a></h3>
 <ul>
 <li>状态机覆盖成功、并发抢占、非当前版本和恢复路径。</li>
 <li>权限测试覆盖对象 ID 篡改、跨用户、跨站点和凭据重放。</li>
@@ -1636,24 +1688,28 @@ make check
 <li>本地和自动化使用相同的公开测试入口。</li>
 <li>普通测试不会因为本机存在 kubeconfig 或 Docker 而隐式进入真实环境测试。</li>
 <li>完整端到端测试由单个入口启动，阶段失败会直接终止并保留诊断。</li>
+<li>块卷授权、跨站点缓存、无 UUID 记录维护、执行取消和缓存许可到期由行为测试覆盖。</li>
 </ul>
 <h2 id="真实环境验证"><a class="header" href="#真实环境验证">真实环境验证</a></h2>
 <p>Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata 与 Sysbox 通过同一入口分别执行，使结果明确对应实际 RuntimeClass 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。</p>
-<p>测试开始前检查集群能力、镜像和真实 Gitea 凭据，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。成功执行清理测试资源；失败执行先保留 Kubernetes 资源、事件和组件日志，便于定位后再清理。</p>
-<h3 id="实现验收点-88"><a class="header" href="#实现验收点-88">实现验收点</a></h3>
+<p>测试开始前检查集群能力、镜像和真实 Gitea 凭据，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。Runtime 内执行的测试及时输出场景开始、结果和失败信息，便于区分外部下载缓慢与执行阻塞。成功后清理测试资源；失败时先收集资源状态、事件和组件日志，再执行清理，诊断文件保留用于定位。</p>
+<p>官方 Feature 会从外部下载软件包和二进制。真实环境测试为此保留有界的下载时间，并让外层测试期限大于内层执行期限，使慢速网络下仍能完成安装和失败清理；普通测试仍使用原有的快速入口。</p>
+<h3 id="实现验收点-89"><a class="header" href="#实现验收点-89">实现验收点</a></h3>
 <ul>
 <li>测试开始前检查集群 API、RuntimeClass、StorageClass、镜像和凭据。</li>
 <li>测试集群在执行期间由本轮测试安装的 Manager 控制面协调。</li>
 <li>每种支持的隔离模式完成 create、stop、resume、delete 和访问验证。</li>
 <li>Leader 切换、Pod 删除与 Cache 丢失具有恢复验证。</li>
 <li>Runtime Pod 内完成 Docker 数据恢复和 Dev Container 官方场景验证。</li>
+<li>Runtime 内的测试结果在场景结束时立即输出，失败信息保留到外层测试日志。</li>
 <li>S3 Cache 使用隔离的 S3 兼容服务完成写入、读取和清理验证。</li>
 <li>真实 Gitea 凭据只从文件读取，不出现在测试命令参数和日志中。</li>
 <li>测试结束后自动确认没有孤立资源。</li>
+<li>Kata 验证首次块卷初始化，以及替换 Pod 后检查并挂载原文件系统的数据恢复行为。</li>
 </ul>
 <h2 id="完成标准"><a class="header" href="#完成标准">完成标准</a></h2>
 <p>一次变更完成时，设计、协议、实现、配置与测试需要描述同一当前行为。格式化、静态检查、适用测试和安全边界验证使用仓库公开入口执行；真实环境中未执行的部分在变更说明中记录原因与风险。</p>
-<h3 id="实现验收点-89"><a class="header" href="#实现验收点-89">实现验收点</a></h3>
+<h3 id="实现验收点-90"><a class="header" href="#实现验收点-90">实现验收点</a></h3>
 <ul>
 <li>审阅者可以从设计验收点定位对应代码和测试。</li>
 <li>配置示例、管理页面和部署清单随实现更新。</li>

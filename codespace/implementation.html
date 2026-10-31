@@ -171,8 +171,19 @@
 <li>每项功能有唯一仓库和领域归属。</li>
 <li>Router/Handler 不重复实现状态机、权限或事务。</li>
 <li>公共与内部 Proto 均可重复生成，Gitea 与 Codespace 使用已发布的公共模块。</li>
-<li>Gitea 不导入 Agent、Gateway 或 Cache 的内部协议包。</li>
+<li>Gitea 只依赖公共业务协议；Agent、Gateway 与 Cache 的内部协议由 Codespace 项目维护。</li>
 <li>接口对应真实替换边界，较长流程按稳定业务阶段组织。</li>
+</ul>
+<h2 id="管理配置与集群投影"><a class="header" href="#管理配置与集群投影">管理配置与集群投影</a></h2>
+<p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
+<p>Gateway 和 Cache 组件以 ConfigMap 中的 <code>config</code> JSON 作为唯一配置正文，Secret 字段只保存凭据资源引用。管理 API、组件控制器、站点协调器和组件控制流共用严格解析与校验，避免监听地址、公开地址和限额同时出现在多组扁平键中而发生漂移。</p>
+<p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
+<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<ul>
+<li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
+<li>组件配置只从一份 <code>config</code> 正文解析，所有消费方执行相同的未知字段和有效性检查。</li>
+<li>Gateway 快照不会列出绑定其他 Gateway 的站点或其他站点命名空间中的 Runtime。</li>
+<li>缓存索引命中后仍核对当前资源身份，删除或同名重建的资源不能沿用旧授权。</li>
 </ul>
 <h2 id="测试层次"><a class="header" href="#测试层次">测试层次</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>层次</th><th>覆盖重点</th></tr></thead><tbody>
@@ -185,7 +196,7 @@
 </tbody></table>
 </div>
 <p>测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 对外提供三个测试入口：<code>make test</code> 运行完整的非端到端测试，<code>make test-smoke</code> 快速验证主要后端包，<code>make test-e2e</code> 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。</p>
-<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>状态机覆盖成功、并发抢占、非当前版本和恢复路径。</li>
 <li>权限测试覆盖对象 ID 篡改、跨用户、跨站点和凭据重放。</li>
@@ -193,24 +204,28 @@
 <li>本地和自动化使用相同的公开测试入口。</li>
 <li>普通测试不会因为本机存在 kubeconfig 或 Docker 而隐式进入真实环境测试。</li>
 <li>完整端到端测试由单个入口启动，阶段失败会直接终止并保留诊断。</li>
+<li>块卷授权、跨站点缓存、无 UUID 记录维护、执行取消和缓存许可到期由行为测试覆盖。</li>
 </ul>
 <h2 id="真实环境验证"><a class="header" href="#真实环境验证">真实环境验证</a></h2>
 <p>Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata 与 Sysbox 通过同一入口分别执行，使结果明确对应实际 RuntimeClass 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。</p>
-<p>测试开始前检查集群能力、镜像和真实 Gitea 凭据，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。成功执行清理测试资源；失败执行先保留 Kubernetes 资源、事件和组件日志，便于定位后再清理。</p>
-<h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
+<p>测试开始前检查集群能力、镜像和真实 Gitea 凭据，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。Runtime 内执行的测试及时输出场景开始、结果和失败信息，便于区分外部下载缓慢与执行阻塞。成功后清理测试资源；失败时先收集资源状态、事件和组件日志，再执行清理，诊断文件保留用于定位。</p>
+<p>官方 Feature 会从外部下载软件包和二进制。真实环境测试为此保留有界的下载时间，并让外层测试期限大于内层执行期限，使慢速网络下仍能完成安装和失败清理；普通测试仍使用原有的快速入口。</p>
+<h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
 <li>测试开始前检查集群 API、RuntimeClass、StorageClass、镜像和凭据。</li>
 <li>测试集群在执行期间由本轮测试安装的 Manager 控制面协调。</li>
 <li>每种支持的隔离模式完成 create、stop、resume、delete 和访问验证。</li>
 <li>Leader 切换、Pod 删除与 Cache 丢失具有恢复验证。</li>
 <li>Runtime Pod 内完成 Docker 数据恢复和 Dev Container 官方场景验证。</li>
+<li>Runtime 内的测试结果在场景结束时立即输出，失败信息保留到外层测试日志。</li>
 <li>S3 Cache 使用隔离的 S3 兼容服务完成写入、读取和清理验证。</li>
 <li>真实 Gitea 凭据只从文件读取，不出现在测试命令参数和日志中。</li>
 <li>测试结束后自动确认没有孤立资源。</li>
+<li>Kata 验证首次块卷初始化，以及替换 Pod 后检查并挂载原文件系统的数据恢复行为。</li>
 </ul>
 <h2 id="完成标准"><a class="header" href="#完成标准">完成标准</a></h2>
 <p>一次变更完成时，设计、协议、实现、配置与测试需要描述同一当前行为。格式化、静态检查、适用测试和安全边界验证使用仓库公开入口执行；真实环境中未执行的部分在变更说明中记录原因与风险。</p>
-<h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
+<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
 <li>审阅者可以从设计验收点定位对应代码和测试。</li>
 <li>配置示例、管理页面和部署清单随实现更新。</li>
