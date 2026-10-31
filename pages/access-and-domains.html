@@ -169,9 +169,9 @@
 <h2 id="公开访问与请求处理"><a class="header" href="#公开访问与请求处理">公开访问与请求处理</a></h2>
 <p>Pages 使用实际请求的 Host 和路径选择本机路由。请求不根据代理转发的 Host 或协议头推导站点；前置代理需要把原始 Host 保持到 Pages。路径规范化后始终限制在当前内容目录，安全的站点内相对符号链接也要再次检查最终目标。</p>
 <p>默认 Host 先匹配完整项目路径段，再匹配所有者的主页；自定义 Host 直接选择唯一绑定的站点。关闭、未部署或没有完整内容的站点返回平台 404。项目路径优先于主页，关闭项目不会通过主页同名目录读取项目文件。</p>
-<p><code>GET</code> 和 <code>HEAD</code> 提供静态内容，其他方法返回 <code>405</code>。项目路径缺少末尾斜杠时返回保留查询串的 <code>308</code>；目录存在 <code>index.html</code> 时读取该文件，不提供目录列表。归档不要求首页文件，因此没有 <code>index.html</code> 的目录返回 404，归档中的普通文件仍可按完整路径访问。未知 Host 返回普通 404；磁盘故障返回 503。<code>standalone</code> 可以使用网站自己的 <code>404.html</code>，Nginx 使用平台错误页。</p>
-<p>当前内容目录是已经检查的不可变快照。发布器确认新入口后核心才保存当前摘要并清理旧快照；Nginx 模式在入口事务内原子切换 <code>current</code> 链接。路由键包含规范 Host、基础路径和仓库 ID，旧仓库清理只处理仍属于自己的键；同名新仓库不会被迟到清理撤销。</p>
-<p>公开内容发送 <code>X-Content-Type-Options: nosniff</code> 和重新验证缓存头，平台错误使用 <code>no-store</code>。两个服务模式使用一致的路径边界和 404 语义。</p>
+<p><code>GET</code> 和 <code>HEAD</code> 提供静态内容，其他方法返回 <code>405</code>。项目路径缺少末尾斜杠时返回保留查询串的 <code>308</code>；目录存在 <code>index.html</code> 时读取该文件，不提供目录列表。归档不要求首页文件，因此没有 <code>index.html</code> 的目录返回 404，归档中的普通文件仍可按完整路径访问。未知 Host 返回普通 404；磁盘故障返回 503。站点可以提供自己的 <code>404.html</code>，没有时使用平台错误页。</p>
+<p>当前内容目录是已经检查的不可变快照。发布器确认新入口后，核心才保存当前摘要并清理旧快照。路由键包含规范 Host、基础路径和仓库 ID，旧仓库清理只处理仍属于自己的键；同名新仓库不会被迟到清理撤销。</p>
+<p>公开内容发送 <code>X-Content-Type-Options: nosniff</code> 和重新验证缓存头，平台错误使用 <code>no-store</code>。HTTP、前置代理源站和 Pages 自管 HTTPS 使用一致的路径边界和 404 语义。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
 <li>请求只使用本机路由和文件，首次访问不会触发同步、下载或展开。</li>
@@ -233,32 +233,32 @@
 <h2 id="业务-txt-校验与全局配置"><a class="header" href="#业务-txt-校验与全局配置">业务 TXT 校验与全局配置</a></h2>
 <p>Gitea 为每个自定义 Host 生成随机 TXT 值，要求 <code>_gitea-pages.&lt;host&gt;</code> 返回该值。Gitea 的计划任务和 Pages 的本机维护循环各自使用可配置周期，默认都是 15 分钟，允许范围为 1 分钟到 24 小时。Gitea 每次实际查询都保存最近校验时间，并在仓库设置页显示该时间；新绑定在第一次查询前显示等待校验。</p>
 <p>首次成功前，值不匹配、NXDOMAIN 和临时解析错误都不能激活域名。成功后两端分别保留自己的最近成功时间；后续任何查询失败都在该成功时间后的 24 小时内继续认可现有入口，超过 24 小时仍未恢复才关闭本端发布条件。这个宽限期使短暂 DNS 故障不会立即中断已经发布的网站，同时仍要求长期失效的域名重新证明所有权。查询恢复成功会刷新最近成功时间并重新开放已关闭的入口。</p>
-<p>Gitea 的 <code>[pages] DNS_RESOLVER</code> 只用于 Gitea 业务 TXT 查询。Pages 的 <code>GITEA_PAGES_DNS_RESOLVER</code> 只用于该实例的业务 TXT 查询；两者为空时使用所在系统的解析器。解析器地址和刷新周期是各进程的部署配置，不经同步接口传输，因此不同网络中的实例可以使用各自能够访问的递归 DNS。</p>
-<p>全局管理员通过 <code>app.ini</code> 的 <code>[pages] REQUIRE_GITEA_TXT_RECORD</code> 统一设置这项要求。值为 <code>false</code> 时，Gitea 激活待处理域名，Pages 跳过本机业务 TXT 条件；值恢复为 <code>true</code> 时，Pages 清除旧的本机 TXT 检查缓存并重新检查带自定义域名的站点。每次站点查询响应都携带当前要求，Pages 确认同一轮分页取值一致后保存并应用。ACME 的 HTTP-01/DNS-01 仍必须向 CA 完成域名控制验证。</p>
+<p>Gitea 的 <code>[pages] DNS_RESOLVER</code> 只用于 Gitea 业务 TXT 查询。Pages YAML 的 <code>domains.resolver</code> 只用于该实例的业务 TXT 查询；两者为空时使用所在系统的解析器。解析器地址和刷新周期是各进程的部署配置，不经同步接口传输，因此不同网络中的实例可以使用各自能够访问的递归 DNS。</p>
+<p>全局管理员通过 <code>app.ini</code> 的 <code>[pages] REQUIRE_GITEA_TXT_RECORD</code> 统一设置这项要求。值为 <code>false</code> 时，Gitea 激活待处理域名，Pages 跳过本机业务 TXT 条件；值恢复为 <code>true</code> 时，Pages 清除旧的本机 TXT 检查缓存并重新检查带自定义域名的站点。每次站点查询响应都携带当前要求，Pages 确认同一轮分页取值一致后保存并应用。关闭业务 TXT 不改变证书终止方需要完成的 CA 域名控制验证。</p>
 <h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
 <ul>
 <li>Gitea 和 Pages 分别按自己的解析器和刷新周期执行 TXT 查询，默认周期为 15 分钟。</li>
 <li>每次 Gitea 查询都更新最近校验时间；首次查询前和已经查询过的状态在仓库页面可以区分。</li>
 <li>从未成功的域名不能激活；已经成功的域名在任一类查询失败后的 24 小时内继续发布，到期仍失败才关闭对应入口。</li>
 <li>Gitea 启动配置同时作用于两端，每次同步响应携带当前布尔值，分页中的值必须一致。</li>
-<li>业务 TXT 不取代 ACME 向 CA 的域名控制验证。</li>
+<li>业务 TXT 不取代证书终止方向 CA 完成的域名控制验证。</li>
 <li>DNS 临时错误和明确不匹配有稳定状态，最近成功时间在失败时保留，恢复后刷新并重新开放入口。</li>
 </ul>
 <h2 id="https-与内容开放条件"><a class="header" href="#https-与内容开放条件">HTTPS 与内容开放条件</a></h2>
-<p>HTTP 实例直接提供 HTTP。HTTPS 实例的自定义域名必须同时满足当前内容、路由标记、业务 TXT、有效证书和真实 TLS/SNI/Host/路径探测；默认地址只需要自己的内容、路由和证书条件。某个实例或自定义域名失败不影响其他地址。</p>
-<p>HTTP-01 挑战路径由 Pages 单独管理，直接返回准确正文，不从网站目录读取。普通 HTTP 请求可以按当前实例策略跳转 HTTPS，挑战路径不跳转。实例根域的固定平台探测用于确认入口配置，网站文件不能覆盖平台路径。</p>
-<p>Pages 先检查 Nginx 候选配置，执行 reload，再通过真实 Host、端口、SNI 和路径探测入口；三步都成功后才写入配置确认和地址发布状态。证书文件加载也由实际 TLS 探测确认。Pages 进程停止时 Nginx 可以保持最后成功配置，恢复后重新检查当前条件。</p>
+<p><code>disabled</code> 模式直接提供 HTTP。<code>proxy</code> 模式向 Gitea 登记 HTTPS 地址，但 Pages 只提供并确认本机 HTTP 源站，外部 TLS 和转发健康由前置代理负责。<code>pages</code> 模式由 Pages 终止 TLS；自定义域名必须同时满足当前内容、路由、业务 TXT、有效证书和本机 TLS/SNI/Host/路径探测，默认地址需要内容、路由和默认证书条件。某个实例或自定义域名失败不影响其他地址。</p>
+<p>Pages 自管 HTTPS 时，HTTP-01 挑战路径由 Pages 单独管理，直接返回准确正文，不从网站目录读取。已知 Host 的普通 HTTP 请求跳转 HTTPS，挑战路径不跳转。实例根域的固定平台探测用于确认内置服务可用，网站文件不能覆盖平台路径。HTTP 与前置代理模式按本机 HTTP 行为直接处理请求。</p>
+<p>每次发布都先把候选路由放入内置服务，再使用本机 listener、真实 Host 和专用探测路径核对仓库 ID 与成品摘要。<code>pages</code> 模式同时核验证书名称和有效期；<code>proxy</code> 模式通过 HTTP 源站核对内容和路由。探测成功后才保存当前安装摘要和地址发布状态。</p>
 <h3 id="实现验收点-6"><a class="header" href="#实现验收点-6">实现验收点</a></h3>
 <ul>
-<li>HTTP 地址在内容和路由实际生效后开放；HTTPS 地址还要求证书和 TLS 探测。</li>
+<li>HTTP 和代理源站在内容与路由实际生效后确认；Pages 自管 HTTPS 还要求证书和 TLS 探测。</li>
 <li>默认地址、自定义地址和不同实例的结果分别记录。</li>
 <li>HTTP-01 挑战直接返回正文，不依赖网站目录或未签发证书。</li>
-<li>Nginx 配置经过测试、重载和真实入口探测后才报告发布成功。</li>
+<li>每种模式都通过自己直接控制的本机 listener 核对 Host、仓库 ID 和成品摘要后才报告发布成功。</li>
 <li>Gitea 显示稳定错误原因，证书材料和 ACME 执行细节留在 Pages。</li>
 </ul>
 <h2 id="域名变更与解绑"><a class="header" href="#域名变更与解绑">域名变更与解绑</a></h2>
 <p>新 Host 授权前旧 Host 保持当前状态。新 Host 成为 <code>active</code> 后，Gitea 在一个事务中切换站点当前绑定并把旧 Host 设为 <code>releasing</code>。Pages 取得新状态后按仓库 ID 清理多出的旧路由、挑战和续期，再应用新 Host；新 Host 失败不会恢复旧 Host，默认地址继续独立工作。</p>
-<p>Gitea 使用站点当前时间和每个实例根地址时间判断旧 Host 是否已经从配置中移除。所有登记实例都确认 <code>config_applied=true</code> 后释放；永久故障实例由管理员先隔离入口，再移除登记。释放依赖入口、挑战和 ACME 维护停止；Pages 清理自己的 ACME 材料和 Nginx 生成副本，运维只读证书由运维维护，不参与域名释放条件。</p>
+<p>Gitea 使用站点当前时间和每个实例根地址时间判断旧 Host 是否已经从配置中移除。所有登记实例都确认 <code>config_applied=true</code> 后释放；永久故障实例由管理员先隔离入口，再移除登记。释放依赖入口、挑战和 ACME 维护停止；Pages 清理自己的 ACME 材料，运维只读证书由运维维护，不参与域名释放条件。</p>
 <h3 id="实现验收点-7"><a class="header" href="#实现验收点-7">实现验收点</a></h3>
 <ul>
 <li>域名切换在一个事务中更新当前绑定和站点时间。</li>

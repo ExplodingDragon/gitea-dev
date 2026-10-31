@@ -156,113 +156,84 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="工程入口与验证"><a class="header" href="#工程入口与验证">工程入口与验证</a></h1>
-<p>本章是 Pages 开发入口。业务行为以其余设计章节为准，本章说明代码边界、工程依赖、启动入口和验证方式，避免开发人员在多个章节之间寻找工程约定。</p>
-<h2 id="仓库与模块"><a class="header" href="#仓库与模块">仓库与模块</a></h2>
-<p>Gitea 与 Pages 是两个独立工程：Gitea 负责管理页面、内容版本、数据库、存储和内部接口；Pages 负责同步当前目标、归档展开、路由、证书和本机服务。两边只通过<a href="communication.html">通信协议</a>交换当前事实、当前 TAR.GZ 和结果，版本历史留在 Gitea 管理面。</p>
-<div class="table-wrapper"><table><thead><tr><th>位置</th><th>约定</th></tr></thead><tbody>
-<tr><td>顶层工作区</td><td>使用 <code>main</code>，文档位于 <code>src/pages/</code>。</td></tr>
-<tr><td><code>gitea/</code></td><td>Gitea 独立 Git 仓库，Pages 工作分支从更新后的 <code>origin/main</code> 创建为 <code>feat-pages</code>。</td></tr>
+<p>本章说明 Gitea 与 Pages 的代码边界、程序入口和验证方式。业务行为由其余章节定义，工程结构把这些行为落实到可以独立构建和测试的模块。</p>
+<h2 id="仓库模块与程序入口"><a class="header" href="#仓库模块与程序入口">仓库、模块与程序入口</a></h2>
+<p>Gitea 与 Pages 是两个独立工程。Gitea 负责仓库管理、版本历史、数据库、成品存储和内部接口；Pages 负责同步当前目标、TAR.GZ 展开、本机状态、网站服务和证书。两边只通过<a href="communication.html">通信协议</a>交换当前事实、当前成品和部署结果。</p>
+<div class="table-wrapper"><table><thead><tr><th>位置</th><th>作用</th></tr></thead><tbody>
+<tr><td>顶层工作区</td><td>使用 <code>main</code>，设计文档位于 <code>src/pages/</code>。</td></tr>
+<tr><td><code>gitea/</code></td><td>Gitea 独立 Git 仓库，Pages 功能分支为 <code>feat-pages</code>。</td></tr>
 <tr><td><code>gitea-page/</code></td><td>独立 Go 模块，模块路径为 <code>gitea.dev/page</code>，根包为 <code>page</code>。</td></tr>
-<tr><td><code>gitea-page/cmd/main.go</code></td><td><code>gitea-pages</code> 进程入口，建立信号上下文并执行根命令。</td></tr>
-<tr><td><code>gitea-page/cmd/root.go</code></td><td>使用 Cobra 声明根命令并登记子命令。</td></tr>
-<tr><td><code>gitea-page/cmd/standalone/</code>、<code>gitea-page/cmd/nginx/</code></td><td>分别装配两种运行模式，各自管理该模式的进程生命周期。</td></tr>
+<tr><td><code>gitea-page/page.go</code></td><td>稳定公共门面，提供配置、服务生命周期、内容和发布接口。</td></tr>
+<tr><td><code>gitea-page/internal/runtime/</code></td><td>同步、etcd、归档、内置 HTTP、TXT、证书与 ACME 实现。</td></tr>
+<tr><td><code>gitea-page/cmd/main.go</code></td><td><code>gitea-pages</code> 进程入口，读取 YAML、建立信号上下文并运行公共入口。</td></tr>
 </tbody></table>
 </div>
-<p>Pages 使用 <code>github.com/go-acme/lego/v5</code> 处理 ACME 协议。Gitea 侧遵循 <code>gitea/AGENTS.md</code> 和 Gitea 测试规范；Pages 侧遵循自身模块的 Make 目标和 Go 检查工具。</p>
-<p>Pages 根包同时作为可执行程序的核心库。模块根目录的 <code>page.go</code> 是稳定公共门面，公开接口以 <code>Config</code>、<code>Service</code>、<code>Content</code>、<code>Deployment</code>、<code>Publication</code> 和 <code>Publisher</code> 为核心，并提供启动模式、服务选项、启动恢复迭代器和两个内置发布器所需的配套类型。<code>internal/runtime/</code> 保存具体运行实现和内置资源，Gitea 通信结构、同步客户端、etcd 存储、证书与 ACME 管理方法保持包内可见，只通过 <code>Service</code> 和内置发布器参与运行。<code>cmd/</code> 使用 Cobra 组织命令，<code>main.go</code> 只建立进程上下文，<code>root.go</code> 只声明命令结构，<code>standalone/</code> 和 <code>nginx/</code> 分别装配对应运行模式。这样嵌入方可以接管网页入口和遍历已确认部署，依赖范围保持在稳定公共门面内，命令也能按运行职责扩展而无需把进程逻辑放入公共库。</p>
-<p>运行实现集中在一个内聚的内部包，同步状态、候选内容事务、证书回调和发布器恢复共同组成同一条部署状态机。包内文件按职责组织：<code>internal/runtime/store.go</code> 保存 etcd 事实，<code>store_content.go</code> 维护候选与已确认内容；<code>sync_protocol.go</code> 处理全量和增量同步，<code>sync_deploy.go</code> 处理部署事务，<code>sync_certificates.go</code> 处理证书；<code>address.go</code> 统一计算所有者 Host、主页路径和项目路径；<code>server.go</code> 与 <code>nginx.go</code> 实现同一个 <code>Publisher</code>，<code>nginx_render.go</code> 只负责生成配置。共享状态机保留在同一包内，使事务边界和内部类型直接对应，公共包只暴露可独立使用的能力。</p>
-<p><code>Service</code> 负责注册、同步、下载、TAR.GZ 检查、展开、TXT 校验和结果上报。发布器只接收已经检查并展开的不可变 <code>Content</code>，负责把 <code>Deployment</code> 映射为实际入口。standalone 发布器提供共享当前路由和挑战状态的 HTTP 处理器；Nginx 发布器维护配置、路由标记、证书输出和重载。外部 Go 程序也可以实现 <code>Publisher</code>，通过 <code>Content.Open</code> 或只读目录接入自己的 Web 框架。这个边界让三种入口共用同一部署流程，接入新的 Web 服务无需复制 Gitea 同步和归档安全代码。</p>
-<p>有界部署队列只保存 <code>repo_id</code>。部署工作线程开始处理时从本地状态读取该仓库的最新事实，因此排队期间到达的新摘要、名称或域名状态会自然生效；同一仓库正在部署时再次收到更新，会在当前任务结束后再排入一次。下载和展开先产生候选内容，<code>Publisher.Publish</code> 成功后才保存当前安装摘要并清理旧内容；发布器返回硬错误时恢复之前的入口，核心随后删除失败候选。关闭或删除先由发布器移除入口，再清理内容并保存结果。结果写入再次核对站点时间、摘要和路由事实，使迟到任务不能覆盖更新后的站点；本地结果无法写入时继续通过现有接口报告失败，部署超时只停止部署工作，不会取消受 HTTP 超时约束的错误报告。</p>
+<p>标准程序使用一个启动形式：</p>
+<pre><code class="language-text">gitea-pages --config /etc/gitea-pages/config.yaml
+</code></pre>
+<p>命令使用标准库参数解析。<code>page.LoadConfig</code> 严格读取一个 YAML 文档，<code>page.Run</code> 组装内置 HTTP 发布器、同步服务和优雅关闭。内置 HTTP 通过配置选择纯 HTTP、前置代理源站或 Pages 自管 HTTPS；这个选择只改变 Web 与证书责任，不改变同步和部署状态机。</p>
+<p>Pages 使用 <code>github.com/go-acme/lego/v5</code> 实现 ACME，并通过 lego provider 注册表选择默认域名的 DNS 服务商；YAML 直接使用所选 provider 的参数名，使服务商认证和 DNS 行为继续由 lego 维护。Pages 使用 <code>go.etcd.io/etcd/server/v3/embed</code> 保存单机运行状态。Gitea 侧遵循仓库 <code>AGENTS.md</code> 与测试文档；Pages 侧使用模块 Make 目标完成格式化、静态检查、测试和构建。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
-<li>顶层工作区使用 <code>main</code>，Gitea 仓库使用从更新后 <code>origin/main</code> 创建的 <code>feat-pages</code>。</li>
-<li><code>gitea-page/go.mod</code> 和命令入口符合本章模块约定，可以独立解析依赖并生成可执行文件。</li>
-<li>模块根目录提供 <code>gitea.dev/page</code> 公共门面，具体运行代码和内置资源位于 <code>internal/runtime/</code>，命令入口只完成进程装配。</li>
-<li><code>go build ./cmd</code> 生成 <code>gitea-pages</code>；根帮助列出 <code>standalone</code> 和 <code>nginx</code>，两种子命令分别从对应目录装配运行模式。</li>
-<li><code>cmd/main.go</code> 只处理进程信号和根命令执行，Cobra 根命令与两种模式的启动代码分别位于 <code>cmd/root.go</code>、<code>cmd/standalone/</code> 和 <code>cmd/nginx/</code>。</li>
-<li>Gitea 侧管理、存储和接口代码与 Pages 侧同步、服务和证书代码可以分别构建。</li>
-<li>根包公开接口只暴露嵌入运行和发布入口所需类型，Gitea 协议、etcd、同步器和证书状态保持为包内实现。</li>
-<li><code>go doc gitea.dev/page</code> 只展示配置、服务生命周期、已检查内容和发布接口；存储、同步客户端和证书管理方法只能由 <code>internal/runtime</code> 使用。</li>
-<li>standalone、Nginx 和外部发布器接收同一种 <code>Deployment</code>；两个内置发布器与发布探测从同一函数取得默认 Host 与基础路径。</li>
-<li>standalone 的 HTTP 与 HTTPS 处理器共享当前路由和挑战，HTTP 请求按规则跳转，HTTPS 请求直接处理网站内容。</li>
-<li>游标、实例根地址、归档限额和业务 TXT 要求使用同一份当前元数据，单项更新保留其他字段。</li>
-<li>实例根地址变化只在完整快照持久化成功后替换内存状态，中断写入由恢复标记触发全量同步。</li>
-<li>部署队列中的仓库 ID 在执行时解析为最新站点事实，迟到的旧队列项不会覆盖更新后的配置。</li>
-<li>同一仓库部署期间再次更新时，当前任务结束后会继续处理一次最新事实。</li>
-<li>待处理站点超过队列容量时，单一扫描协程会持续填充队列，部署不会等待下一次五分钟恢复扫描。</li>
-<li>启动恢复通过迭代器交给发布器，单仓库更新只提交该仓库的部署，不复制完整站点集合。</li>
-<li>候选内容只有在发布器确认后才成为当前内容；发布硬错误保留旧入口，关闭操作先移除入口再清理内容。</li>
-<li>实例以通信协议中的唯一常量上报错误码，Gitea 按同一取值显示原因。</li>
-<li>本地部署结果无法持久化时仍上报当前错误，部署超时后的上报受客户端固定超时约束。</li>
+<li>Gitea 与 Pages 可以分别解析依赖并构建，版本历史与当前部署通过内部接口连接。</li>
+<li><code>go build ./cmd</code> 生成只有 <code>--config</code> 启动参数的 <code>gitea-pages</code>。</li>
+<li>YAML 未知字段、额外文档和模式组合错误在启动阶段得到具体错误。</li>
+<li>DNS-01 provider 在 listener 与同步任务启动前完成构造，未知 provider 或无效参数会让标准程序直接返回错误。</li>
+<li><code>page.Run</code> 在 listener 可以接收连接后启动同步，退出信号会关闭同步、HTTP 服务和内嵌 etcd。</li>
+<li>模块公共门面位于根包，Gitea 协议、同步器、存储和证书细节保持在 <code>internal/runtime</code>。</li>
 </ul>
-<h2 id="工程依赖关系"><a class="header" href="#工程依赖关系">工程依赖关系</a></h2>
-<p>Gitea 的数据表和版本对象存储提供管理事实，实例鉴权、状态查询和当前成品下载把需要部署的扁平事实交给 Pages。Pages 的内嵌 etcd、TAR.GZ 安全展开和主动部署形成本机状态，路由、TXT、证书和 Nginx 再基于该状态产生实际入口结果。这个依赖关系使每层都能以明确输入和输出独立验证。</p>
-<p>版本历史只参与 Gitea 的提交、恢复和保留。同步接口解析 <code>current_version_id</code> 后只发送当前摘要；Pages 本地保存同步游标、当前配置、展开目录和本机证书。发布请求完成后实例主动处理，访客请求不参与发布流程。内置 standalone、内置 Nginx 与外部 <code>Publisher</code> 都使用这条主动部署链路。</p>
+<h2 id="pages-内部边界"><a class="header" href="#pages-内部边界">Pages 内部边界</a></h2>
+<p><code>Service</code> 负责实例注册、全量与增量同步、当前 TAR.GZ 下载、摘要检查、归档安全、业务 TXT 和结果上报。<code>Publisher</code> 只接收已经展开的不可变 <code>Content</code>，负责把 <code>Deployment</code> 映射为实际网站入口。标准 <code>page.Run</code> 使用包内 HTTP 发布器；外部 Go 程序实现同一接口后使用 <code>page.NewService</code>。</p>
+<p>同步实现按职责分文件：<code>store.go</code> 与 <code>store_content.go</code> 保存当前事实和不可变内容；<code>sync_protocol.go</code> 处理全量、补查和增量同步；<code>sync_deploy.go</code> 处理候选部署事务；<code>sync_certificates.go</code> 处理证书维护；<code>dns_provider.go</code> 负责从 YAML 参数构造 lego provider；<code>address.go</code> 计算所有者 Host 与项目路径；<code>server.go</code> 提供内置 HTTP 路由；<code>config.go</code> 解析 YAML；<code>application.go</code> 组装标准进程。</p>
+<p>有界部署队列只保存仓库 ID。工作线程开始时从 etcd 读取最新事实，因此排队期间到达的新摘要、名称或域名会自然生效。同一仓库正在部署时再次更新，当前任务结束后再处理一次最新目标。进程取得数据根目录锁后重建工作目录；已确认内容保存在独立站点目录。</p>
+<p>下载和展开先产生候选内容。<code>Publisher.Publish</code> 成功后才保存当前安装摘要并清理旧内容；发布器返回错误时先恢复旧入口，核心删除失败候选。关闭和删除先移除入口，再清理内容。部署结果保存前重新核对站点时间、当前摘要和路由事实，迟到任务不能覆盖更新后的站点。结果无法写入 etcd 时继续通过 Gitea 结果接口报告当前故障。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
-<li>Gitea 能创建五张 Pages 业务表，保存站点当前版本、内容历史和实例当前结果，并通过现有存储抽象保存版本 TAR.GZ。</li>
-<li>Pages 能注册实例、执行全部或增量同步、下载当前 TAR.GZ，并在本机内嵌 etcd 中恢复状态。</li>
-<li>两种自动发布方式与分支、Actions、网页/API 三种版本产生方式都能进入同一归档检查、存储和主动部署流程。</li>
-<li>内容安装、配置应用和地址发布分别上报；候选发布出现硬错误时发布器恢复旧入口，核心保留旧内容。</li>
-<li>外部 Go 程序可以实现 <code>Publisher</code> 读取已检查内容，不需要实现 Gitea 同步、TAR.GZ 检查或结果上报。</li>
-<li>自定义域名、HTTP-01、默认域名 DNS-01、standalone 和 nginx 的实现结果都能映射到通信章节规定的稳定状态。</li>
+<li><code>Service</code> 与 <code>Publisher</code> 的职责可以独立测试，外部发布器无需重复同步和归档安全逻辑。</li>
+<li><code>Publisher.Restore</code> 以迭代器提供本机确认部署，大量站点不需要复制为完整切片。</li>
+<li>队列项执行时读取最新事实，同一仓库调用串行，不同仓库按配置并行。</li>
+<li>工作目录在持锁后重建，已确认站点目录保持不变。</li>
+<li>发布错误保留旧入口；成功发布替代内容后只保留当前摘要目录。</li>
+<li>结果写入核对当前状态，etcd 写入故障仍会尝试向 Gitea 报告。</li>
+<li>DNS provider 构造与证书维护保持在证书边界内，provider 参数只在构造期间进入进程环境，构造完成后恢复原值。</li>
 </ul>
 <h2 id="gitea-代码边界"><a class="header" href="#gitea-代码边界">Gitea 代码边界</a></h2>
-<p>Gitea 侧按现有分层实现：<code>models/pages</code> 负责五张表和稳定查询，<code>modules/pages</code> 负责可独立测试的 TAR.GZ 检查与内容存储路径，<code>services/pages</code> 负责版本提交、恢复和当前状态事务，路由层只完成请求解析、权限检查和响应转换。模型在 <code>pages</code> 包内使用 <code>Site</code>、<code>Version</code>、<code>Instance</code>、<code>Domain</code> 和 <code>InstanceResult</code>；数据库表名保持设计章节定义的名称。</p>
-<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和 DNS 命名空间冲突，仓库设置页、Actions 展示、实例登记和自定义域名登记因此使用同一组地址规则。域名规范化使用 <code>golang.org/x/net/idna</code> 的查询映射、双向文字和 DNS 长度检查，Gitea 只补充 Pages 需要的多标签与 IP 地址判定；这样 DNS 标准细节由现有库维护，服务代码只表达 Pages 的业务边界。命名空间比较在入口内统一大小写，使 Gitea 管理域、实例域名和自定义域名的父子关系不依赖调用方预处理。<code>settings.go</code> 只处理仓库的启用状态与自动发布来源，<code>publish.go</code> 只处理成品检查、版本提交、恢复、删除和保留；这种划分让设置变化与版本变化各有一个清晰事务入口，同时继续留在同一个服务包内复用站点锁和状态时间。</p>
-<p>仓库关闭、改名、转移、所有者改名和删除都由对应的 <code>services/pages</code> 事务函数直接推进站点时间。调用方先取得同一事务使用的 Pages 时间，再把它传给服务函数，使仓库变化和同步通知保持相同提交顺序。每种生命周期变化只有一个执行入口，错误也以该入口命名，开发人员可以从仓库服务调用直接定位到 Pages 数据写入。</p>
-<p><code>modules/setting</code> 按 Gitea 现有设置写法保存归档大小、条目数、版本保留数、批量大小、TXT 刷新周期和递归 DNS 地址等普通字段。<code>services/pages</code> 在使用归档能力时把资源字段组装为 <code>modules/pages.Limits</code>，在提交和恢复事务中应用版本保留数；域名服务直接使用已经校验和规范化的 TXT 设置。这样启动配置、归档安全校验、版本裁剪、TXT 到期筛选和发布事务可以分别测试。</p>
-<p>Pages 内容使用 Gitea 已有 storage 抽象，临时文件使用应用数据临时目录，仓库成品提交使用按仓库 ID 区分的全局锁抽象。实例凭据使用 Gitea 的安全随机数、HTTP Authorization 解析、SHA-256 编码和恒定时间比较工具，秒级与纳秒级更新时间使用统一时间工具。这样可以沿用 Gitea 已有的认证边界、清理、测试替换和锁配置能力，避免 Pages 再维护一套令牌解析、摘要编码、临时目录、锁表和安全工具。</p>
-<p>仓库页面的 TAR.GZ 上传复用 Gitea 的 <code>repo/upload</code> Dropzone 组件和临时上传模型，并使用组件的紧凑按钮样式。用户选择文件后，浏览器先异步暂存一个文件；组件收到暂存完成事件时立即用 UUID 提交 Pages 表单，服务端检查成品并消费临时文件。这样页面只有一次选择操作，文件类型、大小和上传错误仍沿用 Gitea 的统一处理。</p>
-<p>Pages 内容 API 的上传响应返回当前版本和站点更新时间；版本列表使用 Gitea 通用分页参数、<code>Link</code> 和 <code>X-Total-Count</code>，仓库读权限可以查看；恢复和删除接口要求仓库代码写权限并复用归档仓库限制。仓库 Pages 导航分为设置与版本两页：设置页只加载站点、来源错误和域名配置，版本页按 ID 倒序使用 Gitea 标准分页，并一次批量读取当前页首次来源关联的 Actions 运行，避免逐版本查询。API 与网页分别共用 <code>services/pages.RestoreVersion</code> 和 <code>services/pages.DeleteVersion</code>，使版本归属、当前版本关闭、对象检查和仓库状态检查只有一份实现。</p>
-<p>Pages 实例接口使用 Gitea 私有路由上下文生成 JSON、读取路径参数和记录服务端错误；实例令牌仍是该接口自己的 Bearer 凭据。认证中间件在成功识别实例后更新最近通信时间，并把一分钟内的连续请求合并为一次写入，使所有接口具有一致语义。两个计划任务标识为 <code>update_pages_branch_sources</code> 和 <code>verify_pages_domains</code>，名称直接说明操作；普通 cron 表达式复用 Gitea 的秒字段判断，<code>@every</code> 单独校验最短一分钟。</p>
-<p>仓库 Versions 页面使用 Gitea 标准表格和分页组件，展示摘要、首次来源、创建时间和紧凑操作。Current 行提供详情与删除，历史行提供恢复与删除；详情复用 Gitea 模态框和状态图标，服务端按现有实例结果生成每个默认地址与自定义域名的状态。状态推导位于 <code>services/pages</code>，Actions 部署轮询与 Versions 页面共同使用，较早结果不会在任一入口冒充当前结果。Settings 页面的查询限定为发布来源、来源错误和域名所有权配置。全局管理页采用 Gitea 标准表格展示实例 ID、公开根地址、最近通信时间和紧凑操作；最近通信复用相对时间组件，操作列复用管理员列表的无边框图标样式。轻量视图结构只负责把服务结果整理为模板需要的本地化值。创建实例复用 Gitea 的操作确认框；创建或重置成功后把一次性明文暂存在当前管理员的服务端会话，POST 随即重定向到 GET，GET 显示并删除该值。这样刷新页面只重复读取，不会重复创建、重置凭据或触发浏览器的表单重提提示。来源选择的浏览器脚本只负责显示当前来源的输入项并停用其余输入项，服务端仍校验全部提交字段。这些页面复用现有组件，避免为 Pages 增加单独的布局和交互实现。</p>
-<p>Actions 成品提交通过 Pages 服务的事务回调调用 Actions 模型，把所属 <code>ActionRun.HasPagesArtifact</code> 单调设置为真；版本创建或复用、当前指针和运行标记一起提交。运行详情 JSON 只在该标记存在时查询实例根地址，并返回当前默认 Pages URL；普通运行不会增加 Pages 查询。Vue 的 run Summary 复用现有状态摘要布局显示 Pages 项，链接文案明确指向当前网站，使运行提交事实和 Pages 当前发布事实分别由各自模型负责。</p>
+<p>Gitea 侧沿用现有分层：<code>models/pages</code> 负责五张表和稳定查询，<code>modules/pages</code> 负责 TAR.GZ 检查与存储路径，<code>services/pages</code> 负责设置、版本提交、恢复、删除、生命周期和结果事务，路由层只完成请求解析、权限检查和响应转换。</p>
+<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。仓库设置页、版本页、Actions 摘要、实例登记和域名登记因此使用同一套地址函数。</p>
+<p><code>settings.go</code> 处理站点开关和自动发布来源，<code>publish.go</code> 处理成品检查、版本提交、恢复、删除和保留。两者复用同一个仓库站点锁和站点更新时间。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
+<p><code>modules/setting</code> 保存归档大小、条目数、版本保留数、批量大小、TXT 周期和 DNS 地址等启动配置。<code>services/pages</code> 把资源字段组装为 <code>modules/pages.Limits</code>。内容使用 Gitea storage 抽象，临时上传使用 Gitea Dropzone 和临时上传模型，仓库提交使用现有锁抽象；实例凭据复用安全随机数、HTTP Authorization、SHA-256 和恒定时间比较工具。</p>
+<p>Pages 内容 API 和网页共用版本服务。版本列表按 ID 倒序使用 Gitea 标准分页，并批量读取当前页的 Actions 来源。设置页只读取来源、来源错误和域名配置；版本页展示摘要、首次来源、创建时间与 Current 状态，Current 可查看实例详情或删除，历史版本可恢复或删除。全局管理页使用标准管理表格显示实例 ID、公开根地址、最近通信时间和紧凑操作。</p>
+<p>实例创建和重置使用 POST 后重定向到 GET。一次性明文令牌暂存在当前管理员会话，首次 GET 显示并消费，刷新不会重复操作。管理页面复制原始令牌，运维把它写入 Pages YAML 的 <code>gitea.token</code>。</p>
+<p>Actions 成品提交在 Pages 版本事务中把所属 <code>ActionRun.HasPagesArtifact</code> 单调设置为真。运行详情只有该标记存在时才查询当前默认 Pages 地址并显示提交事实；实例结果继续表示当前站点，而不解释为历史运行结果。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
-<li>模型、通用归档模块、业务服务和路由之间保持 Gitea 的依赖方向，业务事务不进入路由层。</li>
-<li>默认地址、实例根地址、自定义 Host 和 DNS 命名空间冲突使用同一个地址模块完成规范化与判断；Unicode 域名得到稳定 ASCII 名称，DNS 长度、IP 地址和大小写无关的父子域冲突可以独立验证。</li>
-<li>仓库来源设置与成品版本操作分别由设置服务和发布服务负责，两者复用同一个仓库站点锁与状态时间。</li>
-<li>版本创建、复用、恢复、删除、保留裁剪和 Actions 标记集中在 Pages 服务，API 与网页调用相同的恢复和删除入口。</li>
-<li>仓库设置页和 Actions 运行摘要使用同一个 Gitea 地址函数，所有者编码、<code>.pages</code> 主页和项目路径规则保持一致。</li>
-<li>仓库关闭、名称或归属变化、所有者改名和删除分别通过一个事务服务入口推进 Pages 时间，仓库事务失败时对应 Pages 变化一同回滚。</li>
-<li><code>modules/setting</code> 保存简单配置值，<code>services/pages</code> 统一组装归档限制，归档模块通过调用方传入的限制完成独立测试。</li>
-<li>TXT 服务使用设置层已经规范化的递归 DNS 地址和刷新周期，每次实际查询保存最近校验时间。</li>
-<li>Pages 临时文件、成品存储、仓库锁、安全随机数、HTTP Authorization 解析、SHA-256 编码、恒定时间比较和当前时间均复用 Gitea 现有工具。</li>
-<li>仓库网页使用 Gitea Dropzone 的单按钮样式选择一个 TAR.GZ，暂存成功后自动提交 UUID；完成 Pages 检查后形成当前成品并消费临时上传记录和文件。</li>
-<li>内容 API 返回版本身份和站点时间，版本列表支持 Gitea 标准分页，恢复和删除接口与网页共享服务和仓库写权限检查。</li>
-<li>设置页只读取站点、来源错误和域名配置；版本页按 ID 倒序分页并批量取得当前页 Actions 运行，历史项可以确认恢复或删除，Current 可以查看部署详情或删除，且不会产生逐行数据库查询。</li>
-<li>网页与 API 上传在任一自动发布方式下都可用，并保持来源配置；首次上传创建关闭的 <code>artifact</code> 站点。</li>
-<li>Pages 内部接口使用 Gitea 私有路由上下文，并以登记实例的通信凭据识别调用方。</li>
-<li>Pages 内部接口认证成功后更新实例最近通信时间，一分钟内连续请求合并为一次数据库写入；认证失败保持原通信时间。</li>
-<li>管理后台能以动作名称识别两个 Pages 计划任务，任何有效配置都不能以短于一分钟的周期运行。</li>
-<li>Versions 复用 Gitea 标准表格、分页、模态框和状态图标；Current 详情按实例展示当前有效结果，Actions 状态使用同一判断；Current、历史版本和最后一个版本均可经过确认删除。</li>
-<li>全局管理页复用 Gitea 标准表格、相对时间、无边框操作图标和复制组件，展示实例总数、ID、公开根地址、最近通信时间和管理操作；创建实例先显示操作确认，创建和重置提交后重定向到 GET，一次性凭据刷新后不再出现，重置凭据后通信时间等待新凭据首次请求再更新。</li>
-<li>来源切换只启用当前来源的表单字段，关闭浏览器脚本时服务端校验仍能拒绝不完整或不匹配的配置。</li>
-<li>Actions 版本事务成功后设置 workflow run 标记，重复提交保持幂等；事务失败时版本指针和运行标记都不生效。</li>
-<li>标记运行的 Summary 显示当前默认 Pages 地址，没有实例地址时显示成品已提交；普通运行不查询 Pages 实例。</li>
-<li>Actions run 记录提交事实，<code>pages_version</code> 记录内容首次来源，实例结果继续只表示当前站点；运行详情不会把当前实例结果解释为历史 run 的发布结果。</li>
+<li>模型、通用模块、业务服务和路由保持 Gitea 现有依赖方向。</li>
+<li>地址规范化、所有者编码、项目路径和命名空间冲突由同一服务模块处理。</li>
+<li>来源设置与版本操作各有一个事务入口，并复用站点锁与更新时间。</li>
+<li>仓库生命周期变化和 Pages 状态在同一事务顺序中提交，失败时共同回滚。</li>
+<li>Pages 成品存储、临时上传、锁、凭据和时间工具复用 Gitea 现有实现。</li>
+<li>设置页与版本页各自只加载所需数据；版本分页批量读取 Actions 来源，没有逐行查询。</li>
+<li>Current、历史版本和最后一个版本都能按页面确认流程删除；Current 详情按实例显示当前结果。</li>
+<li>实例创建和重置重定向到 GET，一次性令牌只显示一次并可以复制到 YAML。</li>
+<li>Actions 标记、版本创建和当前指针在同一事务中生效，普通运行不增加 Pages 查询。</li>
 </ul>
-<h2 id="启动与验证"><a class="header" href="#启动与验证">启动与验证</a></h2>
-<p>Pages 命令提供两个服务入口：</p>
-<pre><code class="language-text">gitea-pages standalone
-gitea-pages nginx
+<h2 id="启动文档与验证"><a class="header" href="#启动文档与验证">启动、文档与验证</a></h2>
+<p>标准程序从 YAML 得到 Gitea 地址、令牌、公开根地址、数据根目录、监听器、同步、DNS 与证书配置。DNS-01 使用一个 provider 名称和一组 lego 参数，标准构建包含完整 provider 注册表；关注依赖体积的自定义构建使用 lego 官方轻量标签选择所需 provider。三种 HTTPS 责任模式的配置和目录见<a href="data-and-validation.html">数据与本地架构</a>，证书行为见<a href="certificates.html">证书管理</a>。作为 Go 依赖时，调用方可以直接构造 <code>page.Config</code>，注入日志与 HTTP 客户端，并用自定义 <code>Publisher</code> 运行 <code>Service</code>。</p>
+<p>Pages 模块使用以下入口：</p>
+<pre><code class="language-text">make format
+make check
 </code></pre>
-<p>两种命令模式读取 <code>GITEA_PAGES_</code> 环境变量，启动单机内嵌 etcd，向 Gitea 注册实例根地址，主动同步站点并上报结果。<code>standalone</code> 直接提供 HTTP/HTTPS；<code>nginx</code> 生成同机 Nginx 配置并执行运维提供的配置检查和重载命令。作为 Go 依赖使用时，调用方直接构造 <code>Config</code> 和 <code>Service</code>，可以注入日志、HTTP 客户端和自定义 <code>Publisher</code>；配置默认值与命令模式一致。<code>LoadConfig</code> 的模式参数选择当前命令需要读取的环境变量，<code>Config</code> 只保存同步、发布和对应入口所需的实际参数。两个内置发布器直接使用各自的监听地址或 Nginx 探测地址，因此入口探测由实际发布器决定；外部发布器只需实现自己的入口。变量和目录见<a href="data-and-validation.html">数据与运行模式</a>。</p>
-<p>在 <code>gitea-page/</code> 执行：</p>
-<pre><code class="language-sh">make check
-make build
-./bin/gitea-pages --help
-</code></pre>
-<p>Gitea 侧全部通过仓库规定的 Make 入口并遵循 <code>gitea/docs/testing.md</code>。验证分别覆盖成品准备、内容安装和地址发布，因为前一状态不能推出后一状态。</p>
+<p><code>make check</code> 包含格式检查、<code>go vet ./...</code>、<code>go test ./...</code> 和 <code>go build ./...</code>。Gitea 使用仓库 Make 目标；后端与模板修改分别运行对应 lint，集成测试按 <code>make test-integration#TestName</code> 执行。根设计文档使用 mdBook 构建，并检查 Markdown 链接和 Mermaid 语法。</p>
+<p>验证围绕行为而不是内部字段数量：配置能否明确责任、当前成品能否安全部署、旧内容能否在失败时保留、Gitea 能否看到当前结果，以及清空本地状态后能否全部恢复。这样实现可以在保持外部行为的前提下继续整理内部代码。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
-<li><code>make check</code> 完成 Pages 的测试、静态检查和编译，<code>make build</code> 生成 <code>bin/gitea-pages</code>。</li>
-<li><code>--help</code> 列出 <code>standalone</code> 和 <code>nginx</code>，缺少必填环境变量时返回具体配置错误。</li>
-<li><code>LoadConfig</code> 只接受 standalone 和 Nginx；<code>Config</code> 只包含实际运行参数，内置发布器分别使用自己的监听地址或 Nginx 探测地址。</li>
-<li>外部包能够实现 <code>Publisher</code>、构造 <code>Service</code> 并读取 <code>Content</code>，无需访问任何内部状态类型。</li>
-<li>Gitea 测试通过仓库 Make 入口执行，并遵循 Gitea 测试规范。</li>
-<li>协议测试覆盖实例时间、仓库 ID、TAR.GZ 摘要、分页和结果字段；访问测试覆盖平台 404、已部署内容和关闭后的入口。</li>
+<li><code>make check</code> 在 Pages 模块完成格式、静态检查、完整测试和构建。</li>
+<li>Gitea 修改通过对应格式化、模板 lint、后端检查和目标集成测试。</li>
+<li>HTTP、前置代理源站和 Pages 自管 HTTPS 都有发布确认测试。</li>
+<li>DNS-01 测试覆盖 provider 选择、参数隔离、环境恢复、传播解析器和失败退避。</li>
+<li>归档测试覆盖摘要、限额、路径、相对符号链接、执行位清理和原子替换。</li>
+<li>同步测试覆盖全量分页、补查、增量游标、迟到结果和本地状态恢复。</li>
+<li>设计文档的章节验收点可以对应到代码路径或自动化测试，mdBook 能完整构建。</li>
 </ul>
 
                     </main>
