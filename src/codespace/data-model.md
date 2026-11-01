@@ -26,11 +26,12 @@ Gitea 保存 Codespace、Manager、Dev Container 模板、运行期凭据、用�
 
 Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与锁定提交、环境、当前状态、操作版本、Manager 与 Runtime 绑定，以及确认后的 Dev Container 来源。仓库配置引用锁定提交中的路径；命名模板保存创建时选定的正文，之后修改模板只影响新环境。
 
-Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保证全局唯一。模型声明这项唯一约束，使普通启动和表重建都能保留它；SQL Server 在模型同步后把普通唯一索引调整为只约束非空 UUID 的过滤索引，因为排队记录尚未分配运行身份。`operation_r_version` 表示最新生命周期意图，`runtime_operation_r_version` 表示当前正在运行的实例由哪一次 create 或 resume 建立。两者分开保存，是因为排队中的 stop 已经增加操作版本，但在 stop 完成前访问入口仍应只接受原运行实例的 Metadata。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。
+Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保证全局唯一。它使用规范小写 UUID v4 文本，由 Manager 通过 Go 标准库生成；固定版本和文本形式，使数据库、RPC、路由与 Kubernetes 资源能够直接比较同一运行身份，不需要在各层重复归一化。模型声明这项唯一约束，使普通启动和表重建都能保留它；SQL Server 在模型同步后把普通唯一索引调整为只约束非空 UUID 的过滤索引，因为排队记录尚未分配运行身份。`operation_r_version` 表示最新生命周期意图，`runtime_operation_r_version` 表示当前正在运行的实例由哪一次 create 或 resume 建立。两者分开保存，是因为排队中的 stop 已经增加操作版本，但在 stop 完成前访问入口仍应只接受原运行实例的 Metadata。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。
 
 ### 实现验收点
 
 - 多个未领取的 Codespace 可以同时排队，每个已绑定 Runtime UUID 只对应一个 Codespace。
+- Manager 生成的 Runtime UUID 是规范小写 UUID v4，Gitea 与 Codespace 对外部输入执行相同格式校验。
 - 数据库初始化和表重建后，多个空 Runtime UUID 可以并存，重复的非空 Runtime UUID 会被数据库拒绝。
 - running 状态始终具有有效的运行实例版本；进入 stopped、failed 或 deleting 后该版本清零。
 - 创建失败不会留下半条 Codespace、孤立授权或明文凭据。
