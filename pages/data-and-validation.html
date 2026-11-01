@@ -160,7 +160,7 @@
 <h2 id="数据边界"><a class="header" href="#数据边界">数据边界</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>位置</th><th>保存内容</th><th>原因</th></tr></thead><tbody>
 <tr><td>Gitea SQL</td><td>站点、内容版本、Pages 实例、自定义域名和实例最后结果五张表。</td><td>管理面需要保存当前内容指针、可恢复的内容历史和各实例当前结果。</td></tr>
-<tr><td>Gitea <code>app.ini</code></td><td>归档资源上限、每站点版本保留数、计划任务批量、业务 TXT 要求、Gitea TXT 周期和递归 DNS。</td><td>这些值属于全局运行策略；归档限额和业务 TXT 要求还会通过同步响应交给实例。</td></tr>
+<tr><td>Gitea <code>app.ini</code></td><td>归档资源上限、计划任务周期与批量、业务 TXT 要求、Gitea TXT 周期和递归 DNS。</td><td>这些值属于全局运行策略；归档限额和业务 TXT 要求还会通过同步响应交给实例。</td></tr>
 <tr><td>Gitea storage</td><td>仍被内容版本引用的 TAR.GZ 和待清理的无引用对象。</td><td>Gitea 统一保存成品，Pages 不接触后端凭据。</td></tr>
 <tr><td>Pages 内嵌 etcd</td><td>Gitea 游标、当前站点配置、本机部署结果、证书材料、重试和待确认结果。</td><td>实例可以在 Gitea 短暂失联时恢复本机服务。</td></tr>
 <tr><td>Pages 数据目录</td><td>etcd 数据、工作目录、网站内容、进程锁和运行配置副本。</td><td>本机部署只使用自己的文件系统。</td></tr>
@@ -184,22 +184,25 @@
 <tr><td><code>source_type</code>、<code>source_branch</code>、<code>source_path</code></td><td>自动发布方式及其配置；<code>source_type</code> 只有 <code>artifact</code> 和 <code>branch</code>。</td></tr>
 <tr><td><code>source_commit_id</code>、<code>source_next_check_unix</code>、<code>source_error_code</code></td><td>分支来源的已处理提交、下次检查时间和最近错误。</td></tr>
 <tr><td><code>current_version_id</code></td><td>当前内容版本 ID；<code>0</code> 表示当前没有选择可部署内容。</td></tr>
+<tr><td><code>version_retention_count</code></td><td>后台任务自动保留的最新版本数量，默认 10，范围 1 到 100。</td></tr>
 <tr><td><code>pages_updated_unix_nano</code></td><td>站点当前事实更新时间和同步分页依据；切换当前版本会推进此时间。</td></tr>
 </tbody></table>
 </div>
-<p>站点只保存版本指针，因为摘要、首次来源和创建时间都能由版本记录取得。删除仓库时把指针清零并保留 <code>repo_id</code>、删除标记和更新时间，使实例可以撤销旧路由，也使同名新仓库不会继承旧内容。</p>
+<p>站点只保存当前版本指针和仓库级保留数量，因为摘要、来源与版本管理信息都能由版本记录取得。修改保留数量不会推进 <code>pages_updated_unix_nano</code>，原因是 Pages 实例只部署当前版本，历史保留策略不改变实例目标。删除仓库时把指针清零并保留 <code>repo_id</code>、删除标记和更新时间，使实例可以撤销旧路由，也使同名新仓库不会继承旧内容。</p>
 <h3 id="pages_version"><a class="header" href="#pages_version"><code>pages_version</code></a></h3>
-<p>每行对应一个已经通过 Gitea 检查并完整写入 storage 的 TAR.GZ。版本在同一仓库内按摘要去重，记录创建后保持不变。</p>
+<p>每行对应一个已经通过 Gitea 检查并完整写入 storage 的 TAR.GZ。版本在同一仓库内按摘要去重；内容身份和首次来源保持不变，用户可以修改用于管理历史的注释和长期保留标记。</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody>
 <tr><td><code>id</code></td><td>版本 ID，主键。</td></tr>
 <tr><td><code>repo_id</code></td><td>所属仓库 ID，与摘要组成唯一约束。</td></tr>
 <tr><td><code>tar_gz_sha256</code></td><td>完整 TAR.GZ 的 SHA-256，与 <code>repo_id</code> 组成唯一约束。</td></tr>
 <tr><td><code>origin_type</code></td><td>首次创建该版本的 <code>upload</code>、<code>branch</code> 或 <code>actions</code> 来源。</td></tr>
 <tr><td><code>origin_action_run_id</code></td><td>首次来源为 Actions 时的运行 ID，其他来源为 <code>0</code>。</td></tr>
+<tr><td><code>comment</code></td><td>可选的单行说明，首尾空白清理后最多 255 字节。</td></tr>
+<tr><td><code>keep_forever</code></td><td>是否在自动清理时长期保留；显式删除仍然有效。</td></tr>
 <tr><td><code>created_unix</code></td><td>版本首次创建时间。</td></tr>
 </tbody></table>
 </div>
-<p>相同内容再次提交时复用原版本，因此首次来源保持稳定。Actions 的另一次运行提交相同内容时不会复制版本或改变首次来源。<code>[pages] MAX_VERSIONS_PER_SITE</code> 控制每个站点保留数量，默认 10，允许 1 到 100；每次成功提交或恢复时保留当前版本和其余最新版本，并在数据库事务提交后清理失去引用的对象。用户可以删除任意版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。提交后才清理无引用对象。同步裁剪使配置降低后在下一次内容操作自然生效，不需要计划任务。</p>
+<p>相同内容再次提交时复用原版本，因此首次来源、注释和长期保留标记保持稳定。Actions 的另一次运行提交相同内容时不会复制版本或改变这些信息。<code>cleanup_pages</code> 计划任务读取每个站点的 <code>version_retention_count</code>，保留最新 N 个版本、当前版本和所有 <code>keep_forever=true</code> 的版本。每个仓库使用独立锁和事务，避免一个仓库失败阻塞其他仓库；事务提交后再删除无引用对象。用户可以显式删除任意版本，包括长期保留版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。</p>
 <h3 id="pages_instance"><a class="header" href="#pages_instance"><code>pages_instance</code></a></h3>
 <p>每行对应一个全局管理员登记的 Pages 实例。</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody>
@@ -242,7 +245,8 @@
 <li>站点使用 <code>current_version_id</code> 指向当前内容；版本表按仓库和摘要唯一，并只保存版本身份、首次来源和创建时间。</li>
 <li>相同内容重复提交复用版本，版本首次来源保持不变。</li>
 <li>版本创建或复用和当前指针切换在一个事务中提交。</li>
-<li>每次内容提交或恢复后保留当前版本和配置数量内的最新历史版本；对象只在版本引用删除后清理。</li>
+<li>后台清理按仓库设置保留最新 N 个版本、当前版本和长期保留版本；各仓库独立提交，对象只在版本引用删除后清理。</li>
+<li>版本注释和长期保留标记可以修改，同一摘要复用时不会覆盖已有值；这些修改和保留数量变化不推进站点时间。</li>
 <li>任意版本都可以删除；删除当前版本同时关闭 Pages、清空当前指针并推进站点时间，删除事务提交后只清理已经没有版本引用的对象。</li>
 <li>删除仓库保留精简站点记录，清除该仓库全部版本引用，同名新仓库使用新 <code>repo_id</code>。</li>
 <li>自定义域名表只保存业务 TXT 管理事实，ACME 材料保存在 Pages 实例。</li>
@@ -306,7 +310,6 @@
 <tr><td><code>MAX_SITE_SIZE</code></td><td><code>512MiB</code></td><td>展开后全部普通文件总大小上限。</td></tr>
 <tr><td><code>MAX_FILE_SIZE</code></td><td><code>100MiB</code></td><td>单个普通文件大小上限。</td></tr>
 <tr><td><code>MAX_ENTRIES</code></td><td><code>10000</code></td><td>TAR 条目数上限。</td></tr>
-<tr><td><code>MAX_VERSIONS_PER_SITE</code></td><td><code>10</code></td><td>每个仓库保留的版本数，范围 1 到 100。</td></tr>
 <tr><td><code>BRANCH_SOURCE_BATCH_SIZE</code></td><td><code>50</code></td><td>每次分支来源任务处理的仓库数。</td></tr>
 <tr><td><code>DOMAIN_VERIFICATION_BATCH_SIZE</code></td><td><code>100</code></td><td>每次业务 TXT 任务处理的域名数。</td></tr>
 <tr><td><code>DOMAIN_VERIFICATION_INTERVAL</code></td><td><code>15m</code></td><td>同一域名两次 Gitea TXT 查询的最短间隔，范围 <code>1m</code> 到 <code>24h</code>。</td></tr>
@@ -357,9 +360,11 @@
 &lt;data-root&gt;/pages.lock                    进程锁
 </code></pre>
 <p>运维证书目录与数据根目录分离，使内容清理不会作用到证书输入。清空数据根目录是本地状态损坏后的恢复入口；下一次启动没有游标，会全部查询并重新部署当前站点。</p>
+<p><code>[cron.cleanup_pages]</code> 使用 Gitea 标准计划任务配置，默认启用、启动后运行一次并按 <code>@midnight</code> 执行。清理数量保存在仓库 Pages 设置中，因为不同仓库对回滚历史的需求不同；计划任务配置只决定何时应用这些仓库策略。</p>
 <h3 id="实现验收点-5"><a class="header" href="#实现验收点-5">实现验收点</a></h3>
 <ul>
-<li>Gitea 启动时校验 <code>[pages]</code> 大小、数量、周期、批量和 DNS 配置，并指出错误字段。</li>
+<li>Gitea 启动时校验 <code>[pages]</code> 大小、周期、批量和 DNS 配置，并指出错误字段；仓库 Pages 设置校验版本保留数量为 1 到 100。</li>
+<li><code>cleanup_pages</code> 可以通过标准 cron 配置调整周期，默认在启动后和每天执行。</li>
 <li><code>[storage.pages]</code> 可以继承通用存储或使用 Gitea 已支持的远程后端，Pages 实例只通过鉴权接口下载内容。</li>
 <li>标准程序只通过 <code>--config</code> 读取严格 YAML，未知字段、额外文档和不一致的 HTTPS 模式在启动时返回具体错误。</li>
 <li>Gitea 地址可以使用 HTTP 或 HTTPS；<code>pages.root_url</code> 与 HTTPS 责任模式保持一致。</li>
