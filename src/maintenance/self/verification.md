@@ -1,49 +1,55 @@
 # 验证记录
 
-本页记录 2026-11-01 在 Linux、Go `go1.27.3-X:nodwarf5`、Git `2.56.0` 环境中对 Gitea `self` 提交 `2fd1c04de531f300dc4b30711fcf05ec8c30be81` 执行的验证。所有 Go 测试均通过 Gitea Make 目标启动。
+本页记录 2026-11-02 对 Gitea `self` 提交 `157dca8bb2ed416e2277953f03fe6b10cecd6cd0` 的验证。环境为 Linux `6.18.56-1-lts`、Go `go1.27.3-X:nodwarf5`、Git `2.56.0`、Node.js `v24.21.0` 和 pnpm `12.14.0`。所有 Gitea 格式化、检查和测试均从仓库 Make 目标启动。
 
 ## 已执行检查
 
 | 命令 | 结果 | 覆盖内容 |
 | --- | --- | --- |
-| `make fmt` | 通过，工作树无格式变化 | Go 格式 |
+| `make fmt` | 通过，工作树无格式变化 | Go 与模板格式 |
 | `make lint-go` | 通过，`0 issues` | 文件头、Linux 构建静态检查、导入和代码规范 |
+| `make lint-templates` | 通过，627 个模板、0 个错误 | Go HTML 模板语法和规范 |
+| `make lint-js` | 通过 | ESLint 与 Vue TypeScript 类型检查 |
+| `make lint-shell` | 通过 | Shell 脚本，包括本轮上游更新的 Playwright 启动脚本 |
 | `make test-migration` | 通过 | SQLite 历史迁移、`modelmigration` 和 `modelmigration/v29` |
-| `make test-backend` | 通过 | 全部后端包，包括 Codespace、Pages、组织、仓库和定时任务服务 |
-| `make test-integration` | 相关功能通过；完整命令因上游归档长度断言退出 | SQLite 集成套件、应用启动、API、Codespace、Pages、仓库生命周期 |
+| `make test-backend` | 通过 | 全部后端包，包括 Codespace、Pages 及本轮新增的列表筛选测试 |
+| `make test-frontend` | 121 个测试文件、398 项测试全部通过 | Vitest 前端单元测试 |
+| `make 'test-integration#TestCodespace'` | 通过 | Codespace 路由、服务、数据库和生命周期集成行为 |
+| `make 'test-integration#TestPagesActionsDeploymentAPI'` | 通过 | Pages Actions 部署接口 |
+| `make 'test-integration#TestAPIPagesVersions'` | 通过 | Pages 版本接口 |
+| `make clean` | 通过 | 删除二进制、集成测试目录和生成产物 |
 
-集成套件中以下本次相关用例均已执行通过：
+三个定向集成测试都使用默认 SQLite，各自建立独立工作目录和随机端口。应用构建版本为 `29.0.0+dev-349-g157dca8bb2`，启动时使用当前迁移序列，Codespace 365 与 Pages 366 共同得到期望数据库版本 367。
 
-- 管理 API 定时任务列表与执行；
-- Pages 管理页面、Actions 部署 API 和版本 API；
-- Codespace 路由、模板设置、数据库 UUID 约束、Manager 设置、令牌路由策略、生命周期和清单状态机；
-- API 比较接口、仓库可见性、仓库删除、组织和仓库服务相关流程；
-- 应用使用数据库版本 367 完成启动。
+## 端到端测试环境
+
+`make test-frontend` 在准备 Playwright 浏览器时报告当前系统缺少 `libicu74`、`libxml2`、`libflite1`、`libharfbuzz-icu0`、`libmanette-0.2-0` 和 `libhyphen0`。前端单元测试不依赖这些浏览器系统库，因此仍完整通过；`make test-e2e` 需要真实启动 Playwright 浏览器，本轮环境不具备运行条件。
+
+端到端覆盖留给安装了上述系统库和 Playwright 浏览器的环境执行。这个安排把环境准备问题与源码结果分开：当前提交不增加环境绕过代码，后续环境具备条件后直接运行仓库标准 `make test-e2e` 即可补齐验证。
 
 ## 已确认的上游环境差异
 
-`TestAPIDownloadArchive` 把 Git 生成的 `master.tar.gz` 长度固定断言为 266 字节。当前 Git 2.56.0 生成内容等价的 264 字节归档，因此完整集成命令在该用例退出。
+上一轮已经确认 `TestAPIDownloadArchive` 在 Git 2.56.0 下生成 264 字节归档，而固定断言期望 266 字节；相同差异可以在上游基线 `d3021b69ee` 复现，且与 Codespace、Pages 代码无关。本轮更新没有修改该测试或归档实现，评审范围也明确沿用既有结论，因此没有重复运行这一已知失败用例。
 
-按 Gitea 文档规定的筛选入口执行 `make 'test-integration#TestAPIDownloadArchive'`，`self` 稳定复现 264 字节结果。随后在一次性分离工作树中检出同一上游基线 `d3021b69eec62d40752f7034ced4dd091fe085af`，运行相同 Make 目标，上游也以相同的 264/266 差异失败。`self` 相对上游没有修改该测试和归档实现。
-
-这个结果证明失败由当前 Git 版本与上游固定字节长度断言共同产生，不属于两个 PR 的合并回归。本轮维护按确认结论记录该差异，不修改归档业务或上游测试。
+本轮以三个功能相关的定向集成入口验证更新内容。这样测试结果直接覆盖 Codespace 与 Pages 合并行为，同时保留上一轮对归档长度环境差异的完整原因记录。
 
 ## 数据库覆盖范围
 
-本轮本地迁移与集成测试使用 SQLite。Codespace 迁移保留来源实现中针对 SQL Server 的非空 UUID 唯一索引写法，Pages 迁移保持来源 PR 的 XORM 表定义；`make lint-go` 和完整后端测试覆盖这些代码的编译与通用行为。
+本轮迁移与集成测试使用 SQLite。两个最新 PR 头相对各自迁移来源提交都没有 `modelmigration` 差异；`make test-migration` 验证现有 Codespace 365、Pages 366 及期望数据库版本 367 继续有效。
 
-MySQL、PostgreSQL 和 SQL Server 的实际服务未在本地环境启动。部署到对应数据库前，维护者使用 `gitea/docs/testing.md` 中的环境变量和 `make test-integration` 入口运行相应数据库测试，并把结果追加到本页。
+MySQL、PostgreSQL 和 SQL Server 的实际服务未在本地环境启动。部署到对应数据库前，维护者使用 `gitea/docs/testing.md` 中的环境变量和 Make 入口运行相应数据库集成测试，并把结果追加到本页。Codespace 的 SQL Server 非空 UUID 唯一索引和 Pages 的 XORM 表定义本轮均未变化。
 
 ## Git 与工作树检查
 
-两个来源头提交均为 Gitea `self` 的祖先。Codespace 合并提交的父提交为上游基线与 PR #38337 头提交；Pages 合并提交的父提交为 Codespace 数据库记录提交与 PR #40071 头提交。两个迁移文件改名均被 Git 识别为 100% 重命名。
+Codespace 最新头 `abd341fa30` 和 Pages 最新头 `ca49ed1a84` 都是 Gitea `self` 的祖先。`2117f129ac` 的父提交为原 `self@2fd1c04de5` 与最新 Codespace PR 头；`157dca8bb2` 的父提交为 `2117f129ac` 与最新 Pages PR 头。Pages 更新合并的文件树与第一父提交相同，完整记录了同步位置而没有重复文件改动。
 
-测试和上游基线复核使用的临时集成目录与 `/tmp` 分离工作树已经清理。Gitea 最终工作树保持干净，外层仓库只固定 Gitea 子模块和本维护文档。
+本轮代码相对原 `self` 只修改 12 个来源文件，共 168 行新增、149 行删除，没有迁移差异。`make clean` 已清理测试生成物，内层 Gitea 工作树保持干净。外层 `main` 只记录内层提交指针和维护文档。
 
 ## 实现验收点
 
-- `make fmt`、`make lint-go`、`make test-migration` 和 `make test-backend` 均成功退出。
-- Codespace、Pages、定时任务数量和合并生命周期相关集成用例均通过。
-- 归档长度失败可以在未包含本次改动的固定上游基线上复现，且结果同为 264 字节。
-- 验证记录明确区分已执行的 SQLite 测试和待具备服务后执行的其他数据库测试。
-- 临时测试目录、进程和分离工作树均已清理，最终提交不包含测试生成物。
+- 格式化、四项静态检查、迁移测试、后端测试和前端测试均成功退出。
+- `TestCodespace`、`TestPagesActionsDeploymentAPI` 和 `TestAPIPagesVersions` 三个定向集成测试均通过。
+- 当前迁移序列仍为 Codespace 365、Pages 366，期望数据库版本为 367。
+- 两个最新 PR 头均为 `self` 的祖先，两笔更新合并提交均保留两个父提交。
+- 端到端测试的未覆盖原因和所缺系统库已经明确记录，可在具备 Playwright 运行环境后直接补跑。
+- 测试生成物已经清理，最终提交不包含临时二进制或集成测试目录。
