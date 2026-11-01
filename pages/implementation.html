@@ -162,16 +162,20 @@
 <div class="table-wrapper"><table><thead><tr><th>位置</th><th>作用</th></tr></thead><tbody>
 <tr><td>顶层工作区</td><td>使用 <code>main</code>，设计文档位于 <code>src/pages/</code>。</td></tr>
 <tr><td><code>gitea/</code></td><td>Gitea 独立 Git 仓库，Pages 功能分支为 <code>feat-pages</code>。</td></tr>
-<tr><td><code>gitea-page/</code></td><td>独立 Go 模块，模块路径为 <code>gitea.dev/page</code>，根包为 <code>page</code>。</td></tr>
-<tr><td><code>gitea-page/page.go</code></td><td>稳定公共门面，提供配置、服务生命周期、内容和发布接口。</td></tr>
-<tr><td><code>gitea-page/internal/runtime/</code></td><td>同步、etcd、归档、内置 HTTP、TXT、证书与 ACME 实现。</td></tr>
-<tr><td><code>gitea-page/cmd/main.go</code></td><td><code>gitea-pages</code> 进程入口，读取 YAML、建立信号上下文并运行公共入口。</td></tr>
+<tr><td><code>gitea-page/</code></td><td>独立 Go 模块，模块路径为 <code>gitea.dev/page</code>，构建产物为 <code>gitea-pages</code> 服务程序。</td></tr>
+<tr><td><code>gitea-page/internal/config/</code></td><td>YAML 类型、严格读取、默认值和启动校验。</td></tr>
+<tr><td><code>gitea-page/internal/artifact/</code></td><td>TAR.GZ 摘要、资源边界、路径和展开检查。</td></tr>
+<tr><td><code>gitea-page/internal/gitea/</code></td><td>实例登记、站点查询、成品下载和结果上报协议。</td></tr>
+<tr><td><code>gitea-page/internal/storage/</code></td><td>数据根目录、内嵌 etcd、站点事实、待确认结果、TXT 状态和网站内容目录。</td></tr>
+<tr><td><code>gitea-page/internal/certificate/</code></td><td>运维证书、TLS 视图、ACME 账户、DNS-01、HTTP-01、续期和清理。</td></tr>
+<tr><td><code>gitea-page/internal/pages/</code></td><td>进程运行、同步、部署编排、发布路由、内置 HTTP 和业务 TXT。</td></tr>
+<tr><td><code>gitea-page/cmd/main.go</code></td><td><code>gitea-pages</code> 进程入口，读取 YAML、建立信号上下文并启动 Pages。</td></tr>
 </tbody></table>
 </div>
 <p>标准程序使用一个启动形式：</p>
 <pre><code class="language-text">gitea-pages --config /etc/gitea-pages/config.yaml
 </code></pre>
-<p>命令使用标准库参数解析。<code>page.LoadConfig</code> 严格读取一个 YAML 文档，<code>page.Run</code> 组装内置 HTTP 发布器、同步服务和优雅关闭。内置 HTTP 通过配置选择纯 HTTP、前置代理源站或 Pages 自管 HTTPS；这个选择只改变 Web 与证书责任，不改变同步和部署状态机。</p>
+<p>命令使用标准库解析参数，通过 <code>internal/config</code> 读取配置，再调用 <code>internal/pages</code> 启动内置 HTTP、同步任务和优雅关闭。所有实现位于 <code>internal</code>，因为标准程序是完整的 Pages 服务，内部包可以随通信协议和部署事务共同演进。内置 HTTP 通过配置选择纯 HTTP、前置代理源站或 Pages 自管 HTTPS；这个选择只改变 Web 与证书责任，不改变同步和部署状态机。</p>
 <p>Pages 使用 <code>github.com/go-acme/lego/v5</code> 实现 ACME，并通过 lego provider 注册表选择默认域名的 DNS 服务商；YAML 直接使用所选 provider 的参数名，使服务商认证和 DNS 行为继续由 lego 维护。Pages 使用 <code>go.etcd.io/etcd/server/v3/embed</code> 保存单机运行状态。Gitea 侧遵循仓库 <code>AGENTS.md</code> 与测试文档；Pages 侧使用模块 Make 目标完成格式化、静态检查、测试和构建。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
@@ -179,40 +183,61 @@
 <li><code>go build ./cmd</code> 生成只有 <code>--config</code> 启动参数的 <code>gitea-pages</code>。</li>
 <li>YAML 未知字段、额外文档和模式组合错误在启动阶段得到具体错误。</li>
 <li>DNS-01 provider 在 listener 与同步任务启动前完成构造，未知 provider 或无效参数会让标准程序直接返回错误。</li>
-<li><code>page.Run</code> 在 listener 可以接收连接后启动同步，退出信号会关闭同步、HTTP 服务和内嵌 etcd。</li>
-<li>模块公共门面位于根包，Gitea 协议、同步器、存储和证书细节保持在 <code>internal/runtime</code>。</li>
+<li>listener 可以接收连接后才启动同步，退出信号会关闭同步、HTTP 服务和内嵌 etcd。</li>
+<li><code>cmd/main.go</code> 只处理参数、配置读取、信号和错误输出，<code>internal/pages.Run</code> 负责完整运行生命周期。</li>
 </ul>
 <h2 id="pages-内部边界"><a class="header" href="#pages-内部边界">Pages 内部边界</a></h2>
-<p><code>Service</code> 负责实例注册、全量与增量同步、当前 TAR.GZ 下载、摘要检查、归档安全、业务 TXT 和结果上报。<code>Publisher</code> 只接收已经展开的不可变 <code>Content</code>，负责把 <code>Deployment</code> 映射为实际网站入口。标准 <code>page.Run</code> 使用包内 HTTP 发布器；外部 Go 程序实现同一接口后使用 <code>page.NewService</code>。</p>
-<p>同步实现按职责分文件：<code>store.go</code> 与 <code>store_content.go</code> 保存当前事实和不可变内容；<code>sync_protocol.go</code> 处理全量、补查和增量同步；<code>sync_deploy.go</code> 处理候选部署事务；<code>sync_certificates.go</code> 处理证书维护；<code>dns_provider.go</code> 负责从 YAML 参数构造 lego provider；<code>address.go</code> 计算所有者 Host 与项目路径；<code>server.go</code> 提供内置 HTTP 路由；<code>config.go</code> 解析 YAML；<code>application.go</code> 组装标准进程。</p>
-<p>有界部署队列只保存仓库 ID。工作线程开始时从 etcd 读取最新事实，因此排队期间到达的新摘要、名称或域名会自然生效。同一仓库正在部署时再次更新，当前任务结束后再处理一次最新目标。进程取得数据根目录锁后重建工作目录；已确认内容保存在独立站点目录。</p>
-<p>下载和展开先产生候选内容。<code>Publisher.Publish</code> 成功后才保存当前安装摘要并清理旧内容；发布器返回错误时先恢复旧入口，核心删除失败候选。关闭和删除先移除入口，再清理内容。部署结果保存前重新核对站点时间、当前摘要和路由事实，迟到任务不能覆盖更新后的站点。结果无法写入 etcd 时继续通过 Gitea 结果接口报告当前故障。</p>
+<p>Pages 工程按稳定依赖边界分包。<code>internal/config</code> 只负责 YAML、默认值和校验，<code>internal/artifact</code> 集中实现 TAR.GZ 摘要与安全展开，<code>internal/gitea</code> 集中实现带实例凭据的通信协议。它们不持有服务运行状态，因此可以独立测试，也使配置、归档和协议变化有明确位置。</p>
+<p><code>internal/storage</code> 使用具体的 <code>Store</code> 统一管理数据根目录锁、内嵌 etcd、当前站点事实、待确认结果、TXT 状态、工作目录和已经安装的网站内容。目录和持久状态共享同一个打开与关闭周期，启动恢复可以在持有目录锁后清理临时内容并核对站点记录。同步游标、根地址及其更新时间作为一个有字段名的同步状态读取，调用处可以明确选择所需事实，避免依赖多个同类型返回值的位置。<code>Store</code> 向证书模块提供一个小型 <code>State</code>，只包含类型化的读取、写入、删除和前缀遍历；这隔离了 etcd 实现，同时保持单机内嵌 etcd 这一明确运行方式。</p>
+<p><code>internal/certificate</code> 使用具体的 <code>Manager</code> 统一管理证书恢复、运维证书、TLS 视图、ACME 账户、DNS-01、HTTP-01、续期、退避和清理。管理器通过小型状态接口保存证书材料，并通过挑战响应接口让内置 HTTP 服务临时提供 HTTP-01 正文。它不读取仓库版本、同步游标或部署报告，因此证书维护可以独立测试，Pages 部署器也只需要调用证书维护结果。</p>
+<p><code>internal/pages</code> 组装监听器、存储、同步器、部署器和证书管理器。同步器只负责实例注册、全量与增量查询、游标推进和立即刷新；部署器负责有界调度、TAR.GZ 下载、业务 TXT、部署、证书维护和结果上报。这样网络同步失败不会改变已经排队的本机工作，部署失败也只通过当前持久事实重试，不会把同步游标和部署执行状态混在一起。内置 HTTP 发布器负责把已经展开的不可变内容映射为实际网站入口；发布与回滚继续通过包内私有接口协作，使入口应用失败时可以恢复旧路由。<code>pages</code> 依赖 <code>storage</code> 和 <code>certificate</code>，后两者不反向依赖 <code>pages</code>，因此运行组装保持单向。</p>
+<p>归档展开依次完成条目读取、完整流校验和内容安装。读取阶段只写入同一工作目录中的临时文件，完整流和目录关系通过检查后才按稳定路径安装；这样压缩流错误、路径错误和文件系统写入错误分别有明确边界。HTTP 发布器先处理监听器级路由，再把命中的站点请求交给静态内容读取，使证书挑战、平台资源和网站文件的处理关系保持清晰。</p>
+<p>有界部署队列只保存仓库 ID，并用排队、执行和待重跑三种内部状态合并重复工作。排队期间的重复通知由现有任务覆盖；执行期间收到一次或多次更新时，当前任务结束后只再执行一次，并在开始时读取最新事实。队列没有空位时，调度器发送一次可合并的扫描通知；扫描器按 etcd 固定页读取站点记录，随着队列释放空间逐项补充，不先生成全部待处理 ID。启动同步完成后和每五分钟的恢复扫描使用同一路径，因此队列容量只限制同时等待的任务，不限制能够恢复的站点数量。扫描和立即同步分别使用容量为一的轻量通知，多个相同通知只保留一次。进程取得数据根目录锁后重建工作目录；已确认内容保存在独立站点目录。</p>
+<p>部署器在一次任务开始时读取一份归档限额与业务 TXT 要求，并用同一份配置完成域名判断和结果上报，避免同步恰好更新配置时产生混合结果。业务 TXT 查询直接使用 YAML 构造的 <code>net.Resolver</code>；测试通过本地 DNS 服务验证相同解析路径。业务 TXT 要求变化后，同步器只请求持久扫描，部署器根据站点当前确认结果与新要求的差异找出需要处理的站点。</p>
+<p>下载和展开先产生候选内容。内置发布器确认入口已经应用后才保存当前安装摘要并清理旧内容；发布器返回错误时先恢复旧入口，部署器再删除失败候选。关闭和删除先移除入口，再清理内容。部署结果保存前重新核对站点时间、当前摘要和路由事实，迟到任务不能覆盖更新后的站点。运行时 etcd 写入沿用同步或部署上下文，取消任务可以停止持久化等待；结果无法写入 etcd 时继续通过 Gitea 结果接口报告当前故障。服务退出先取消并等待部署、扫描、TXT 和证书任务，再关闭内嵌 etcd。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
 <ul>
-<li><code>Service</code> 与 <code>Publisher</code> 的职责可以独立测试，外部发布器无需重复同步和归档安全逻辑。</li>
-<li><code>Publisher.Restore</code> 以迭代器提供本机确认部署，使恢复过程的额外内存保持稳定。</li>
-<li>队列项执行时读取最新事实，同一仓库调用串行，不同仓库按配置并行。</li>
+<li>同步器只持有查询和游标职责，部署器统一持有调度、部署、TXT、证书维护和结果上报；两者可以分别测试。</li>
+<li>配置、TAR.GZ 处理和 Gitea 通信分别位于 <code>internal/config</code>、<code>internal/artifact</code> 和 <code>internal/gitea</code>，依赖方向保持单向。</li>
+<li><code>internal/storage</code> 管理数据根目录、内嵌 etcd 和内容目录的完整生命周期，Pages 与证书代码不直接访问 etcd 服务对象。</li>
+<li><code>internal/certificate</code> 管理证书和 ACME 完整生命周期，不依赖仓库同步、版本或部署报告。</li>
+<li><code>internal/pages</code> 只通过具体的 <code>storage.Store</code>、<code>certificate.Manager</code> 和小型挑战接口组装运行流程。</li>
+<li>TAR.GZ 只有在条目、流尾和目录关系全部通过检查后才安装；安装阶段移动同一工作目录内已经检查的内容。</li>
+<li>HTTP 请求分发与已确认站点的文件读取分别处理，发布探测继续经过实际监听器和相同路由。</li>
+<li>启动恢复通过包内迭代接口逐条提供本机确认部署，使额外内存保持稳定。</li>
+<li>队列项执行时读取最新事实，同一仓库调用串行，不同仓库按配置并行；排队更新被合并，执行期间的多次更新至多增加一次执行。</li>
+<li>队列满时由固定分页的持久扫描逐项恢复任务，扫描等待队列空位时不持有 Store 内存锁，也不构造全部仓库 ID 切片。</li>
+<li>同类扫描和立即同步通知可以合并，通知数量不会随站点更新数量增长。</li>
+<li>同一次部署的域名判断和结果上报使用同一份业务 TXT 配置，配置变化会通过扫描重新核对带自定义域名的站点。</li>
 <li>工作目录在持锁后重建，已确认站点目录保持不变。</li>
 <li>发布错误保留旧入口；成功发布替代内容后只保留当前摘要目录。</li>
 <li>结果写入核对当前状态，etcd 写入故障仍会尝试向 Gitea 报告。</li>
 <li>DNS provider 构造与证书维护保持在证书边界内，provider 参数只在构造期间进入进程环境，构造完成后恢复原值。</li>
+<li>运行时持久化响应任务取消，服务关闭等待全部后台任务结束后再关闭 etcd。</li>
 </ul>
 <h2 id="gitea-代码边界"><a class="header" href="#gitea-代码边界">Gitea 代码边界</a></h2>
 <p>Gitea 侧沿用现有分层：<code>models/pages</code> 负责五张表和稳定查询，<code>modules/pages</code> 负责 TAR.GZ 检查与存储路径，<code>services/pages</code> 负责设置、版本提交、恢复、删除、生命周期和结果事务，路由层只完成请求解析、权限检查和响应转换。</p>
-<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。仓库设置页、版本页、实例登记和域名登记因此使用同一套地址函数。</p>
-<p><code>settings.go</code> 处理站点开关、自动发布来源和仓库版本保留数量，<code>publish.go</code> 处理成品检查、版本提交、恢复和删除，<code>version_metadata.go</code> 处理版本注释与长期保留标记，<code>cleanup.go</code> 由计划任务执行版本清理。它们复用同一个仓库站点锁；只有会改变实例目标的操作推进站点时间。成品写入存储前与选择当前版本的事务内使用同一套仓库和站点状态判断，使归档、删除或来源切换期间完成的旧任务得到一致结果。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
+<p>实例同步先按更新时间和仓库 ID 读取一页稳定站点，再按这一页批量加载仓库、所有者、当前版本和活动域名，最后组装通信记录。分页查询与协议组装分开后，游标规则只由分页阶段维护，关联数据继续使用固定数量的批量查询，不会随单页站点数量产生逐项查询。</p>
+<p><code>services/pages/address.go</code> 集中处理所有者 DNS 标签、实例根地址、自定义 Host 规范化和域名命名空间冲突。域名使用 <code>golang.org/x/net/idna</code> 查询映射、双向文字和 DNS 长度检查；Pages 服务只补充多标签、IP 地址和平台命名空间规则。自定义 Host 依靠数据库唯一约束检查精确占用，平台管理域和实例根域检查父子命名空间；实例根域登记再检查已有自定义 Host，因为根域会生成整组站点地址。仓库设置页、版本页、实例登记和域名登记因此使用同一套地址函数。</p>
+<p><code>settings.go</code> 处理站点开关、自动发布来源和仓库版本保留数量，<code>publish.go</code> 处理成品检查、版本提交、恢复和删除，<code>version_metadata.go</code> 处理版本注释与长期保留标记，<code>cleanup.go</code> 由计划任务执行版本清理。它们复用同一个仓库站点锁；只有会改变实例目标的操作推进站点时间。分支计划任务保存检查结果时按仓库、来源类型、分支和目录执行条件更新，并且只写入提交、错误和下次检查字段，因此不会用较早读取的整行覆盖仓库删除、域名、地址或同步时间。成品写入存储前与选择当前版本的事务内使用同一套仓库和站点状态判断，使归档、删除或来源切换期间完成的旧任务得到一致结果。仓库关闭、改名、转移、所有者改名和删除通过对应服务事务推进站点时间，使仓库变化与 Pages 通知使用同一提交顺序。</p>
 <p><code>modules/setting</code> 保存归档大小、条目数、批量大小、TXT 周期和 DNS 地址等启动配置；每个仓库的版本保留数量保存在 <code>pages_site</code>，让仓库管理员按回滚需求配置。<code>services/pages</code> 把资源字段组装为 <code>modules/pages.Limits</code>。内容使用 Gitea storage 抽象，临时上传使用 Gitea Dropzone 和临时上传模型，仓库提交使用现有锁抽象；实例凭据复用安全随机数、HTTP Authorization、SHA-256 和恒定时间比较工具。</p>
 <p>Pages 内容 API 和网页共用版本服务。版本列表按 ID 倒序使用 Gitea 标准分页，并批量读取当前页的 Actions 来源。设置页读取来源、仓库保留数量、来源错误和域名配置；版本页展示摘要、首次来源、创建时间、注释、长期保留标记与 Current 状态。版本元数据通过同一服务和仓库锁修改，不产生同步更新；Current 可查看实例详情或删除，历史版本可恢复或删除。全局管理页使用标准管理表格显示实例 ID、公开根地址、最近通信时间和紧凑操作。</p>
+<p>版本 API 复用 <code>modules/structs.PagesVersion</code>。列表按标准分页返回，单个查询按仓库和版本 ID 校验归属，现有 restore 接口作为切换当前版本的写入入口。两个单仓库详情处理函数在通用仓库转换完成后按权限读取启用站点的当前版本，并填充可选的 <code>pages_current_version</code>。查询放在具体处理函数中，是因为仓库列表、搜索结果和父仓库等嵌套响应都使用 <code>convert.ToRepo</code>；在转换器中读取 Pages 会使批量响应按仓库数量增加数据库查询。</p>
 <p>实例创建和重置使用 POST 后重定向到 GET。一次性明文令牌暂存在当前管理员会话，首次 GET 显示并消费，刷新不会重复操作。管理页面复制原始令牌，运维把它写入 Pages YAML 的 <code>gitea.token</code>。</p>
 <p>Actions 成品提交创建或复用 Pages 版本，并在版本首次创建时保存来源运行 ID。复用已有摘要会保留版本注释和长期保留标记。版本页只在该运行仍然存在时提供来源链接；Actions 运行清理不影响版本、当前内容和实例部署。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>模型、通用模块、业务服务和路由保持 Gitea 现有依赖方向。</li>
+<li>同步分页只选择稳定的一页站点，仓库、所有者、当前版本和活动域名按页批量读取。</li>
 <li>地址规范化、所有者编码、项目路径和命名空间冲突由同一服务模块处理。</li>
 <li>来源设置、版本操作、元数据修改和后台清理复用站点锁；只有实例目标变化才推进站点时间。</li>
+<li>分支检查结果使用当前来源条件局部更新，不能覆盖删除标记、启用状态或站点同步时间。</li>
 <li>成品存储前和版本事务内使用相同的仓库、站点及来源状态判断。</li>
 <li>仓库生命周期变化和 Pages 状态在同一事务顺序中提交，失败时共同回滚。</li>
 <li>Pages 成品存储、临时上传、锁、凭据和时间工具复用 Gitea 现有实现。</li>
+<li>单个版本查询核对路由仓库与版本归属，并复用列表的响应转换；restore 接口幂等地切换当前版本。</li>
+<li>两个单仓库详情接口按 Code 读取权限或仓库管理权限填充 <code>pages_current_version</code>；通用仓库转换器和批量仓库接口不读取 Pages 表。</li>
+<li><code>pages_current_version</code> 表达 Gitea 当前指针，实例安装和入口发布继续由实例结果表达。</li>
 <li>设置页与版本页各自只加载所需数据；版本分页批量读取 Actions 来源，没有逐行查询；注释和长期保留标记在版本列中显示。</li>
 <li>Current、历史版本和最后一个版本都能按页面确认流程删除；Current 详情按实例显示当前结果。</li>
 <li>后台任务按仓库独立事务保留最新 N 个、Current 和长期保留版本；仓库事务失败在下次任务重试，对象删除失败形成的无引用残留由 storage doctor 处理。</li>
@@ -220,7 +245,7 @@
 <li>Actions 成品创建或复用版本并保存首次运行来源；运行清理不影响 Pages 版本和当前内容。</li>
 </ul>
 <h2 id="启动文档与验证"><a class="header" href="#启动文档与验证">启动、文档与验证</a></h2>
-<p>标准程序从 YAML 得到 Gitea 地址、令牌、公开根地址、数据根目录、监听器、同步、DNS 与证书配置。DNS-01 使用一个 provider 名称和一组 lego 参数，标准构建包含完整 provider 注册表；关注依赖体积的自定义构建使用 lego 官方轻量标签选择所需 provider。三种 HTTPS 责任模式的配置和目录见<a href="data-and-validation.html">数据与本地架构</a>，证书行为见<a href="certificates.html">证书管理</a>。作为 Go 依赖时，调用方可以直接构造 <code>page.Config</code>，注入日志与 HTTP 客户端，并用自定义 <code>Publisher</code> 运行 <code>Service</code>。</p>
+<p>服务程序从 YAML 得到 Gitea 地址、令牌、公开根地址、数据根目录、监听器、同步、DNS 与证书配置，并使用同一套完整校验后启动。DNS-01 使用一个 provider 名称和一组 lego 参数，标准构建包含完整 provider 注册表；关注依赖体积的自定义构建使用 lego 官方轻量标签选择所需 provider。三种 HTTPS 责任模式的配置和目录见<a href="data-and-validation.html">数据与本地架构</a>，证书行为见<a href="certificates.html">证书管理</a>。</p>
 <p>Pages 模块使用以下入口：</p>
 <pre><code class="language-text">make format
 make check

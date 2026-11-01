@@ -197,12 +197,12 @@
 <tr><td><code>tar_gz_sha256</code></td><td>完整 TAR.GZ 的 SHA-256，与 <code>repo_id</code> 组成唯一约束。</td></tr>
 <tr><td><code>origin_type</code></td><td>首次创建该版本的 <code>upload</code>、<code>branch</code> 或 <code>actions</code> 来源。</td></tr>
 <tr><td><code>origin_action_run_id</code></td><td>首次来源为 Actions 时的运行 ID，其他来源为 <code>0</code>。</td></tr>
-<tr><td><code>comment</code></td><td>可选的单行说明，首尾空白清理后最多 255 字节。</td></tr>
+<tr><td><code>comment</code></td><td>可选的单行说明，首尾空白清理后最多 255 个 Unicode 字符。</td></tr>
 <tr><td><code>keep_forever</code></td><td>是否在自动清理时长期保留；显式删除仍然有效。</td></tr>
 <tr><td><code>created_unix</code></td><td>版本首次创建时间。</td></tr>
 </tbody></table>
 </div>
-<p>相同内容再次提交时复用原版本，因此首次来源、注释和长期保留标记保持稳定。Actions 的另一次运行提交相同内容时不会复制版本或改变这些信息。<code>cleanup_pages</code> 计划任务读取每个站点的 <code>version_retention_count</code>，保留最新 N 个版本、当前版本和所有 <code>keep_forever=true</code> 的版本。每个仓库使用独立锁和事务，避免一个仓库失败阻塞其他仓库；事务提交后再删除无引用对象。用户可以显式删除任意版本，包括长期保留版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。</p>
+<p>相同内容再次提交时复用原版本，因此首次来源、注释和长期保留标记保持稳定。Actions 的另一次运行提交相同内容时不会复制版本或改变这些信息。<code>cleanup_pages</code> 计划任务只遍历未删除站点，再按每个站点的 <code>version_retention_count</code> 保留最新 N 个版本、当前版本和所有 <code>keep_forever=true</code> 的版本。删除仓库已经在删除事务中清除版本引用，永久站点记录只承担仓库身份隔离和撤销通知，因此跳过这些记录可以避免清理成本随历史仓库数量持续增长。每个仓库使用独立锁和事务，避免一个仓库失败阻塞其他仓库；事务提交后再删除无引用对象。用户可以显式删除任意版本，包括长期保留版本；删除当前版本的事务同时清空当前指针、关闭 Pages 并推进站点更新时间，删除历史版本只移除版本引用。</p>
 <h3 id="pages_instance"><a class="header" href="#pages_instance"><code>pages_instance</code></a></h3>
 <p>每行对应一个全局管理员登记的 Pages 实例。</p>
 <div class="table-wrapper"><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody>
@@ -245,7 +245,7 @@
 <li>站点使用 <code>current_version_id</code> 指向当前内容；版本表按仓库和摘要唯一，并只保存版本身份、首次来源和创建时间。</li>
 <li>相同内容重复提交复用版本，版本首次来源保持不变。</li>
 <li>版本创建或复用和当前指针切换在一个事务中提交。</li>
-<li>后台清理按仓库设置保留最新 N 个版本、当前版本和长期保留版本；各仓库独立提交，对象只在版本引用删除后清理。</li>
+<li>后台清理只遍历未删除站点，按仓库设置保留最新 N 个版本、当前版本和长期保留版本；各仓库独立提交，对象只在版本引用删除后清理。</li>
 <li>版本注释和长期保留标记可以修改，同一摘要复用时不会覆盖已有值；这些修改和保留数量变化不推进站点时间。</li>
 <li>任意版本都可以删除；删除当前版本同时关闭 Pages、清空当前指针并推进站点时间，删除事务提交后只清理已经没有版本引用的对象。</li>
 <li>删除仓库保留精简站点记录，清除该仓库全部版本引用，同名新仓库使用新 <code>repo_id</code>。</li>
@@ -265,26 +265,28 @@
 <li>查询依据损坏能通过清空本机数据后重新初始化，时区或本机时间变化不会造成遗漏。</li>
 </ul>
 <h2 id="pages-本地状态与主动部署"><a class="header" href="#pages-本地状态与主动部署">Pages 本地状态与主动部署</a></h2>
-<p>Pages 使用 <code>go.etcd.io/etcd/server/v3/embed</code> 启动独立单成员 etcd。客户端、Peer 和指标服务只在进程内使用，不绑定外部端口。YAML 中的 <code>pages.data_root</code> 指定唯一数据根目录，进程锁保证同一目录只有一个 Pages 进程。</p>
+<p>Pages 的 <code>internal/storage.Store</code> 使用 <code>go.etcd.io/etcd/server/v3/embed</code> 启动独立单成员 etcd，并统一管理网站内容、工作目录和数据根目录锁。客户端、Peer 和指标服务只在进程内使用，不绑定外部端口。YAML 中的 <code>pages.data_root</code> 指定唯一数据根目录，进程锁保证同一目录只有一个 Pages 进程。统一生命周期使状态恢复、临时目录清理和目录锁按确定顺序完成。</p>
 <p>etcd 保存 Gitea 查询游标、最近确认的归档限额和业务 TXT 要求、当前站点事实、实际安装摘要、地址开放状态、证书与 ACME 当前材料、有限重试信息、全量同步恢复标记以及每个站点一份待确认结果。错误码属于部署结果，TXT 本地状态只保存最近检查和最近成功时间，当前有效性在读取时按固定宽限期推导。前缀读取使用固定大小分页，完整前缀清理使用 etcd 范围删除，使站点数量增加时单次响应仍保持有界。</p>
 <p>网站内容位于 <code>sites/</code>，临时下载和展开位于 <code>work/</code>。进程取得数据根目录锁后重建 <code>work/</code>，清理异常退出遗留的半成品；已经确认的不可变内容位于独立站点目录，不受启动清理影响。</p>
-<p>收到当前站点后先保存事实，再把仓库 ID 放入有界部署队列。工作线程开始处理时重新读取该仓库的最新事实，因此排队期间发生的摘要、名称或域名变化会自然生效。同一仓库正在部署时再次更新，会在当前任务结束后再处理一次。队列满时，扫描协程在出现空位后继续填充；启动时执行恢复扫描，运行期间每五分钟扫描仍未落实的目标。</p>
-<p>部署主动下载当前 TAR.GZ，完成摘要和归档检查后展开为不可变候选，再交给发布器。发布器确认入口后保存安装摘要并清理旧目录；发布器返回错误时恢复旧入口并删除失败候选。embedded etcd 无法保存部署结果时，实例仍直接尝试上报当前失败，使仓库页面能看到本地存储故障。</p>
+<p>收到当前站点后先保存事实，再把仓库 ID 交给有界部署队列。队列以排队、执行和待重跑三种内部状态合并同一仓库的通知。工作线程开始处理时重新读取最新事实，因此排队期间发生的摘要、名称或域名变化会自然生效；执行期间发生一次或多次更新，只在当前任务结束后增加一次处理。队列满时发送可合并的扫描通知，扫描器按 etcd 固定页读取站点记录并随着空位逐项补充，不复制全部站点或待处理 ID。启动同步完成后执行恢复扫描，运行期间每五分钟使用同一路径检查仍未落实的目标。</p>
+<p>部署主动下载当前 TAR.GZ，完成摘要和归档检查后展开为不可变候选，再交给发布器。发布器确认入口后保存安装摘要并清理旧目录；发布器返回错误时恢复旧入口并删除失败候选。同步、部署、TXT 和证书维护把任务上下文传给运行期间的 etcd 写入，使超时或停止可以结束正在等待的持久化；启动恢复使用启动过程自己的上下文。embedded etcd 无法保存部署结果时，实例仍直接尝试上报当前失败，使仓库页面能看到本地存储故障。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
 <li>每个实例运行一个不开放网络端口的内嵌 etcd，同一数据根目录只能由一个进程使用。</li>
+<li>本地状态和内容由具体的 <code>storage.Store</code> 管理；证书只通过小型状态接口保存自己的记录。</li>
 <li>etcd 前缀按固定页读取，完整前缀使用范围删除，大量站点不会形成无限响应。</li>
 <li>启动时重建 <code>work/</code>，异常退出遗留的临时内容得到清理，<code>sites/</code> 中已确认内容保持不变。</li>
 <li>初次同步和当前成品变化都会主动部署，访客请求只读取已确认内容。</li>
-<li>队列只保存仓库 ID，执行时读取最新事实；队列满后扫描协程会随空位继续安排。</li>
+<li>队列只保存仓库 ID，执行时读取最新事实；排队通知合并，执行期间的多次更新至多增加一次处理。</li>
+<li>队列满后扫描协程按固定页读取持久记录并随空位继续安排，扫描等待期间不持有 Store 内存锁。</li>
 <li>发布错误保留旧入口和旧内容；没有旧内容时对应地址保持未发布。</li>
 <li>etcd 写入故障仍会通过现有结果接口报告，恢复扫描继续按最新事实处理。</li>
+<li>同步、部署、TXT 和证书任务取消后，其运行时 etcd 写入也会停止等待。</li>
 </ul>
-<h2 id="内置服务与可嵌入发布器"><a class="header" href="#内置服务与可嵌入发布器">内置服务与可嵌入发布器</a></h2>
-<p><code>gitea.dev/page</code> 同时提供标准程序和 Go 公共包。<code>page.Run</code> 组装内置 HTTP 服务、同步服务和优雅关闭；自定义 Web 端实现 <code>Publisher</code> 后使用 <code>page.NewService</code>，复用 Gitea 注册、同步、TAR.GZ 检查、业务 TXT 和结果上报。</p>
-<p><code>Publisher.Restore</code> 在启动时以迭代器提供已确认部署，避免为大量站点复制完整切片。<code>Publish</code> 收到仓库 ID、默认地址、可选自定义地址和已经检查的 <code>Content</code>；内容可以通过 <code>Content.Open</code> 读取，也可以取得只读目录接入现有 Web 服务。<code>Publication</code> 分别说明默认地址与自定义地址是否已经实际可用。发布器返回错误表示入口应用失败，并在返回前恢复原有入口；<code>Unpublish</code> 成功后核心再清理内容和保存关闭结果。</p>
-<p>同一仓库的发布调用由核心串行，不同仓库按部署并发设置并行。内容目录在下一次成功发布或关闭前保持有效。自定义发布器负责自己的 HTTP、TLS 和入口核验，核心继续负责内容与状态闭环。</p>
-<p>标准程序只有一个内置 HTTP 发布器。<code>server.https.mode</code> 用来说明公开 HTTPS 的责任归属：</p>
+<h2 id="pages-运行进程"><a class="header" href="#pages-运行进程">Pages 运行进程</a></h2>
+<p><code>gitea-pages</code> 作为独立服务运行。<code>internal/pages</code> 统一组装内置 HTTP 服务、同步器、部署器、<code>storage.Store</code>、<code>certificate.Manager</code> 和优雅关闭，使一次配置对应一套明确的监听器、域名和证书责任。同步器负责实例登记和当前事实查询；部署器负责调度、下载、TXT、证书维护、发布和结果上报。分开这两个职责后，同步游标只表示 Gitea 查询进度，部署队列只表示本机尚未落实的当前事实。部署器和内置发布器之间保留包内事务接口：启动时逐条恢复已确认部署，发布时接收仓库 ID、默认地址、可选自定义地址和已经检查的不可变内容，关闭时移除对应入口。</p>
+<p>启动恢复使用迭代访问，避免为大量站点复制完整切片。同一仓库的发布调用串行，不同仓库按部署并发设置并行。入口应用失败时，内置发布器先恢复原有路由再返回错误；部署器只在入口确认后保存安装摘要，在入口移除后清理内容。这一顺序使磁盘内容、本机路由和上报结果保持一致。</p>
+<p><code>server.https.mode</code> 用来说明公开 HTTPS 的责任归属：</p>
 <div class="table-wrapper"><table><thead><tr><th>模式</th><th>公开地址</th><th>本机服务和确认方式</th></tr></thead><tbody>
 <tr><td><code>disabled</code></td><td>HTTP</td><td>Pages 监听 HTTP，并通过该监听器确认网站已生效。</td></tr>
 <tr><td><code>proxy</code></td><td>HTTPS</td><td>Pages 只监听 HTTP 源站；前置代理终止 TLS 并保留原始 Host，Pages 通过本机 HTTP 源站确认网站已生效。</td></tr>
@@ -295,13 +297,15 @@
 <p>归档只要求至少一个普通文件。内置服务在目录存在 <code>index.html</code> 时按静态网站处理；没有首页时目录请求返回 404，实际文件仍可按完整路径访问。</p>
 <h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
 <ul>
-<li><code>page.Run</code> 可以运行内置 HTTP 服务，自定义程序可以只依赖公开类型实现 <code>Publisher</code> 并运行 <code>Service</code>。</li>
-<li>自定义发布器收到的内容已经完成摘要、路径、大小、条目和符号链接检查。</li>
+<li>服务程序使用一份 YAML 启动内置 HTTP 服务、同步任务和本机状态，并在启动时完整校验监听器与 HTTPS 责任模式。</li>
+<li><code>pages</code> 只负责编排运行流程，<code>storage</code> 负责本地状态和内容，<code>certificate</code> 负责证书与 ACME，三个包的依赖保持单向。</li>
+<li>内置发布器只接收已经完成摘要、路径、大小、条目和符号链接检查的内容。</li>
 <li>启动恢复使用迭代访问；同一仓库发布串行，不同仓库可以并行。</li>
 <li>发布器错误恢复旧入口，成功关闭入口后核心再清理内容。</li>
 <li><code>disabled</code> 通过 HTTP 服务和探测，<code>proxy</code> 通过本机 HTTP 源站服务和探测，<code>pages</code> 通过本机 HTTPS 服务和证书探测。</li>
 <li><code>proxy</code> 向 Gitea 注册 HTTPS 根地址，同时不启动证书、ACME 或 HTTP-01 处理。</li>
 <li>没有 <code>index.html</code> 的有效归档可以发布，实际文件仍可访问。</li>
+<li>服务退出会等待部署、扫描、TXT 和证书维护任务结束，再关闭内嵌 etcd。</li>
 </ul>
 <h2 id="gitea-配置pages-yaml-与数据根目录"><a class="header" href="#gitea-配置pages-yaml-与数据根目录">Gitea 配置、Pages YAML 与数据根目录</a></h2>
 <p>Gitea 从 <code>app.ini</code> 的 <code>[pages]</code> 读取发布资源限制和域名所有权要求，从 <code>[storage.pages]</code> 读取成品存储。资源限制由所有接收入口、分支打包和 Pages 实例部署共同使用；存储复用 Gitea storage 抽象，因此本地、MinIO 和其他已支持后端使用同一套版本代码。</p>
