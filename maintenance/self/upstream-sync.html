@@ -1,0 +1,273 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>上游同步流程 - Gitea Pages 与 Codespace 设计文档</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../../highlight.css">
+        <link rel="stylesheet" href="../../tomorrow-night.css">
+        <link rel="stylesheet" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gitea Pages 与 Codespace 设计文档</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/ExplodingDragon/gitea-dev" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="上游同步流程"><a class="header" href="#上游同步流程">上游同步流程</a></h1>
+<p><code>self</code> 需要同时保留上游改进、两个功能 PR 的可追溯历史和自身数据库编号。同步流程围绕这三项事实展开，每次同步都形成可审阅的合并提交和迁移映射记录。</p>
+<h2 id="一固定同步输入"><a class="header" href="#一固定同步输入">一、固定同步输入</a></h2>
+<p>同步前更新 <code>upstream/main</code> 和仍在维护的 PR 引用，并记录完整提交哈希。完整哈希让维护文档、合并父提交和测试结果指向同一份代码，即使 PR 后续继续提交也不会改变本次记录。</p>
+<p>工作树应处于已提交状态，当前分支为 <code>self</code>。数据库映射表中的最后编号与 <code>modelmigration/migrations.go</code> 末尾需要一致。具备这些输入后，冲突才能明确归属于本轮上游变化，而不是混入尚未记录的本地修改。</p>
+<h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
+<ul>
+<li>同步记录包含 <code>upstream/main</code>、相关 PR 和 <code>self</code> 起点的完整提交哈希。</li>
+<li>内外仓库在同步前只包含已经提交的维护历史。</li>
+<li>迁移映射表最后一项与代码中的最后迁移编号一致。</li>
+</ul>
+<h2 id="二合并上游与-pr-更新"><a class="header" href="#二合并上游与-pr-更新">二、合并上游与 PR 更新</a></h2>
+<p>上游更新以双父合并提交进入 <code>self</code>，使共同祖先和上游提交保持可见。仍未进入上游的 PR 如果增加提交，也从上次固定的 PR 头继续合并。合并提交说明写明来源、固定提交和本次冲突范围。</p>
+<p>Git 能直接合并的文件保留自动合并结果。发生冲突时先按领域分类：</p>
+<ul>
+<li>普通业务冲突组合双方当前行为，并通过调用顺序、事务范围和测试断言说明组合理由。</li>
+<li>数据库冲突以 <code>self</code> 现有迁移序列为准，为新迁移分配末尾下一个编号。</li>
+<li>生成文件由其项目规定的生成入口重新生成，并与来源输入一起提交。</li>
+</ul>
+<p>如果两个业务实现对同一行为提出互斥语义，维护工作停在未提交的冲突状态，整理可观察行为后重新审阅。这个场景需要产品选择，简单叠加无法得到可靠结果。</p>
+<h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
+<ul>
+<li>上游或 PR 更新通过具有两个父提交的合并提交进入 <code>self</code>。</li>
+<li>自动合并文件与来源分支一致，人工冲突文件有逐项理由和行为验证。</li>
+<li>互斥业务语义在形成合并提交前完成审阅。</li>
+</ul>
+<h2 id="三映射数据库迁移"><a class="header" href="#三映射数据库迁移">三、映射数据库迁移</a></h2>
+<p>先读取 <code>self</code> 当前最后迁移编号，再按上游来源中的相对顺序逐项分配连续编号。每个文件改名为 <code>pr-&lt;来源&gt;-v&lt;self 编号&gt;-patch&lt;序号&gt;.go</code>，迁移函数本身保持来源实现；只有适配较新 Gitea 数据库 API 时才调整函数，并在逐项文档中说明原因。</p>
+<p>映射完成后同时更新：</p>
+<ol>
+<li><code>modelmigration/migrations.go</code> 的注册编号和顺序；</li>
+<li><code>migration-map.md</code> 的来源编号与 <code>self</code> 编号；</li>
+<li><code>patches/</code> 中该迁移的结构和升级说明；</li>
+<li><code>database-versioning.md</code> 的当前期望版本和来源范围。</li>
+</ol>
+<p>数据库编号调整使用独立提交，提交差异只包含迁移列表、迁移文件和直接对应的迁移测试。这样上游业务变化与 <code>self</code> 版本变化可以分别复核。</p>
+<h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
+<ul>
+<li>新迁移从现有末尾连续编号，<code>ExpectedDBVersion()</code> 等于最后迁移编号加一。</li>
+<li>文件名中的 PR、<code>self</code> 编号和 <code>patchN</code> 与映射文档一致。</li>
+<li>同一来源中的多项迁移保持原相对顺序。</li>
+<li>数据库记录提交不混入无关业务修改。</li>
+</ul>
+<h2 id="四验证与固定外层仓库"><a class="header" href="#四验证与固定外层仓库">四、验证与固定外层仓库</a></h2>
+<p>Gitea 按仓库规范使用 Make 入口完成格式化、Go 静态检查、迁移测试、后端测试和适用的集成测试。迁移至少验证分叉点数据库可以依次执行所有 <code>self</code> 迁移，以及已知兼容来源只执行剩余迁移。具有 MySQL、PostgreSQL 或 SQL Server 测试环境时，使用 <code>docs/testing.md</code> 给出的对应 Make 入口验证实际方言。</p>
+<p>验证完成后更新 <code>verification.md</code>，明确记录成功项、环境信息和上游基线同样存在的失败。随后在外层 <code>self</code> 分支固定 Gitea 子模块提交，并把代码指针与本轮维护文档一起提交。外层提交因此能够完整还原一轮可验证的 Gitea 状态。</p>
+<h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
+<ul>
+<li>格式化、静态检查、迁移测试和后端测试使用 Gitea Make 目标执行。</li>
+<li>集成测试结果区分本轮回归与上游基线在同一环境中的结果。</li>
+<li>外层 <code>self</code> 提交固定已验证的 Gitea <code>self</code> 提交。</li>
+<li>验证记录包含执行日期、数据库类型、工具版本和未覆盖环境。</li>
+</ul>
+<h2 id="五处理低收益异常"><a class="header" href="#五处理低收益异常">五、处理低收益异常</a></h2>
+<p>当来源迁移无法通过连续改号接入，例如上游更换版本存储机制或要求跨分支识别同号迁移内容时，本轮同步直接报告不受支持的来源和冲突编号，并保留可重新开始的干净提交点。维护者在获得明确升级需求后再设计一次性转换。</p>
+<p>这种处理让常规同步始终使用 Gitea 原生机制，同时把极少发生、收益不明确的兼容工作留到真实需求出现时决定，避免长期维护一套没有实际来源使用的第二迁移系统。</p>
+<h3 id="实现验收点-4"><a class="header" href="#实现验收点-4">实现验收点</a></h3>
+<ul>
+<li>无法连续映射的来源会得到包含来源分支、数据库版本和冲突编号的明确错误记录。</li>
+<li>同步失败时最后一个已验证提交仍可检出和运行。</li>
+<li>新兼容方案在实现前具有明确的真实数据库来源和升级目标。</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../maintenance/self/git-history.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../../maintenance/self/conflict-resolutions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../maintenance/self/git-history.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../../maintenance/self/conflict-resolutions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../../mermaid.min.js"></script>
+        <script src="../../mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>
