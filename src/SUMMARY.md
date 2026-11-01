@@ -35,3 +35,17 @@
 
 - [部署要求](codespace/deployment-requirements.md)
 - [实施与测试](codespace/implementation.md)
+
+---
+
+# Gitea self 分支维护
+
+- [维护总览](maintenance/self/README.md)
+- [数据库版本与升级范围](maintenance/self/database-versioning.md)
+- [迁移映射](maintenance/self/migration-map.md)
+- [Git 历史结构](maintenance/self/git-history.md)
+- [上游同步流程](maintenance/self/upstream-sync.md)
+- [冲突解决记录](maintenance/self/conflict-resolutions.md)
+- [验证记录](maintenance/self/verification.md)
+- [Codespace PR #38337 迁移记录](maintenance/self/patches/pr-38337-v365-patch1.md)
+- [Pages PR #40071 迁移记录](maintenance/self/patches/pr-40071-v366-patch1.md)
