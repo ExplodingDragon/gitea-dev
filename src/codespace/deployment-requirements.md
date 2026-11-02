@@ -30,13 +30,14 @@ Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平�
 
 ## 镜像、缓存与网络
 
-Manager、Gateway、Cache 和 Runtime 使用同一个摘要固定的平台镜像，但作为独立工作负载运行。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。
+Manager、Gateway、Cache 和 Runtime 使用同一个摘要固定的平台镜像，但作为独立工作负载运行。Codespace 仓库的 `main` 分支发布平台镜像和 Helm Chart 的 `main` 标签，工作流摘要给出两项产物的不可变摘要。管理员按 Chart 摘要安装，并把镜像摘要写入 Helm values，避免后续 `main` 更新改变现有部署。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。
 
 Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS、TLS 和监听器由集群入口管理。
 
 ### 实现验收点
 
 - 部署镜像与 Manager 固定的工作负载镜像使用同一摘要。
+- Helm Chart 和平台镜像的摘要可以在对应 GitHub Actions 运行摘要中找到。
 - 私有仓库凭据只投递给需要它的工作负载。
 - Runtime 无法访问其他站点的 Runtime 网络。
 - HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。

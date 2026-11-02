@@ -22,6 +22,24 @@
 - Gitea 只依赖公共业务协议；Agent、Gateway 与 Cache 的内部协议由 Codespace 项目维护。
 - 接口对应真实替换边界，较长流程按稳定业务阶段组织。
 
+## 镜像构建与发布
+
+Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pnpm 12.16.1 和固定版本的 Helm。拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查和镜像冒烟验证。这样可以在合并前同时验证源代码、已提交的前端资源、CRD、Helm 模板和最终运行环境。
+
+平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入镜像，验证与发布使用的也是同一份产物。当前已完成真实验证的运行环境为 AMD64；增加其他架构前，需要先完成对应 RuntimeClass 和端到端验证。
+
+`main` 分支更新时发布平台镜像 `ghcr.io/explodingdragon/gitea-codespace:main` 和 Helm Chart `ghcr.io/explodingdragon/charts/gitea-codespace:main`。首个正式版本发布前，两类产物都只维护 `main` 标签，使尚未稳定的版本策略保持简单。每次发布仍产生唯一摘要、提交版本信息和来源证明，平台镜像还包含软件物料清单。
+
+Helm OCI 的版本选择使用语义化版本，而当前开发通道名称为 `main`。工作流因此按 Helm OCI 媒体类型发布 Chart，并在摘要中保留 Chart 自身的语义化元数据；安装时使用 Helm 4 支持的 `oci://...@sha256:...` 地址。这样既能让 GHCR 的开发标签保持 `main`，又能让集群安装固定到经过验证的具体内容。
+
+### 实现验收点
+
+- 拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容。
+- 镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。
+- `main` 分支只更新平台镜像和 Helm Chart 各自的 `main` 标签。
+- 工作流摘要给出平台镜像摘要和可由 Helm 4 直接安装的 Chart OCI 摘要。
+- 发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。
+
 ## 管理配置与集群投影
 
 管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 `resourceVersion`，写入前核对同名对象仍是用户看到的实例。
