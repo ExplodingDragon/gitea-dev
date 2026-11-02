@@ -48,7 +48,9 @@ Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使�
 
 ## 身份、容量与恢复
 
-Manager 和组件身份由 cert-manager 签发。管理员令牌、Gitea 注册 Secret、组件身份、Gateway SSH 主机密钥、对象存储凭据和镜像凭据通过 Kubernetes Secret 投递并纳入轮换。
+Manager、Agent、Gateway 和 Cache 的身份由 cert-manager 通过同一个内部 CA 签发，使各组件能够用 URI 身份和统一信任链完成双向 TLS 验证。Helm Chart 引用集群管理员维护的 `ClusterIssuer`，由 cert-manager 根据 `Certificate` 生成包含 `tls.crt`、`tls.key` 和 `ca.crt` 的 Secret。信任根独立于应用安装，可以按集群安全策略存储和轮换，也不会因卸载一次应用而丢失。
+
+管理员令牌、Gitea 注册 Secret、组件身份、Gateway SSH 主机密钥、对象存储凭据和镜像凭据通过 Kubernetes Secret 投递并纳入轮换。Manager 只有在自身证书 Secret 可用后启动；随后创建的工作负载同样等待对应证书签发完成，以保证所有内部连接从首次建立起就具有明确身份。
 
 环境模板定义单个 Runtime 的资源请求，Gitea 站点定义总配额。Manager 统计实际资源和正在创建的任务，Kubernetes 调度器负责节点放置。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。
 
@@ -57,6 +59,8 @@ Manager 和组件身份由 cert-manager 签发。管理员令牌、Gitea 注册 
 ### 实现验收点
 
 - Secret 不出现在 ConfigMap、CR、标签或普通日志中。
+- 平台证书来自同一个 Ready 的内部 CA，并包含证书、私钥和 CA 信任链。
+- Certificate 签发完成后工作负载自动启动，证书轮换不需要重新安装 Helm Chart。
 - 凭据轮换后旧身份和旧会话按有效期失效。
 - 站点配额包含运行中和正在创建的 Runtime。
 - 恢复后站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。
