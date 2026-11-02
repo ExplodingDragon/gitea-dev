@@ -30,14 +30,17 @@ Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平�
 
 ## 镜像、缓存与网络
 
-Manager、Gateway、Cache 和 Runtime 使用同一个摘要固定的平台镜像，但作为独立工作负载运行。Codespace 仓库的 `main` 分支发布平台镜像和 Helm Chart 的 `main` 标签，工作流摘要给出两项产物的不可变摘要。管理员按 Chart 摘要安装，并把镜像摘要写入 Helm values，避免后续 `main` 更新改变现有部署。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。
+Manager、Gateway、Cache 和 Runtime 使用同一个平台镜像引用，但作为独立工作负载运行。Codespace 仓库的 `main` 分支更新平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。开发环境可以用 `--devel` 跟随最新 Chart 和镜像；经过验证的部署应使用工作流摘要中的精确 Chart 版本或摘要，并把镜像摘要写入 Helm values。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。
+
+标签模式在创建 Pod 时检查最新镜像。Manager、Gateway 和 Cache 会随每次平台构建滚动更新，用户 Runtime 保持运行，直到普通生命周期操作需要创建新的 Pod。摘要模式始终引用同一内容，适合生产和故障复现。这样既能让开发集群及时取得更新，也不会为了刷新标签而中断用户会话。
 
 Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS、TLS 和监听器由集群入口管理。
 
 ### 实现验收点
 
-- 部署镜像与 Manager 固定的工作负载镜像使用同一摘要。
-- Helm Chart 和平台镜像的摘要可以在对应 GitHub Actions 运行摘要中找到。
+- Manager 与其创建的工作负载使用同一平台镜像引用。
+- Helm Chart 版本、Chart 摘要和平台镜像摘要可以在对应 GitHub Actions 运行摘要中找到。
+- 标签模式的新建工作负载获取当前镜像，摘要模式的工作负载保持内容固定。
 - 私有仓库凭据只投递给需要它的工作负载。
 - Runtime 无法访问其他站点的 Runtime 网络。
 - HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。
@@ -49,7 +52,7 @@ Manager 和组件身份由 cert-manager 签发。管理员令牌、Gitea 注册 
 
 环境模板定义单个 Runtime 的资源请求，Gitea 站点定义总配额。Manager 统计实际资源和正在创建的任务，Kubernetes 调度器负责节点放置。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。
 
-升级先更新 CRD，再更新平台组件。新环境使用新镜像摘要；已有环境使用创建时保存的摘要，因此镜像仓库需要保留仍被引用的版本。
+升级先更新 CRD，再更新平台组件。摘要模式的新环境使用新摘要，已有环境继续使用创建时保存的摘要，因此镜像仓库需要保留仍被引用的版本。标签模式更新控制面和平台组件；已有 Runtime 保持运行，在后续重建时获取标签当前指向的镜像。
 
 ### 实现验收点
 

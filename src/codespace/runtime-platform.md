@@ -6,14 +6,15 @@
 
 Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接入同一 Manager；每个 `GiteaSite` 对应一个 `codespace-<site-name>` 命名空间，站点的 Codespace CR、PVC、Runtime Pod、配额和网络策略位于其中。
 
-`EnvironmentTemplate` 定义 RuntimeClass、资源、存储、Git SSH 密钥类型和 Dev Container 附加配置。创建时，Manager 把模板内容和平台镜像摘要写入 Codespace CR，确保已有环境恢复时不受模板或平台升级影响。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改，Secret 使用只写接口。
+`EnvironmentTemplate` 定义 RuntimeClass、资源、存储、Git SSH 密钥类型和 Dev Container 附加配置。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改，Secret 使用只写接口。
 
 ### 实现验收点
 
 - Manager 只连接一个 Kubernetes API。
 - 不同站点的资源、凭据、配额和网络策略相互隔离。
-- Manager、Gateway、Cache 和 Runtime 使用同一份摘要固定的平台镜像。
-- 模板或平台升级只影响新环境，管理 API 不返回长期 Secret 明文。
+- Manager、Gateway、Cache 和 Runtime 使用同一份显式标签或摘要镜像引用。
+- 模板更新只影响新环境；摘要模式下平台升级也只影响新环境。
+- 管理 API 不返回长期 Secret 明文。
 
 ## Runtime 与持久数据
 

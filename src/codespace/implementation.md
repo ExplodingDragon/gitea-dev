@@ -28,16 +28,20 @@ Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pn
 
 平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入镜像，验证与发布使用的也是同一份产物。当前已完成真实验证的运行环境为 AMD64；增加其他架构前，需要先完成对应 RuntimeClass 和端到端验证。
 
-`main` 分支更新时发布平台镜像 `ghcr.io/explodingdragon/gitea-codespace:main` 和 Helm Chart `ghcr.io/explodingdragon/charts/gitea-codespace:main`。首个正式版本发布前，两类产物都只维护 `main` 标签，使尚未稳定的版本策略保持简单。每次发布仍产生唯一摘要、提交版本信息和来源证明，平台镜像还包含软件物料清单。
+`main` 分支更新时发布平台镜像 `ghcr.io/explodingdragon/gitea-codespace:main`。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 `0.1.0-main.<run-number>` 形式的预发布版本。镜像标签提供连续开发通道，Chart 预发布版本保留每次部署配置，两者都产生不可变摘要和来源证明，平台镜像还包含软件物料清单。
 
-Helm OCI 的版本选择使用语义化版本，而当前开发通道名称为 `main`。工作流因此按 Helm OCI 媒体类型发布 Chart，并在摘要中保留 Chart 自身的语义化元数据；安装时使用 Helm 4 支持的 `oci://...@sha256:...` 地址。这样既能让 GHCR 的开发标签保持 `main`，又能让集群安装固定到经过验证的具体内容。
+开发部署使用 Helm 的 `--devel` 选择最新预发布 Chart，并默认使用平台镜像的 `main` 标签。可复现部署使用工作流摘要中的精确 Chart 版本或 Chart 摘要，同时设置平台镜像摘要。正式发布 `0.1.0` 后，源码中的开发版本进入下一版本的预发布序列，保证 `--devel` 仍能选择到比正式版更新的开发 Chart。
+
+Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes `Always` 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 `IfNotPresent`，复用节点上完全相同的内容。Chart 的 `appVersion` 和组件 Pod 模板中的平台版本注解使 Manager、Gateway 与 Cache 在新构建发布后滚动更新；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。
 
 ### 实现验收点
 
 - 拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容。
 - 镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。
-- `main` 分支只更新平台镜像和 Helm Chart 各自的 `main` 标签。
-- 工作流摘要给出平台镜像摘要和可由 Helm 4 直接安装的 Chart OCI 摘要。
+- `main` 分支更新平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。
+- 工作流摘要给出平台镜像摘要、Chart 版本和 Chart 摘要。
+- 默认 Chart 渲染标签镜像与 `Always`，设置镜像摘要后渲染摘要引用与 `IfNotPresent`。
+- 新平台构建触发 Manager、Gateway 和 Cache 更新，不主动重启正在运行的用户 Runtime。
 - 发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。
 
 ## 管理配置与集群投影
@@ -64,7 +68,7 @@ Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置�
 | 组件集成测试          | RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护 |
 | Kubernetes 端到端测试 | CR、PVC、Pod、Leader 切换、RuntimeClass、网络和恢复     |
 | 浏览器测试            | 创建确认、列表、详情、日志增量加载和管理界面            |
-| Helm 测试             | RBAC、身份、服务、网络策略和摘要固定镜像                |
+| Helm 测试             | RBAC、身份、服务、网络策略以及标签和摘要镜像            |
 
 测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 对外提供三个测试入口：`make test` 运行完整的非端到端测试，`make test-smoke` 快速验证主要后端包，`make test-e2e` 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。
 
