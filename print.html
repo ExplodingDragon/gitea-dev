@@ -1331,13 +1331,14 @@ make check
 <p>运行平台由 Manager、Runtime Agent、Gateway 和 Cache 组成。Manager 管理一个逻辑 Kubernetes 集群，Gitea 继续负责用户、权限和业务状态。</p>
 <h2 id="控制面与资源"><a class="header" href="#控制面与资源">控制面与资源</a></h2>
 <p>Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接入同一 Manager；每个 <code>GiteaSite</code> 对应一个 <code>codespace-&lt;site-name&gt;</code> 命名空间，站点的 Codespace CR、PVC、Runtime Pod、配额和网络策略位于其中。</p>
-<p><code>EnvironmentTemplate</code> 定义 RuntimeClass、资源、存储、Git SSH 密钥类型和 Dev Container 附加配置。创建时，Manager 把模板内容和平台镜像摘要写入 Codespace CR，确保已有环境恢复时不受模板或平台升级影响。管理 API 使用 Kubernetes UID 与 <code>resourceVersion</code> 处理对象身份和并发修改，Secret 使用只写接口。</p>
+<p><code>EnvironmentTemplate</code> 定义 RuntimeClass、资源、存储、Git SSH 密钥类型和 Dev Container 附加配置。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 <code>resourceVersion</code> 处理对象身份和并发修改，Secret 使用只写接口。</p>
 <h3 id="实现验收点-62"><a class="header" href="#实现验收点-62">实现验收点</a></h3>
 <ul>
 <li>Manager 只连接一个 Kubernetes API。</li>
 <li>不同站点的资源、凭据、配额和网络策略相互隔离。</li>
-<li>Manager、Gateway、Cache 和 Runtime 使用同一份摘要固定的平台镜像。</li>
-<li>模板或平台升级只影响新环境，管理 API 不返回长期 Secret 明文。</li>
+<li>Manager、Gateway、Cache 和 Runtime 使用同一份显式标签或摘要镜像引用。</li>
+<li>模板更新只影响新环境；摘要模式下平台升级也只影响新环境。</li>
+<li>管理 API 不返回长期 Secret 明文。</li>
 </ul>
 <h2 id="runtime-与持久数据"><a class="header" href="#runtime-与持久数据">Runtime 与持久数据</a></h2>
 <p>Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 即使来自同一个平台镜像，也运行在不同 Pod 中；同一镜像用于统一发布和审计，不会合并各自的进程与权限边界。用户镜像运行在该 Docker 中，不直接成为 Kubernetes Pod 容器。</p>
@@ -1652,12 +1653,14 @@ make check
 <li>Pod 替换后 PVC 数据可以由新的 Runtime 恢复。</li>
 </ul>
 <h2 id="镜像缓存与网络"><a class="header" href="#镜像缓存与网络">镜像、缓存与网络</a></h2>
-<p>Manager、Gateway、Cache 和 Runtime 使用同一个摘要固定的平台镜像，但作为独立工作负载运行。Codespace 仓库的 <code>main</code> 分支发布平台镜像和 Helm Chart 的 <code>main</code> 标签，工作流摘要给出两项产物的不可变摘要。管理员按 Chart 摘要安装，并把镜像摘要写入 Helm values，避免后续 <code>main</code> 更新改变现有部署。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。</p>
+<p>Manager、Gateway、Cache 和 Runtime 使用同一个平台镜像引用，但作为独立工作负载运行。Codespace 仓库的 <code>main</code> 分支更新平台镜像的 <code>main</code> 标签，并发布唯一的 Helm 预发布版本。开发环境可以用 <code>--devel</code> 跟随最新 Chart 和镜像；经过验证的部署应使用工作流摘要中的精确 Chart 版本或摘要，并把镜像摘要写入 Helm values。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。</p>
+<p>标签模式在创建 Pod 时检查最新镜像。Manager、Gateway 和 Cache 会随每次平台构建滚动更新，用户 Runtime 保持运行，直到普通生命周期操作需要创建新的 Pod。摘要模式始终引用同一内容，适合生产和故障复现。这样既能让开发集群及时取得更新，也不会为了刷新标签而中断用户会话。</p>
 <p>Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS、TLS 和监听器由集群入口管理。</p>
 <h3 id="实现验收点-83"><a class="header" href="#实现验收点-83">实现验收点</a></h3>
 <ul>
-<li>部署镜像与 Manager 固定的工作负载镜像使用同一摘要。</li>
-<li>Helm Chart 和平台镜像的摘要可以在对应 GitHub Actions 运行摘要中找到。</li>
+<li>Manager 与其创建的工作负载使用同一平台镜像引用。</li>
+<li>Helm Chart 版本、Chart 摘要和平台镜像摘要可以在对应 GitHub Actions 运行摘要中找到。</li>
+<li>标签模式的新建工作负载获取当前镜像，摘要模式的工作负载保持内容固定。</li>
 <li>私有仓库凭据只投递给需要它的工作负载。</li>
 <li>Runtime 无法访问其他站点的 Runtime 网络。</li>
 <li>HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。</li>
@@ -1666,7 +1669,7 @@ make check
 <h2 id="身份容量与恢复"><a class="header" href="#身份容量与恢复">身份、容量与恢复</a></h2>
 <p>Manager 和组件身份由 cert-manager 签发。管理员令牌、Gitea 注册 Secret、组件身份、Gateway SSH 主机密钥、对象存储凭据和镜像凭据通过 Kubernetes Secret 投递并纳入轮换。</p>
 <p>环境模板定义单个 Runtime 的资源请求，Gitea 站点定义总配额。Manager 统计实际资源和正在创建的任务，Kubernetes 调度器负责节点放置。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。</p>
-<p>升级先更新 CRD，再更新平台组件。新环境使用新镜像摘要；已有环境使用创建时保存的摘要，因此镜像仓库需要保留仍被引用的版本。</p>
+<p>升级先更新 CRD，再更新平台组件。摘要模式的新环境使用新摘要，已有环境继续使用创建时保存的摘要，因此镜像仓库需要保留仍被引用的版本。标签模式更新控制面和平台组件；已有 Runtime 保持运行，在后续重建时获取标签当前指向的镜像。</p>
 <h3 id="实现验收点-84"><a class="header" href="#实现验收点-84">实现验收点</a></h3>
 <ul>
 <li>Secret 不出现在 ConfigMap、CR、标签或普通日志中。</li>
@@ -1714,14 +1717,17 @@ make check
 <h2 id="镜像构建与发布"><a class="header" href="#镜像构建与发布">镜像构建与发布</a></h2>
 <p>Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pnpm 12.16.1 和固定版本的 Helm。拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查和镜像冒烟验证。这样可以在合并前同时验证源代码、已提交的前端资源、CRD、Helm 模板和最终运行环境。</p>
 <p>平台二进制在 GitHub Runner 上交叉编译为 <code>linux/amd64</code>，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入镜像，验证与发布使用的也是同一份产物。当前已完成真实验证的运行环境为 AMD64；增加其他架构前，需要先完成对应 RuntimeClass 和端到端验证。</p>
-<p><code>main</code> 分支更新时发布平台镜像 <code>ghcr.io/explodingdragon/gitea-codespace:main</code> 和 Helm Chart <code>ghcr.io/explodingdragon/charts/gitea-codespace:main</code>。首个正式版本发布前，两类产物都只维护 <code>main</code> 标签，使尚未稳定的版本策略保持简单。每次发布仍产生唯一摘要、提交版本信息和来源证明，平台镜像还包含软件物料清单。</p>
-<p>Helm OCI 的版本选择使用语义化版本，而当前开发通道名称为 <code>main</code>。工作流因此按 Helm OCI 媒体类型发布 Chart，并在摘要中保留 Chart 自身的语义化元数据；安装时使用 Helm 4 支持的 <code>oci://...@sha256:...</code> 地址。这样既能让 GHCR 的开发标签保持 <code>main</code>，又能让集群安装固定到经过验证的具体内容。</p>
+<p><code>main</code> 分支更新时发布平台镜像 <code>ghcr.io/explodingdragon/gitea-codespace:main</code>。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 <code>0.1.0-main.&lt;run-number&gt;</code> 形式的预发布版本。镜像标签提供连续开发通道，Chart 预发布版本保留每次部署配置，两者都产生不可变摘要和来源证明，平台镜像还包含软件物料清单。</p>
+<p>开发部署使用 Helm 的 <code>--devel</code> 选择最新预发布 Chart，并默认使用平台镜像的 <code>main</code> 标签。可复现部署使用工作流摘要中的精确 Chart 版本或 Chart 摘要，同时设置平台镜像摘要。正式发布 <code>0.1.0</code> 后，源码中的开发版本进入下一版本的预发布序列，保证 <code>--devel</code> 仍能选择到比正式版更新的开发 Chart。</p>
+<p>Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes <code>Always</code> 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 <code>IfNotPresent</code>，复用节点上完全相同的内容。Chart 的 <code>appVersion</code> 和组件 Pod 模板中的平台版本注解使 Manager、Gateway 与 Cache 在新构建发布后滚动更新；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。</p>
 <h3 id="实现验收点-87"><a class="header" href="#实现验收点-87">实现验收点</a></h3>
 <ul>
 <li>拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容。</li>
 <li>镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。</li>
-<li><code>main</code> 分支只更新平台镜像和 Helm Chart 各自的 <code>main</code> 标签。</li>
-<li>工作流摘要给出平台镜像摘要和可由 Helm 4 直接安装的 Chart OCI 摘要。</li>
+<li><code>main</code> 分支更新平台镜像的 <code>main</code> 标签，并发布唯一的 Helm 预发布版本。</li>
+<li>工作流摘要给出平台镜像摘要、Chart 版本和 Chart 摘要。</li>
+<li>默认 Chart 渲染标签镜像与 <code>Always</code>，设置镜像摘要后渲染摘要引用与 <code>IfNotPresent</code>。</li>
+<li>新平台构建触发 Manager、Gateway 和 Cache 更新，不主动重启正在运行的用户 Runtime。</li>
 <li>发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。</li>
 </ul>
 <h2 id="管理配置与集群投影"><a class="header" href="#管理配置与集群投影">管理配置与集群投影</a></h2>
@@ -1742,7 +1748,7 @@ make check
 <tr><td>组件集成测试</td><td>RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护</td></tr>
 <tr><td>Kubernetes 端到端测试</td><td>CR、PVC、Pod、Leader 切换、RuntimeClass、网络和恢复</td></tr>
 <tr><td>浏览器测试</td><td>创建确认、列表、详情、日志增量加载和管理界面</td></tr>
-<tr><td>Helm 测试</td><td>RBAC、身份、服务、网络策略和摘要固定镜像</td></tr>
+<tr><td>Helm 测试</td><td>RBAC、身份、服务、网络策略以及标签和摘要镜像</td></tr>
 </tbody></table>
 </div>
 <p>测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 对外提供三个测试入口：<code>make test</code> 运行完整的非端到端测试，<code>make test-smoke</code> 快速验证主要后端包，<code>make test-e2e</code> 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。</p>
