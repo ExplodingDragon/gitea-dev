@@ -47,5 +47,6 @@
 - [上游同步流程](maintenance/self/upstream-sync.md)
 - [冲突解决记录](maintenance/self/conflict-resolutions.md)
 - [验证记录](maintenance/self/verification.md)
-- [Codespace PR #38337 迁移记录](maintenance/self/patches/pr-38337-v365-patch1.md)
+- [Codespace PR #38337 迁移 365 patch1](maintenance/self/patches/pr-38337-v365-patch1.md)
+- [Codespace PR #38337 迁移 367 patch2](maintenance/self/patches/pr-38337-v367-patch2.md)
 - [Pages PR #40071 迁移记录](maintenance/self/patches/pr-40071-v366-patch1.md)
