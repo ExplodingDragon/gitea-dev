@@ -156,35 +156,47 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="数据库迁移映射"><a class="header" href="#数据库迁移映射">数据库迁移映射</a></h1>
-<p>迁移映射把上游 PR 中的原始编号、<code>self</code> 中的实际编号和 Git 记录放在同一处。维护者据此判断数据库版本的业务含义，也能从文件或提交回到来源实现。</p>
 <h2 id="当前映射"><a class="header" href="#当前映射">当前映射</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>来源</th><th>迁移来源提交</th><th>当前已同步 PR 头</th><th style="text-align: right">来源迁移编号</th><th style="text-align: right"><code>self</code> 迁移编号</th><th style="text-align: right">完成后的数据库版本</th><th>迁移函数</th><th><code>self</code> 文件</th><th>移植记录提交</th></tr></thead><tbody>
-<tr><td>Codespace PR #38337</td><td><code>1c0f24e4fd7755b47a22e3cb89c3fc366b5901ab</code></td><td><code>abd341fa30284bdd17ac82c317fa6a2ec479c795</code></td><td style="text-align: right">365</td><td style="text-align: right">365</td><td style="text-align: right">366</td><td><code>v29.AddCodespaceTables</code></td><td><code>modelmigration/v29/pr-38337-v365-patch1.go</code></td><td><code>ac46f7081c42833c9fd52341fe1772b591ffd4ed</code></td></tr>
-<tr><td>Pages PR #40071</td><td><code>534024baa21f974027c86d0b3b1a5a01b89d85be</code></td><td><code>ca49ed1a84320a98055084b06c7b43571a4205e8</code></td><td style="text-align: right">365</td><td style="text-align: right">366</td><td style="text-align: right">367</td><td><code>v29.AddPagesTables</code></td><td><code>modelmigration/v29/pr-40071-v366-patch1.go</code></td><td><code>2fd1c04de531f300dc4b30711fcf05ec8c30be81</code></td></tr>
+<p>迁移映射把来源变化、<code>self</code> 的实际执行位置和 Git 记录放在同一处。来源 PR 可以继续修改原迁移文件，而 <code>self</code> 的每一行都代表一项独立、连续、可能已经执行过的数据库历史。</p>
+<div class="table-wrapper"><table><thead><tr><th>来源</th><th>来源变化提交</th><th>当前已同步 PR 头</th><th>来源位置</th><th style="text-align: right"><code>self</code> 迁移</th><th style="text-align: right">完成后版本</th><th><code>self</code> 迁移函数</th><th><code>self</code> 文件</th><th>移植记录提交</th></tr></thead><tbody>
+<tr><td>Codespace PR #38337 基础结构</td><td><code>1c0f24e4fd7755b47a22e3cb89c3fc366b5901ab</code></td><td><code>18086bdaa7bcb226306e3713647e7ff6e3dac30d</code></td><td>来源迁移 365</td><td style="text-align: right">365</td><td style="text-align: right">366</td><td><code>v29.AddCodespaceTables</code></td><td><code>modelmigration/v29/pr-38337-v365-patch1.go</code></td><td><code>ac46f7081c42833c9fd52341fe1772b591ffd4ed</code></td></tr>
+<tr><td>Pages PR #40071 基础结构</td><td><code>534024baa21f974027c86d0b3b1a5a01b89d85be</code></td><td><code>d362d8afbb4f5184f01cb0e33b316f5eeea9810e</code></td><td>来源迁移 365</td><td style="text-align: right">366</td><td style="text-align: right">367</td><td><code>v29.AddPagesTables</code></td><td><code>modelmigration/v29/pr-40071-v366-patch1.go</code></td><td><code>2fd1c04de531f300dc4b30711fcf05ec8c30be81</code></td></tr>
+<tr><td>Codespace PR #38337 Manager 注册令牌</td><td><code>3fc98fc1c089092a2d77978f8d070fe595f595f2</code></td><td><code>18086bdaa7bcb226306e3713647e7ff6e3dac30d</code></td><td>追加到来源迁移 365</td><td style="text-align: right">367</td><td style="text-align: right">368</td><td><code>v29.AddCodespaceManagerRegistrationTokenTable</code></td><td><code>modelmigration/v29/pr-38337-v367-patch2.go</code></td><td><code>d552c301702c721fd6a30c730b6e4a9844bfb049</code></td></tr>
 </tbody></table>
 </div>
-<p>Codespace 的编号保持 365，因此数据库版本 366 与 Codespace PR 数据库具有相同含义。Pages 改为 366，消除了两个迁移同时占用 365 的冲突，并使最终版本提高到 367。</p>
-<p>“迁移来源提交”固定迁移最初进入 <code>self</code> 时的内容，“当前已同步 PR 头”表示功能代码已经跟进到的位置。两列分开记录，是因为 PR 可以继续增加业务提交或合并上游，而迁移文件未必变化。2026-11-02 同步中，从两项迁移来源提交到当前 PR 头的 <code>modelmigration</code> 差异均为空，因此现有映射继续有效，也无需增加 <code>patch2</code>。</p>
-<h2 id="新增记录方法"><a class="header" href="#新增记录方法">新增记录方法</a></h2>
-<p>每次接入带数据库迁移的来源时，在合并前记录来源 PR、来源头提交和原始迁移编号。合并后使用 <code>self</code> 末尾的下一个编号，重命名文件并更新迁移列表。完成验证后在本表追加一行，记录：</p>
-<ol>
-<li>来源 PR 或上游提交；</li>
-<li>合并时固定的完整来源提交；</li>
-<li>来源分支中的原始迁移编号；</li>
-<li><code>self</code> 中实际迁移编号；</li>
-<li>迁移完成后的数据库版本；</li>
-<li>迁移函数和最终文件路径；</li>
-<li>只包含迁移映射变化的记录提交。</li>
-</ol>
-<p>同时在 <code>patches/</code> 下新增对应文件，说明表结构、编号选择、可接受升级来源和验证入口。表格适合快速查询，逐项文档保留做出选择的原因，两者共同形成完整维护记录。</p>
-<h2 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h2>
+<p>Codespace 基础结构保持迁移 365，Pages 改为 366。注册令牌表在来源 PR 中被追加到旧的 365；<code>self</code> 将这 10 行表定义转成独立迁移 367，从而让上一版 <code>self</code> 的数据库版本 367 也能创建该表。</p>
+<p><strong>实现验收点</strong></p>
 <ul>
-<li>当前映射恰好包含 Codespace 365 和 Pages 366 两项。</li>
-<li>表中迁移来源提交与最初两个合并提交的第二父历史一致，当前已同步 PR 头与本轮两个更新合并提交的第二父提交一致。</li>
-<li>每行文件路径在 Gitea <code>self</code> 分支存在，迁移函数与注册项一致。</li>
-<li>每行移植记录提交只包含该项数据库迁移的命名或编号安排。</li>
-<li>两个当前 PR 头相对各自迁移来源提交都没有 <code>modelmigration</code> 差异，因此本轮没有新增迁移映射或数据库记录提交。</li>
-<li>后续迁移加入时，本表与对应 <code>patches/</code> 文档在同一外层维护提交中更新。</li>
+<li>映射包含三个实际迁移，<code>self</code> 编号连续为 365、366、367。</li>
+<li>三行文件路径、函数名和注册编号与内层代码一致。</li>
+<li>每行完成后的数据库版本等于 <code>self</code> 迁移编号加一。</li>
+<li>两个“当前已同步 PR 头”分别等于本轮两个更新合并提交的第二父。</li>
+</ul>
+<h2 id="来源变化与已发布迁移的关系"><a class="header" href="#来源变化与已发布迁移的关系">来源变化与已发布迁移的关系</a></h2>
+<p>“来源变化提交”固定数据库结构首次出现的位置，“当前已同步 PR 头”说明业务代码跟进到的位置。两列分开后，可以准确表达三种情况：来源只有业务变化、来源增加全新迁移、来源修改已经进入 <code>self</code> 的旧迁移。</p>
+<p>本轮 Pages 从 <code>ca49ed1a84</code> 更新到 <code>d362d8afbb</code>，只有共同上游变化，<code>modelmigration</code> 没有差异。Codespace 从 <code>abd341fa30</code> 更新到 <code>18086bdaa7</code>，其中 <code>3fc98fc1c0</code> 对来源 <code>v365.go</code> 增加注册令牌表。因为 <code>self</code> 的迁移 365 和 366 已经发布，这项增量形成 Codespace <code>patch2</code>，而 <code>patch1</code> 继续表示原来的基础结构。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li><code>git diff abd341fa30..18086bdaa7 -- modelmigration</code> 可以定位来源注册令牌表变化。</li>
+<li><code>git diff ca49ed1a84..d362d8afbb -- modelmigration</code> 为空。</li>
+<li><code>git hash-object modelmigration/v29/pr-38337-v365-patch1.go</code> 与 <code>self@157dca8bb2</code> 中该文件的对象哈希相同。</li>
+<li>Codespace 当前来源头中的业务模型有注册令牌表，当前 <code>self</code> 通过迁移 367 提供同一结构。</li>
+</ul>
+<h2 id="新增映射记录的方法"><a class="header" href="#新增映射记录的方法">新增映射记录的方法</a></h2>
+<p>每次接入数据库变化时，先记录来源 PR、固定头提交、结构首次出现的提交和来源迁移位置，再读取 <code>self</code> 当前最后迁移编号。新结构占用末尾下一个连续编号，文件名使用对应 PR、实际编号和连续 patch 序号。</p>
+<p>完成代码后，同步更新以下记录：</p>
+<ol>
+<li><code>modelmigration/migrations.go</code> 的编号、标题和函数；</li>
+<li>本页的来源位置、<code>self</code> 编号和移植提交；</li>
+<li><code>patches/</code> 下该迁移的结构、升级理由和测试；</li>
+<li><code>database-versioning.md</code> 的期望版本和升级来源；</li>
+<li><code>verification.md</code> 的实际测试结果。</li>
+</ol>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>新记录包含来源、完整提交、来源位置、<code>self</code> 编号、函数、文件和移植提交。</li>
+<li>同一来源的 patch 序号保持连续，跨来源的 <code>self</code> 迁移编号保持连续。</li>
+<li>映射、逐项文档、版本文档和验证记录在同一个外层维护提交中更新。</li>
 </ul>
 
                     </main>

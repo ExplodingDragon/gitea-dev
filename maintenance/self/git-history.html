@@ -157,64 +157,87 @@
                     <main>
                         <h1 id="git-历史结构"><a class="header" href="#git-历史结构">Git 历史结构</a></h1>
 <h2 id="当前提交关系"><a class="header" href="#当前提交关系">当前提交关系</a></h2>
-<p><code>self</code> 从固定的上游基线建立，然后依次合并两个 PR，并在每次相关合并后记录数据库迁移安排：</p>
-<pre><code class="language-text">d3021b69ee  upstream/main 基线
+<p><code>self</code> 通过双父合并连接 PR 原始历史，通过普通单父提交记录自身数据库迁移安排：</p>
+<pre><code class="language-text">d3021b69ee  upstream/main 初始基线
     |\
-    | 1c0f24e4fd  PR #38337 头提交
+    | 1c0f24e4fd  PR #38337 初始头
     |/
-6702aa22fe  合并 Codespace PR #38337
+6702aa22fe  合并 Codespace
     |
-ac46f7081c  记录 Codespace 为 self 迁移 365
+ac46f7081c  固定 Codespace 迁移 365 patch1
     |\
-    | 534024baa2  PR #40071 头提交
+    | 534024baa2  PR #40071 初始头
     |/
-5ccb5d3a0d  合并 Pages PR #40071，并保留双方业务行为
+5ccb5d3a0d  合并 Pages 和双方业务行为
     |
-2fd1c04de5  映射 Pages 为 self 迁移 366
+2fd1c04de5  映射 Pages 为迁移 366 patch1
     |\
-    | abd341fa30  PR #38337 最新头，包含 cce5f01a94 和上游 1f51d2c318
+    | abd341fa30  PR #38337 上一轮头
     |/
-2117f129ac  合并最新 Codespace PR #38337
+2117f129ac  合并上一轮 Codespace 更新
     |\
-    | ca49ed1a84  PR #40071 最新头，包含上游 1f51d2c318
+    | ca49ed1a84  PR #40071 上一轮头
     |/
-157dca8bb2  合并最新 Pages PR #40071
+157dca8bb2  合并上一轮 Pages 更新
+    |\
+    | 18086bdaa7  PR #38337 当前头，含 3fc98fc1c0 和 upstream/main@4d00ed2a1e
+    |/
+74ef7df9ba  合并当前 Codespace 更新
+    |
+d552c30170  将注册令牌表安排为迁移 367 patch2
+    |\
+    | d362d8afbb  PR #40071 当前头，含 upstream/main@4d00ed2a1e
+    |/
+0a47af0f52  合并当前 Pages 更新，文件树保持不变
 </code></pre>
-<p>合并提交保留两个父提交，所以 <code>git log --graph</code> 可以同时展示 <code>self</code> 主线和 PR 原始历史。数据库记录使用普通单父提交，使 <code>git show</code> 可以单独回答“为了 <code>self</code> 版本序列改了什么”。这种结构把功能实现、冲突处理和迁移编号分成可以独立复核的记录。</p>
-<p>两个最新 PR 头都包含上游 <code>1f51d2c318</code>。Codespace 更新合并由 <code>2117f129ac</code> 一次带入该上游提交和 Codespace 新功能；Pages 最新头中的文件内容此时已经全部存在，所以 <code>157dca8bb2</code> 的文件树与第一父提交相同。这个双父提交仍有实际维护价值：它明确证明 <code>ca49ed1a84</code> 已被审阅和接入，后续 Git 合并也能从该提交继续计算共同祖先。</p>
+<p>这种结构让 <code>git log --graph</code> 同时展示 <code>self</code> 主线、两个 PR 和上游历史。迁移提交位于对应功能合并之后，使审阅者可以分别查看上游业务实现与 <code>self</code> 数据库版本安排。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>图中的每个提交都可以由 <code>git rev-parse</code> 解析。</li>
+<li>两个当前更新合并各有两个父提交，迁移提交 <code>d552c30170</code> 只有一个父提交。</li>
+<li><code>git log --graph self</code> 可以从当前头追溯到两个 PR 的原始作者和提交顺序。</li>
+</ul>
 <h2 id="当前提交职责"><a class="header" href="#当前提交职责">当前提交职责</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>提交</th><th>类型</th><th>职责</th></tr></thead><tbody>
-<tr><td><code>6702aa22fe138d83d558fcee06a95cd9cace34ad</code></td><td>双父合并</td><td>完整接入 Codespace PR #38337</td></tr>
-<tr><td><code>ac46f7081c42833c9fd52341fe1772b591ffd4ed</code></td><td>数据库记录</td><td>将 Codespace 迁移文件命名为 <code>pr-38337-v365-patch1.go</code>，内容不变</td></tr>
-<tr><td><code>5ccb5d3a0d01dcf96849c7a2eb418140b5bc4f51</code></td><td>双父合并</td><td>完整接入 Pages PR #40071，并解决与 Codespace 的五处重叠</td></tr>
-<tr><td><code>2fd1c04de531f300dc4b30711fcf05ec8c30be81</code></td><td>数据库记录</td><td>将 Pages 迁移文件命名为 <code>pr-40071-v366-patch1.go</code></td></tr>
-<tr><td><code>2117f129acfb41ad2943941899729a3a6022a961</code></td><td>双父合并</td><td>接入 Codespace PR #38337 的最新头 <code>abd341fa30</code>，包括仓库所有者筛选和上游 WebKit 测试更新</td></tr>
-<tr><td><code>157dca8bb2ed416e2277953f03fe6b10cecd6cd0</code></td><td>双父合并</td><td>记录 Pages PR #40071 的最新头 <code>ca49ed1a84</code> 已接入，文件树保持不变</td></tr>
+<tr><td><code>6702aa22fe138d83d558fcee06a95cd9cace34ad</code></td><td>双父合并</td><td>初次接入 Codespace PR #38337</td></tr>
+<tr><td><code>ac46f7081c42833c9fd52341fe1772b591ffd4ed</code></td><td>迁移记录</td><td>固定 Codespace 365 的来源化文件名</td></tr>
+<tr><td><code>5ccb5d3a0d01dcf96849c7a2eb418140b5bc4f51</code></td><td>双父合并</td><td>初次接入 Pages PR #40071 并组合双方行为</td></tr>
+<tr><td><code>2fd1c04de531f300dc4b30711fcf05ec8c30be81</code></td><td>迁移记录</td><td>将 Pages 来源迁移映射为 <code>self</code> 迁移 366</td></tr>
+<tr><td><code>2117f129acfb41ad2943941899729a3a6022a961</code></td><td>双父合并</td><td>接入 PR #38337 上一轮头 <code>abd341fa30</code></td></tr>
+<tr><td><code>157dca8bb2ed416e2277953f03fe6b10cecd6cd0</code></td><td>双父合并</td><td>接入 PR #40071 上一轮头 <code>ca49ed1a84</code></td></tr>
+<tr><td><code>74ef7df9ba4892c35ce5ec15dcfe1ffbd21e7e59</code></td><td>双父合并</td><td>接入 PR #38337 当前头 <code>18086bdaa7</code> 及当前上游</td></tr>
+<tr><td><code>d552c301702c721fd6a30c730b6e4a9844bfb049</code></td><td>迁移记录</td><td>恢复已发布的 Codespace 365，并新增注册令牌迁移 367 与直接测试</td></tr>
+<tr><td><code>0a47af0f52a34516290caf54516f0a52a7e1743a</code></td><td>双父合并</td><td>接入 PR #40071 当前头 <code>d362d8afbb</code>，树与第一父相同</td></tr>
 </tbody></table>
 </div>
-<p>Pages 的迁移注册在合并冲突解决时直接排到 366，因为同一个合并结果必须具有唯一且可编译的迁移序列；随后独立提交只完成来源化文件命名。两个数据库记录提交均被 Git 识别为 100% 重命名，迁移函数内容保持来源 PR 的实现。</p>
-<h2 id="后续历史组织"><a class="header" href="#后续历史组织">后续历史组织</a></h2>
-<p>更新来源 PR 或同步上游时，以合并提交连接新历史。若来源 PR 增加提交，下一次合并只引入上次来源头之后的新增历史；若来源 PR 已经合并本轮目标上游提交，该 PR 合并就是上游提交进入 <code>self</code> 的可追溯路径。每个来源提交只需沿最能说明来源的路径进入一次，历史关系因此保持清晰。</p>
-<p>数据库编号发生变化时使用独立普通提交。提交说明同时写明来源 PR、原始编号、<code>self</code> 编号和调整原因。业务冲突在对应合并提交中解决，数据库文件命名和编号调整在紧随其后的数据库记录提交中完成。若来源更新没有迁移差异，保留现有迁移和映射即可；本轮两个 PR 都属于这种情况。维护者因此可以分别审阅来源业务、冲突组合和版本映射，也能从提交数量判断数据库是否真的变化。</p>
-<p>以下检查用于确认历史关系：</p>
-<pre><code class="language-text">git merge-base --is-ancestor 1c0f24e4fd7755b47a22e3cb89c3fc366b5901ab self
-git merge-base --is-ancestor 534024baa21f974027c86d0b3b1a5a01b89d85be self
-git merge-base --is-ancestor abd341fa30284bdd17ac82c317fa6a2ec479c795 self
-git merge-base --is-ancestor ca49ed1a84320a98055084b06c7b43571a4205e8 self
-git rev-list --parents -n 1 6702aa22fe138d83d558fcee06a95cd9cace34ad
-git rev-list --parents -n 1 5ccb5d3a0d01dcf96849c7a2eb418140b5bc4f51
-git rev-list --parents -n 1 2117f129acfb41ad2943941899729a3a6022a961
-git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
-</code></pre>
-<h2 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h2>
+<p><code>74ef7df9ba</code> 相对第一父修改 82 个文件，包含 1339 行新增和 1300 行删除。<code>d552c30170</code> 只修改四个迁移相关文件。<code>0a47af0f52</code> 不产生文件差异，它的价值是固定 Pages 最新同步位置和下一轮共同祖先。</p>
+<p><strong>实现验收点</strong></p>
 <ul>
-<li>四个 <code>merge-base --is-ancestor</code> 检查均成功。</li>
-<li><code>6702aa22fe</code> 的两个父提交是 <code>d3021b69ee</code> 和 <code>1c0f24e4fd</code>。</li>
-<li><code>5ccb5d3a0d</code> 的两个父提交是 <code>ac46f7081c</code> 和 <code>534024baa2</code>。</li>
-<li><code>2117f129ac</code> 的两个父提交是 <code>2fd1c04de5</code> 和 <code>abd341fa30</code>。</li>
-<li><code>157dca8bb2</code> 的两个父提交是 <code>2117f129ac</code> 和 <code>ca49ed1a84</code>，其文件树与 <code>2117f129ac</code> 相同。</li>
-<li>两个 PR 的作者、提交哈希和内部提交顺序可从 <code>self</code> 直接查看。</li>
-<li>数据库记录提交与合并提交分开；本轮来源迁移未变化，因此没有新增数据库记录提交。</li>
+<li><code>git diff --shortstat 157dca8bb2 74ef7df9ba</code> 显示 82 个文件、1339 行新增、1300 行删除。</li>
+<li><code>git show --stat d552c30170</code> 只列出迁移列表、Codespace patch1、patch2 和 patch2 测试。</li>
+<li><code>git rev-parse d552c30170^{tree}</code> 与 <code>git rev-parse 0a47af0f52^{tree}</code> 返回同一树对象 <code>2b531a3fe2c3ee4254f08e7982e2ecd7ba41e74c</code>。</li>
+</ul>
+<h2 id="后续历史组织"><a class="header" href="#后续历史组织">后续历史组织</a></h2>
+<p>来源 PR 或上游增加提交时，下一轮继续以双父合并连接新头。PR 头已经包含目标上游提交时，由该 PR 合并同时带入上游；另一个只补齐相同上游历史的 PR 仍以树不变的双父提交记录。这样每个来源提交保持原哈希，维护者也能精确回答同步到了哪个 PR 头。</p>
+<p>数据库变化使用紧随功能合并的普通提交。来源对尚未执行的新迁移增加内容时，可以按 <code>self</code> 末尾连续改号；来源对已经进入 <code>self</code> 的旧迁移增加内容时，现有 patch 保持原树结构，增量进入新的 <code>patchN</code>。这使 Git 历史同时表达代码来源和实际升级顺序。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>新来源头通过合并父提交可追溯，来源提交哈希保持不变。</li>
+<li>新数据库提交只包含迁移列表、迁移实现和直接对应测试。</li>
+<li>已进入 <code>self</code> 的迁移文件可以与其记录提交或上一已发布头逐字节比较。</li>
+</ul>
+<h2 id="历史关系检查"><a class="header" href="#历史关系检查">历史关系检查</a></h2>
+<pre><code class="language-text">git merge-base --is-ancestor 4d00ed2a1e2f4d32b66a71c3eecabc6d6703f6c0 self
+git merge-base --is-ancestor 18086bdaa7bcb226306e3713647e7ff6e3dac30d self
+git merge-base --is-ancestor d362d8afbb4f5184f01cb0e33b316f5eeea9810e self
+git rev-list --parents -n 1 74ef7df9ba4892c35ce5ec15dcfe1ffbd21e7e59
+git rev-list --parents -n 1 0a47af0f52a34516290caf54516f0a52a7e1743a
+</code></pre>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>三个 <code>merge-base --is-ancestor</code> 检查均成功退出。</li>
+<li><code>74ef7df9ba</code> 的父提交为 <code>157dca8bb2</code> 和 <code>18086bdaa7</code>。</li>
+<li><code>0a47af0f52</code> 的父提交为 <code>d552c30170</code> 和 <code>d362d8afbb</code>。</li>
 </ul>
 
                     </main>
