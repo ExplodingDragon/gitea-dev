@@ -6,7 +6,11 @@
 
 Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接入同一 Manager；每个 `GiteaSite` 对应一个 `codespace-<site-name>` 命名空间，站点的 Codespace CR、PVC、Runtime Pod、配额和网络策略位于其中。
 
-`EnvironmentTemplate` 定义 RuntimeClass、资源、存储、Git SSH 密钥类型和 Dev Container 附加配置。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改，Secret 使用只写接口。
+`EnvironmentTemplate` 定义隔离方式、RuntimeClass、资源、StorageClass、Git SSH 密钥类型和 Dev Container 附加配置。RuntimeClass 使用 `codespace.gitea.dev/isolation=kata|sysbox` 标签声明其隔离语义，管理页面据此列出可选项，保存模板时再次核对标签和资源是否仍然存在。这样管理员选择的是经过集群声明的运行能力，而不是可能拼错或与隔离方式不符的自由文本。
+
+隔离方式同时决定 PVC 的接入形式：Kata 使用原始块设备，由来宾内 Agent 挂载 Docker 数据；Sysbox 使用 Kubernetes 文件系统挂载。卷模式属于隔离实现的一部分，因此由 Manager 统一推导，模板只保存隔离方式这个权威事实。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改，Secret 使用只写接口。
+
+管理页面提供英文、简体中文、日文和韩文，浏览器语言用于首次选择，管理员的手动选择保存在本地浏览器。四种语言使用同一组 JSON 词典，Vue 页面直接读取这些词典，Go 管理 API 也从同一目录读取词条并按 `Accept-Language` 返回本地化摘要。管理 API 同时返回稳定错误码和诊断详情：摘要面向管理员展示，诊断详情保留 Kubernetes 返回的具体原因。资源状态也按稳定的 Condition reason 显示本地化摘要，原始 Condition message 只作为可展开的技术详情。共用词典的原因是前后端面对的是同一位管理员，分别维护两套文字会产生词条遗漏和含义不一致。
 
 `CodespaceComponent` 定义一个 Gateway 或 Cache。组件是集群级资源，因为多个站点可以引用同一个平台入口或缓存；它生成的 Pod、Service、NetworkPolicy、身份 Secret 和缓存卷集中在管理命名空间。站点保存组件名称和 UID，Manager 在建立控制流和投影路由时再次核对角色与 UID，因此删除后创建的同名组件不会接管旧站点关系。
 
@@ -17,6 +21,12 @@ Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接
 - Manager、Gateway、Cache 和 Runtime 使用同一份显式标签或摘要镜像引用。
 - 模板更新只影响新环境；摘要模式下平台升级也只影响新环境。
 - 管理 API 不返回长期 Secret 明文。
+- 管理页面只列出带有效隔离标签的 RuntimeClass 和集群中存在的 StorageClass。
+- 保存模板时 RuntimeClass 标签需要与隔离方式一致，StorageClass 需要仍然存在。
+- Kata 模板生成块模式 PVC，Sysbox 模板生成文件系统模式 PVC，模板中没有第二个卷模式配置来源。
+- 管理页面语言切换同时作用于导航、表单、确认框、资源状态和组件语言，并在刷新后保持。
+- 四种 JSON 词典具有相同键集合；前端请求携带当前语言，管理 API 的错误摘要来自同一组词典。
+- 管理 API 错误包含稳定代码和诊断详情，页面不依赖英文错误文字判断会话状态；动态集群诊断仍可在技术详情中查看。
 - 一个组件声明只选择 Gateway 或 Cache 角色，控制器能从声明恢复对应工作负载。
 - 站点引用、组件证书和凭据均绑定组件 UID。
 
@@ -24,7 +34,7 @@ Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接
 
 Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 即使来自同一个平台镜像，也运行在不同 Pod 中；同一镜像用于统一发布和审计，不会合并各自的进程与权限边界。用户镜像运行在该 Docker 中，不直接成为 Kubernetes Pod 容器。
 
-环境模板显式选择 Kata 或 Sysbox RuntimeClass。失败时继续保留原隔离选择，因为自动切换会改变安全边界。仓库配置和命名模板进入同一 Dev Container 解析路径；环境模板可以追加 Web IDE 和标准 Feature。
+环境模板显式选择 Kata 或 Sysbox RuntimeClass。失败时继续保留原隔离选择，因为自动切换会改变安全边界。仓库配置和命名模板进入同一 Dev Container 解析路径；环境模板可以追加标准 Dev Container Features，并配置 code-server 版本与扩展。code-server Feature 引用由平台版本统一维护，原因是启动脚本、端口和健康检查都与该实现配套；管理员只配置有明确运行含义的版本和扩展。
 
 每个 Codespace 使用独立 PVC 保存工作区、内部 Docker、Git SSH 私钥和 IDE 数据。Token、用户 Secret、Unix socket 与进程状态写入易失目录。工作区准备是可重复的：未完成的克隆只使用临时目录，目标目录已存在时核对锁定提交并刷新 Git 凭据。任意 Dev Container 生命周期命令不具备通用幂等性，Agent 在 PVC 中持久记录其开始和结果，响应丢失后只重报已经完成的结果，结果未知时停止恢复并提供诊断。
 
@@ -36,6 +46,8 @@ Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前
 
 - Runtime 不挂载节点容器运行时套接字，也不持有 Kubernetes API 凭据。
 - Kata 与 Sysbox 分别在对应 RuntimeClass 上通过真实启动验证。
+- Web IDE 配置由平台维护的 code-server Feature、管理员选择的版本和扩展共同生成。
+- 附加 Features 使用标准 Dev Container `features` 对象输入，并按声明顺序注入。
 - 所有 Dev Container 来源使用同一解析和执行路径。
 - Pod 替换后工作区、内部 Docker 和 IDE 数据保持一致。
 - 克隆中断不会留下被当作完成工作区的目标目录，已有工作区只在提交匹配时复用。

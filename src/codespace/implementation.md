@@ -74,7 +74,7 @@ Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置�
 | 浏览器测试            | 创建确认、列表、详情、日志增量加载和管理界面            |
 | Helm 测试             | RBAC、身份、服务、网络策略以及标签和摘要镜像            |
 
-测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 使用 `make lint` 检查格式、生成文件、Helm 和静态规则，`make test` 运行完整的非端到端测试，`make test-e2e` 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。
+测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 使用 `make lint` 检查格式、生成文件、Helm 和静态规则，`make test` 运行后端的非端到端测试，`make test-frontend` 运行管理界面浏览器测试，`make test-e2e` 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。
 
 ### 实现验收点
 

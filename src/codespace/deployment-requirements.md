@@ -19,13 +19,18 @@ Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、
 
 ## 隔离、存储与设备
 
-每个环境模板绑定经过验证的 RuntimeClass、StorageClass、资源限制和 Dev Container 附加配置。Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。设备通过 Kubernetes 扩展资源和设备插件分配。
+每个环境模板绑定经过验证的 RuntimeClass、StorageClass、资源限制和 Dev Container 附加配置。RuntimeClass 需要使用 `codespace.gitea.dev/isolation=kata` 或 `codespace.gitea.dev/isolation=sysbox` 标签声明隔离方式，Manager 才会把它作为环境模板选项。标签让集群安装结果与模板选择使用同一份可查询事实，也让保存接口能够在创建工作负载前发现隔离类型不匹配。
+
+Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。Kata 的工作区卷以块设备进入来宾，Sysbox 的工作区卷以文件系统挂载；Manager 根据隔离标签选择对应形式。设备通过 Kubernetes 扩展资源和设备插件分配。
 
 Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选 RuntimeClass、节点和扩容策略。
 
 ### 实现验收点
 
 - 每个启用模板都有 RuntimeClass、StorageClass 和平台镜像的真实验证记录。
+- 每个可选 RuntimeClass 都带有与实际运行方式一致的 `codespace.gitea.dev/isolation` 标签。
+- 管理页面中 RuntimeClass 与隔离方式联动，StorageClass 来源于当前集群；不存在的资源无法保存。
+- Kata 与 Sysbox 创建的 PVC 分别采用块模式与文件系统模式。
 - Runtime 内 Docker 可用，并且无法访问节点容器运行时或 Kubernetes API 身份。
 - CPU、内存、磁盘和设备使用受模板限制。
 - Pod 替换后 PVC 数据可以由新的 Runtime 恢复。
