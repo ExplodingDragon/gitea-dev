@@ -1667,15 +1667,39 @@ make check
 <li>Cache 清空后可以在原授权范围内回源。</li>
 </ul>
 <h2 id="身份容量与恢复"><a class="header" href="#身份容量与恢复">身份、容量与恢复</a></h2>
-<p>Manager 和组件身份由 cert-manager 签发。管理员令牌、Gitea 注册 Secret、组件身份、Gateway SSH 主机密钥、对象存储凭据和镜像凭据通过 Kubernetes Secret 投递并纳入轮换。</p>
+<p>Manager 维护安装级内部 CA，并直接为 Manager、Agent、Gateway 和 Cache 签发短期证书。根 CA 代表当前管理命名空间的稳定信任边界，签发 CA 定期轮换，工作负载证书绑定站点、Codespace、Pod 或组件的 Kubernetes UID。内部连接同时验证统一信任链、证书用途和 URI 身份，使同名重建的资源不能沿用旧证书。</p>
+<p>根 CA 有效期为 10 年，用于保持安装恢复所需的信任边界；签发 CA 有效期为 1 年并提前 30 天轮换，用于减少长期在线私钥的暴露范围；工作负载证书有效期为 24 小时并提前 8 小时轮换，使短期控制面故障仍有恢复窗口。轮换只更新 Secret 或 Manager 内存中的证书，Pod 模板不包含证书内容摘要，因此普通轮换不会重建正在运行的工作负载。</p>
+<p>内部 CA 保存在管理命名空间的 Kubernetes Secret 中。Manager 首次启动时通过 Kubernetes API 原子创建，多个副本读取同一份结果；随后 Manager 使用内存服务器证书启动内部双向 TLS 接口。CA Secret 缺失但已经存在受管资源时，Manager 要求从备份恢复，而不是生成新的信任根。生产集群需要为 Secret 启用静态数据加密，并把内部 CA、管理员令牌、Gitea 注册 Secret、Gateway SSH 主机密钥、对象存储凭据和镜像凭据纳入备份与轮换。</p>
+<p>证书 URI 使用同一信任域并直接表达资源身份：Manager 使用 <code>spiffe://codespace/manager/&lt;management-namespace-uid&gt;</code>，Agent 使用 <code>spiffe://codespace/agent/&lt;site-uid&gt;/&lt;codespace-uid&gt;/&lt;pod-uid&gt;</code>，Gateway 和 Cache 分别使用 <code>spiffe://codespace/gateway/&lt;component-uid&gt;</code> 与 <code>spiffe://codespace/cache/&lt;component-uid&gt;</code>。管理命名空间、站点、Codespace、Pod 或组件同名重建后会获得新的 Kubernetes UID，因此旧证书不能代表新资源。URI 的构造和解析由同一个身份模块完成，使签发方、Manager、Agent 和 Gateway 使用完全相同的路径结构。</p>
+<p>浏览器访问管理页面和 Codespace Endpoint 使用集群入口的外部 HTTPS。Ingress 或 Gateway Listener 引用的 TLS Secret 可以由 cert-manager、云平台证书控制器或集群管理员维护；它不参与内部组件身份。SSH 使用独立的 Gateway 主机密钥。</p>
 <p>环境模板定义单个 Runtime 的资源请求，Gitea 站点定义总配额。Manager 统计实际资源和正在创建的任务，Kubernetes 调度器负责节点放置。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。</p>
 <p>升级先更新 CRD，再更新平台组件。摘要模式的新环境使用新摘要，已有环境继续使用创建时保存的摘要，因此镜像仓库需要保留仍被引用的版本。标签模式更新控制面和平台组件；已有 Runtime 保持运行，在后续重建时获取标签当前指向的镜像。</p>
 <h3 id="实现验收点-84"><a class="header" href="#实现验收点-84">实现验收点</a></h3>
 <ul>
 <li>Secret 不出现在 ConfigMap、CR、标签或普通日志中。</li>
+<li>Manager 首次启动后生成唯一的安装级内部 CA，多副本不会产生不同信任根。</li>
+<li>平台证书包含证书、私钥和 CA 信任链，并绑定当前 Kubernetes UID 和正确的客户端或服务器用途。</li>
+<li>Manager、Agent、Gateway 和 Cache 对同一张证书 URI 得到一致的角色与资源 UID，额外或缺失的路径段不能通过身份校验。</li>
+<li>签发 CA 和工作负载证书轮换时不需要重新安装 Helm Chart，也不需要重启正常运行的工作负载。</li>
+<li>未安装 cert-manager 的集群可以运行完整内部控制面；启用公开 HTTPS 时只需提供入口引用的 TLS Secret。</li>
+<li>内部 CA 丢失或损坏时不会被静默替换，恢复原 Secret 后组件能够重新连接。</li>
 <li>凭据轮换后旧身份和旧会话按有效期失效。</li>
 <li>站点配额包含运行中和正在创建的 Runtime。</li>
 <li>恢复后站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。</li>
+</ul>
+<h2 id="验证与发布"><a class="header" href="#验证与发布">验证与发布</a></h2>
+<p>日常开发测试不依赖 Kubernetes，只覆盖可在进程内或本机完成的逻辑。完整端到端测试通过显式 kubeconfig 连接专用的单节点 k3s 集群，并分别在 Kata 与 Sysbox 环境执行同一套测试入口。这样既能让本地反馈保持快速，也能保证两种隔离方式验证的是同一条产品生命周期，而不是两套逐渐产生差异的脚本。</p>
+<p>CI 先在 GitHub 托管 runner 构建平台二进制与镜像归档，再为 Kata 与 Sysbox 分别创建一台全新的 <code>ubuntu-24.04</code> runner。每项任务在本机安装固定版本的单节点 k3s 和对应运行时：Kata 通过官方部署 Chart 安装并使用支持块模式的动态存储，Sysbox 通过校验摘要的发行包安装并注册到 k3s containerd。随后导入同一份平台镜像归档。Kata 需要观察到独立来宾内核，Sysbox 需要观察到隔离的用户映射；同一套用例继续验证嵌套 Docker、PVC 恢复、组件身份、Leader 切换、Cache 和完整生命周期。</p>
+<p>完整生命周期由测试进程内的协议服务提供 Gitea 对端，真实 Manager、Kubernetes 资源、Runtime Pod、Gateway、Cache、网络和存储仍在 k3s 中运行。这样可以验证 Codespace 平台边界，而不把另一个仓库的部署和凭据变成前置条件；Gitea 服务端的协议适配由 Gitea 仓库集成测试验证。所有拉取请求运行相同的端到端测试，主分支镜像和 Helm Chart 的发布依赖 Kata 与 Sysbox 两项结果。失败任务上传节点、RuntimeClass、StorageClass、Helm 状态、受管资源、事件和 Pod 日志，便于区分基础设施故障与产品故障。</p>
+<h3 id="实现验收点-85"><a class="header" href="#实现验收点-85">实现验收点</a></h3>
+<ul>
+<li><code>make test</code> 不读取 kubeconfig，也不创建 Kubernetes 资源。</li>
+<li><code>make test-e2e</code> 只在提供显式 kubeconfig、不可变平台镜像和运行时参数后执行。</li>
+<li>Kata 与 Sysbox CI 使用同一个测试入口，只改变安装的运行时、RuntimeClass 和 StorageClass。</li>
+<li>仓库内和外部仓库提交的拉取请求均运行完整端到端测试，且不读取仓库 Secret。</li>
+<li>主分支发布等待 Kata 与 Sysbox 完整端到端测试成功。</li>
+<li>运行时名称存在但实际隔离语义不成立时，测试在完整生命周期结束前失败。</li>
+<li>失败产物包含定位节点、运行时、存储、控制面和工作负载所需的诊断信息。</li>
 </ul>
 <h2 id="上线验收"><a class="header" href="#上线验收">上线验收</a></h2>
 <p>正式启用前应在目标集群完成：</p>
@@ -1688,7 +1712,7 @@ make check
 <li>清空 Cache，验证授权回源；</li>
 <li>审计 RBAC、NetworkPolicy、Secret 和测试资源清理结果。</li>
 </ol>
-<h3 id="实现验收点-85"><a class="header" href="#实现验收点-85">实现验收点</a></h3>
+<h3 id="实现验收点-86"><a class="header" href="#实现验收点-86">实现验收点</a></h3>
 <ul>
 <li>验收记录包含组件版本、RuntimeClass、StorageClass、镜像摘要和结果。</li>
 <li>失败能够从页面与日志定位到具体阶段。</li>
@@ -1706,7 +1730,7 @@ make check
 </div>
 <p>公共协议先在 Proto 仓库修改、生成、测试并发布，再更新两个实现仓库的远程依赖。Codespace 内部协议随实现一起生成和测试，并从固定的公共协议依赖读取共享业务类型。Gitea 的业务规则放在 model/service，router 负责请求与响应；Codespace 按控制面、Runtime、Gateway、Cache、Dev Container 和管理界面组织。</p>
 <p>逻辑优先留在拥有该行为的领域。只有多个流程共享同一不变量时才提取接口或公共包，以免单次调用的小函数和空抽象分散主要流程。</p>
-<h3 id="实现验收点-86"><a class="header" href="#实现验收点-86">实现验收点</a></h3>
+<h3 id="实现验收点-87"><a class="header" href="#实现验收点-87">实现验收点</a></h3>
 <ul>
 <li>每项功能有唯一仓库和领域归属。</li>
 <li>Router/Handler 不重复实现状态机、权限或事务。</li>
@@ -1720,7 +1744,7 @@ make check
 <p><code>main</code> 分支更新时发布平台镜像 <code>ghcr.io/explodingdragon/gitea-codespace:main</code>。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 <code>0.1.0-main.&lt;run-number&gt;</code> 形式的预发布版本。镜像标签提供连续开发通道，Chart 预发布版本保留每次部署配置，两者都产生不可变摘要和来源证明，平台镜像还包含软件物料清单。</p>
 <p>开发部署使用 Helm 的 <code>--devel</code> 选择最新预发布 Chart，并默认使用平台镜像的 <code>main</code> 标签。可复现部署使用工作流摘要中的精确 Chart 版本或 Chart 摘要，同时设置平台镜像摘要。正式发布 <code>0.1.0</code> 后，源码中的开发版本进入下一版本的预发布序列，保证 <code>--devel</code> 仍能选择到比正式版更新的开发 Chart。</p>
 <p>Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes <code>Always</code> 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 <code>IfNotPresent</code>，复用节点上完全相同的内容。Chart 的 <code>appVersion</code> 和组件 Pod 模板中的平台版本注解使 Manager、Gateway 与 Cache 在新构建发布后滚动更新；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。</p>
-<h3 id="实现验收点-87"><a class="header" href="#实现验收点-87">实现验收点</a></h3>
+<h3 id="实现验收点-88"><a class="header" href="#实现验收点-88">实现验收点</a></h3>
 <ul>
 <li>拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容。</li>
 <li>镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。</li>
@@ -1734,7 +1758,7 @@ make check
 <p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
 <p>Gateway 和 Cache 组件以 ConfigMap 中的 <code>config</code> JSON 作为唯一配置正文，Secret 字段只保存凭据资源引用。管理 API、组件控制器、站点协调器和组件控制流共用严格解析与校验，避免监听地址、公开地址和限额同时出现在多组扁平键中而发生漂移。</p>
 <p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
-<h3 id="实现验收点-88"><a class="header" href="#实现验收点-88">实现验收点</a></h3>
+<h3 id="实现验收点-89"><a class="header" href="#实现验收点-89">实现验收点</a></h3>
 <ul>
 <li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
 <li>组件配置只从一份 <code>config</code> 正文解析，所有消费方执行相同的未知字段和有效性检查。</li>
@@ -1752,7 +1776,7 @@ make check
 </tbody></table>
 </div>
 <p>测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 对外提供三个测试入口：<code>make test</code> 运行完整的非端到端测试，<code>make test-smoke</code> 快速验证主要后端包，<code>make test-e2e</code> 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。</p>
-<h3 id="实现验收点-89"><a class="header" href="#实现验收点-89">实现验收点</a></h3>
+<h3 id="实现验收点-90"><a class="header" href="#实现验收点-90">实现验收点</a></h3>
 <ul>
 <li>状态机覆盖成功、并发抢占、非当前版本和恢复路径。</li>
 <li>权限测试覆盖对象 ID 篡改、跨用户、跨站点和凭据重放。</li>
@@ -1766,7 +1790,7 @@ make check
 <p>Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata 与 Sysbox 通过同一入口分别执行，使结果明确对应实际 RuntimeClass 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。</p>
 <p>测试开始前检查集群能力、镜像和真实 Gitea 凭据，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。Runtime 内执行的测试及时输出场景开始、结果和失败信息，便于区分外部下载缓慢与执行阻塞。成功后清理测试资源；失败时先收集资源状态、事件和组件日志，再执行清理，诊断文件保留用于定位。</p>
 <p>官方 Feature 会从外部下载软件包和二进制。真实环境测试为此保留有界的下载时间，并让外层测试期限大于内层执行期限，使慢速网络下仍能完成安装和失败清理；普通测试仍使用原有的快速入口。</p>
-<h3 id="实现验收点-90"><a class="header" href="#实现验收点-90">实现验收点</a></h3>
+<h3 id="实现验收点-91"><a class="header" href="#实现验收点-91">实现验收点</a></h3>
 <ul>
 <li>测试开始前检查集群 API、RuntimeClass、StorageClass、镜像和凭据。</li>
 <li>测试集群在执行期间由本轮测试安装的 Manager 控制面协调。</li>
@@ -1781,7 +1805,7 @@ make check
 </ul>
 <h2 id="完成标准"><a class="header" href="#完成标准">完成标准</a></h2>
 <p>一次变更完成时，设计、协议、实现、配置与测试需要描述同一当前行为。格式化、静态检查、适用测试和安全边界验证使用仓库公开入口执行；真实环境中未执行的部分在变更说明中记录原因与风险。</p>
-<h3 id="实现验收点-91"><a class="header" href="#实现验收点-91">实现验收点</a></h3>
+<h3 id="实现验收点-92"><a class="header" href="#实现验收点-92">实现验收点</a></h3>
 <ul>
 <li>审阅者可以从设计验收点定位对应代码和测试。</li>
 <li>配置示例、管理页面和部署清单随实现更新。</li>
@@ -1820,7 +1844,7 @@ make check
 <li><code>patches/</code> 为每个来源 PR 保存逐项迁移记录。</li>
 </ul>
 <p>外层 <code>gitea-dev</code> 使用 <code>main</code> 记录维护文档和内层 Gitea 提交指针。内层功能分支使用 <code>gitea/self</code>，两个仓库的分支职责不同：外层 <code>main</code> 给部署和文档提供稳定入口，内层 <code>self</code> 表达与上游 Gitea 不同的数据库迁移序列。</p>
-<h2 id="实现验收点-92"><a class="header" href="#实现验收点-92">实现验收点</a></h2>
+<h2 id="实现验收点-93"><a class="header" href="#实现验收点-93">实现验收点</a></h2>
 <ul>
 <li>外层仓库当前分支为 <code>main</code>，内层 Gitea 当前分支为 <code>self</code>。</li>
 <li>Gitea 内层 <code>self</code> 的当前头提交为 <code>157dca8bb2</code> 或其后继提交。</li>
@@ -1873,7 +1897,7 @@ newMigration(366, "Add Pages support", v29.AddPagesTables),
 <h2 id="迁移实施方式"><a class="header" href="#迁移实施方式">迁移实施方式</a></h2>
 <p>新迁移直接在对应 <code>modelmigration/vNN</code> 包中实现，并追加到 <code>modelmigration/migrations.go</code> 末尾。编号采用当前最后编号加一；实现复用 Gitea 的数据库抽象和既有多数据库写法。执行失败由原生迁移命令返回具体错误，修复后继续通过同一入口验证。</p>
 <p>当上游对迁移框架本身进行结构调整、导致现有追加方式无法保持连续编号时，维护工作以明确错误停止并重新审阅设计。这个低频场景不预先增加兼容层，因为额外执行器会让安装、启动检查和维护记录产生两套状态，收益小于长期维护成本。</p>
-<h2 id="实现验收点-93"><a class="header" href="#实现验收点-93">实现验收点</a></h2>
+<h2 id="实现验收点-94"><a class="header" href="#实现验收点-94">实现验收点</a></h2>
 <ul>
 <li>迁移列表末尾依次为 364、365、366，没有重复或跳号。</li>
 <li><code>ExpectedDBVersion()</code> 对当前 <code>self</code> 返回 367。</li>
@@ -1904,7 +1928,7 @@ newMigration(366, "Add Pages support", v29.AddPagesTables),
 <li>只包含迁移映射变化的记录提交。</li>
 </ol>
 <p>同时在 <code>patches/</code> 下新增对应文件，说明表结构、编号选择、可接受升级来源和验证入口。表格适合快速查询，逐项文档保留做出选择的原因，两者共同形成完整维护记录。</p>
-<h2 id="实现验收点-94"><a class="header" href="#实现验收点-94">实现验收点</a></h2>
+<h2 id="实现验收点-95"><a class="header" href="#实现验收点-95">实现验收点</a></h2>
 <ul>
 <li>当前映射恰好包含 Codespace 365 和 Pages 366 两项。</li>
 <li>表中迁移来源提交与最初两个合并提交的第二父历史一致，当前已同步 PR 头与本轮两个更新合并提交的第二父提交一致。</li>
@@ -1964,7 +1988,7 @@ git rev-list --parents -n 1 5ccb5d3a0d01dcf96849c7a2eb418140b5bc4f51
 git rev-list --parents -n 1 2117f129acfb41ad2943941899729a3a6022a961
 git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 </code></pre>
-<h2 id="实现验收点-95"><a class="header" href="#实现验收点-95">实现验收点</a></h2>
+<h2 id="实现验收点-96"><a class="header" href="#实现验收点-96">实现验收点</a></h2>
 <ul>
 <li>四个 <code>merge-base --is-ancestor</code> 检查均成功。</li>
 <li><code>6702aa22fe</code> 的两个父提交是 <code>d3021b69ee</code> 和 <code>1c0f24e4fd</code>。</li>
@@ -1979,7 +2003,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <h2 id="一固定同步输入"><a class="header" href="#一固定同步输入">一、固定同步输入</a></h2>
 <p>同步前更新 <code>upstream/main</code> 和仍在维护的 PR 引用，并记录完整提交哈希。完整哈希让维护文档、合并父提交和测试结果指向同一份代码，即使 PR 后续继续提交也不会改变本次记录。</p>
 <p>工作树应处于已提交状态，当前分支为 <code>self</code>。数据库映射表中的最后编号与 <code>modelmigration/migrations.go</code> 末尾需要一致。具备这些输入后，冲突才能明确归属于本轮上游变化，而不是混入尚未记录的本地修改。</p>
-<h3 id="实现验收点-96"><a class="header" href="#实现验收点-96">实现验收点</a></h3>
+<h3 id="实现验收点-97"><a class="header" href="#实现验收点-97">实现验收点</a></h3>
 <ul>
 <li>同步记录包含 <code>upstream/main</code>、相关 PR 和 <code>self</code> 起点的完整提交哈希。</li>
 <li>内外仓库在同步前只包含已经提交的维护历史。</li>
@@ -1995,7 +2019,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <li>生成文件由其项目规定的生成入口重新生成，并与来源输入一起提交。</li>
 </ul>
 <p>如果两个业务实现对同一行为提出互斥语义，维护工作停在未提交的冲突状态，整理可观察行为后重新审阅。这个场景需要产品选择，简单叠加无法得到可靠结果。</p>
-<h3 id="实现验收点-97"><a class="header" href="#实现验收点-97">实现验收点</a></h3>
+<h3 id="实现验收点-98"><a class="header" href="#实现验收点-98">实现验收点</a></h3>
 <ul>
 <li>上游或 PR 更新通过具有两个父提交的合并提交进入 <code>self</code>。</li>
 <li>PR 头已经包含目标上游提交时，该 PR 合并同时承担上游同步记录，提交关系中可以直接追溯目标上游哈希。</li>
@@ -2014,7 +2038,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <li><code>database-versioning.md</code> 的当前期望版本和来源范围。</li>
 </ol>
 <p>数据库编号实际调整时使用独立提交，提交差异只包含迁移列表、迁移文件和直接对应的迁移测试。这样上游业务变化与 <code>self</code> 版本变化可以分别复核；来源迁移不变的同步则保持原映射提交不变。</p>
-<h3 id="实现验收点-98"><a class="header" href="#实现验收点-98">实现验收点</a></h3>
+<h3 id="实现验收点-99"><a class="header" href="#实现验收点-99">实现验收点</a></h3>
 <ul>
 <li>新迁移从现有末尾连续编号，<code>ExpectedDBVersion()</code> 等于最后迁移编号加一。</li>
 <li>文件名中的 PR、<code>self</code> 编号和 <code>patchN</code> 与映射文档一致。</li>
@@ -2025,7 +2049,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <h2 id="四验证与固定外层仓库"><a class="header" href="#四验证与固定外层仓库">四、验证与固定外层仓库</a></h2>
 <p>Gitea 按仓库规范使用 Make 入口完成格式化、Go、模板、前端和 Shell 静态检查，并运行迁移、后端、前端及适用的集成测试。迁移至少验证分叉点数据库可以依次执行所有 <code>self</code> 迁移，以及已知兼容来源只执行剩余迁移。具有 MySQL、PostgreSQL 或 SQL Server 测试环境时，使用 <code>docs/testing.md</code> 给出的对应 Make 入口验证实际方言。端到端测试需要 Playwright 浏览器和系统库；环境不完整时，验证记录写明缺少的运行条件，后续在具备条件的环境补跑。</p>
 <p>验证完成后更新 <code>verification.md</code>，明确记录成功项、环境信息和已确认的上游环境差异。随后在外层 <code>main</code> 分支固定内层 Gitea 提交，并把代码指针与本轮维护文档一起提交。外层 <code>main</code> 是部署和文档入口，内层 <code>gitea/self</code> 承载与上游不同的 Gitea 历史和数据库迁移含义；这个分工使外层使用者始终从 <code>main</code> 取得一套完整、已验证的状态。</p>
-<h3 id="实现验收点-99"><a class="header" href="#实现验收点-99">实现验收点</a></h3>
+<h3 id="实现验收点-100"><a class="header" href="#实现验收点-100">实现验收点</a></h3>
 <ul>
 <li>格式化、静态检查、迁移、后端、前端和定向集成测试使用 Gitea Make 目标执行。</li>
 <li>集成测试结果区分本轮回归与上游基线在同一环境中的结果。</li>
@@ -2035,7 +2059,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <h2 id="五处理低收益异常"><a class="header" href="#五处理低收益异常">五、处理低收益异常</a></h2>
 <p>当来源迁移无法通过连续改号接入，例如上游更换版本存储机制或要求跨分支识别同号迁移内容时，本轮同步直接报告不受支持的来源和冲突编号，并保留可重新开始的干净提交点。维护者在获得明确升级需求后再设计一次性转换。</p>
 <p>这种处理让常规同步始终使用 Gitea 原生机制，同时把极少发生、收益不明确的兼容工作留到真实需求出现时决定，避免长期维护一套没有实际来源使用的第二迁移系统。</p>
-<h3 id="实现验收点-100"><a class="header" href="#实现验收点-100">实现验收点</a></h3>
+<h3 id="实现验收点-101"><a class="header" href="#实现验收点-101">实现验收点</a></h3>
 <ul>
 <li>无法连续映射的来源会得到包含来源分支、数据库版本和冲突编号的明确错误记录。</li>
 <li>同步失败时最后一个已验证提交仍可检出和运行。</li>
@@ -2046,7 +2070,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <h2 id="2026-11-02-更新合并"><a class="header" href="#2026-11-02-更新合并">2026-11-02 更新合并</a></h2>
 <p>Codespace PR #38337 从 <code>1c0f24e4fd</code> 更新到 <code>abd341fa30</code>，Git 自动合并成功。最终相对原 <code>self</code> 修改 12 个文件：8 个文件实现 Codespace 列表按仓库所有者筛选，4 个文件来自共同上游 <code>main@1f51d2c318</code> 的 WebKit 端到端测试调整。没有文件进入人工冲突状态，也没有 <code>modelmigration</code> 差异。</p>
 <p>Pages PR #40071 从 <code>534024baa2</code> 更新到 <code>ca49ed1a84</code>。这个最新头只合并同一个上游 <code>main@1f51d2c318</code>，而其原有 Pages 历史已经由初次合并接入；完成 Codespace 更新后，所需文件内容已经全部存在。因此更新合并提交 <code>157dca8bb2</code> 的文件树与第一父提交 <code>2117f129ac</code> 相同。保留双父提交可以准确记录最新 Pages PR 头已经接入，并为下次同步提供新的共同祖先。</p>
-<h3 id="实现验收点-101"><a class="header" href="#实现验收点-101">实现验收点</a></h3>
+<h3 id="实现验收点-102"><a class="header" href="#实现验收点-102">实现验收点</a></h3>
 <ul>
 <li><code>2117f129ac</code> 的差异恰好包含 12 个文件、168 行新增和 149 行删除，没有迁移文件。</li>
 <li><code>157dca8bb2</code> 的第二父提交为 <code>ca49ed1a84</code>，文件树与第一父提交 <code>2117f129ac</code> 相同。</li>
@@ -2091,7 +2115,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <h2 id="定时任务数量"><a class="header" href="#定时任务数量">定时任务数量</a></h2>
 <p>上游测试环境有 30 个定时任务。Codespace 注册 <code>reconcile_codespaces</code>，Pages 注册 <code>update_pages_branch_sources</code>、<code>verify_pages_domains</code> 和 <code>cleanup_pages</code>，合并后总数为 34。</p>
 <p>Codespace 分支为了读取全部 31 项把 API 请求改为 <code>?limit=50</code>；Pages 分支只检查总数 33，默认响应页仍为 30。合并结果保留 <code>limit=50</code>，并同时断言响应头总数和响应数组长度都是 34，验证四个新增任务确实完成注册。</p>
-<h2 id="实现验收点-102"><a class="header" href="#实现验收点-102">实现验收点</a></h2>
+<h2 id="实现验收点-103"><a class="header" href="#实现验收点-103">实现验收点</a></h2>
 <ul>
 <li>初次合并提交中的人工冲突文件只有本页列出的五个，本轮更新合并没有新增人工冲突文件。</li>
 <li>Pages 仓库路由与 Codespace 比较接口鉴权均可从最终路由表访问。</li>
@@ -2131,7 +2155,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <h2 id="git-与工作树检查"><a class="header" href="#git-与工作树检查">Git 与工作树检查</a></h2>
 <p>Codespace 最新头 <code>abd341fa30</code> 和 Pages 最新头 <code>ca49ed1a84</code> 都是 Gitea <code>self</code> 的祖先。<code>2117f129ac</code> 的父提交为原 <code>self@2fd1c04de5</code> 与最新 Codespace PR 头；<code>157dca8bb2</code> 的父提交为 <code>2117f129ac</code> 与最新 Pages PR 头。Pages 更新合并的文件树与第一父提交相同，完整记录了同步位置而没有重复文件改动。</p>
 <p>本轮代码相对原 <code>self</code> 只修改 12 个来源文件，共 168 行新增、149 行删除，没有迁移差异。<code>make clean</code> 已清理测试生成物，内层 Gitea 工作树保持干净。外层 <code>main</code> 只记录内层提交指针和维护文档。</p>
-<h2 id="实现验收点-103"><a class="header" href="#实现验收点-103">实现验收点</a></h2>
+<h2 id="实现验收点-104"><a class="header" href="#实现验收点-104">实现验收点</a></h2>
 <ul>
 <li>格式化、四项静态检查、迁移测试、后端测试和前端测试均成功退出。</li>
 <li><code>TestCodespace</code>、<code>TestPagesActionsDeploymentAPI</code> 和 <code>TestAPIPagesVersions</code> 三个定向集成测试均通过。</li>
@@ -2165,7 +2189,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <p>迁移还写入默认 Dev Container 模板。模板插入与表创建属于同一来源迁移，使新安装和从分叉点升级得到相同初始配置。</p>
 <h2 id="升级行为"><a class="header" href="#升级行为">升级行为</a></h2>
 <p>数据库版本 365 表示最后完成的迁移是 364，进入 <code>self</code> 时会执行本项并把版本推进到 366，随后执行 Pages 366。明确由 Codespace PR 建立、已经处于版本 366 的数据库具有相同的迁移 365 含义，可以直接执行 Pages 366。</p>
-<h2 id="实现验收点-104"><a class="header" href="#实现验收点-104">实现验收点</a></h2>
+<h2 id="实现验收点-105"><a class="header" href="#实现验收点-105">实现验收点</a></h2>
 <ul>
 <li><code>migrations.go</code> 将 <code>AddCodespaceTables</code> 注册为迁移 365。</li>
 <li>文件名为 <code>pr-38337-v365-patch1.go</code>，编号和来源 PR 与映射表一致。</li>
@@ -2207,7 +2231,7 @@ git rev-list --parents -n 1 157dca8bb2ed416e2277953f03fe6b10cecd6cd0
 <p>这些表共同支持 Gitea 管理版本历史和目标状态，Pages 实例报告实际部署结果。迁移编号变化只安排执行位置，不改变模型职责。</p>
 <h2 id="升级行为-1"><a class="header" href="#升级行为-1">升级行为</a></h2>
 <p>分叉点数据库版本 365 会先执行 Codespace 365，再执行本项。明确来自 Codespace PR 的数据库版本 366 直接执行本项并推进到 367。Pages PR 单独建立的版本 366 已把迁移 365 解释为 Pages，与 <code>self</code> 的编号含义不同，因此使用进入 Pages PR 前的备份按 <code>self</code> 顺序升级。</p>
-<h2 id="实现验收点-105"><a class="header" href="#实现验收点-105">实现验收点</a></h2>
+<h2 id="实现验收点-106"><a class="header" href="#实现验收点-106">实现验收点</a></h2>
 <ul>
 <li><code>migrations.go</code> 将 <code>AddPagesTables</code> 注册为迁移 366，并紧跟 Codespace 365。</li>
 <li>文件名为 <code>pr-40071-v366-patch1.go</code>，<code>v366</code> 表示 <code>self</code> 实际迁移编号。</li>
