@@ -192,12 +192,19 @@
 </ul>
 <h2 id="管理配置与集群投影"><a class="header" href="#管理配置与集群投影">管理配置与集群投影</a></h2>
 <p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
+<p>新建 Gitea 站点时，管理 API 接收显示名称、Gitea 连接地址和注册令牌。服务端先验证站点配额以及模板、Gateway、Cache 的名称和 UID，再调用 Gitea 注册接口；成功后由服务端生成站点资源名，把返回的 Manager ID 写入 <code>GiteaSite</code>，并把运行密钥写入受管 Secret。这个顺序避免无效的本地配置在 Gitea 留下 Manager。注册令牌仅用于该次远程调用，不进入 CR、Secret 或读取响应。站点编辑保留原 Manager 身份和凭据引用，管理页面无需展示或回传这些内部字段。</p>
+<p>站点连接地址用于 Manager 发起控制面请求，适合填写集群能够到达的内部地址。Gitea 返回的规范 Web 地址由控制器在身份检查后写入 Status，供 Gateway 和用户入口使用。两者分别保存是为了支持公开地址与集群网络地址不同的部署，同时保证运行流量不会被意外切换到浏览器入口。</p>
+<p>Gitea 注册已经提交而后续 Kubernetes 写入失败时，两个系统之间没有可用的分布式事务。此时 Gitea 会保留一个尚未连接的 Manager，管理员可在 Gitea 的 Manager 页面删除它；管理 API 不自动重试注册，避免一次请求产生多个身份。</p>
 <p>Gateway 和 Cache 使用集群级 <code>CodespaceComponent</code> 保存声明式配置。组件控制器把配置投影为管理命名空间中的 Deployment、Service、NetworkPolicy、身份 Secret，以及按需创建的 PVC 和 Gateway API Route。Kubernetes API 因此能直接校验字段和角色，管理页面、控制器与组件控制流也读取同一种类型，配置的结构和生命周期保持一致。</p>
 <p>组件凭据保存在由组件 UID 拥有的 Secret 中。UID 是身份边界的原因在于同名资源可以被删除后重建，而新资源不能继承旧组件的证书、SSH 主机密钥或缓存密钥。S3 访问密钥只通过管理 API 写入 Secret，组件列表和 CR 均不返回明文。</p>
 <p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
+<li>新建站点在远程注册前完成所有可本地验证的 Kubernetes 引用检查，资源名和 Manager 身份由服务端生成。</li>
+<li>注册令牌不写入 Kubernetes；运行密钥只写入当前站点拥有的 Secret，管理读取接口不返回明文。</li>
+<li>站点连接地址与 Gitea 返回的规范 Web 地址可以不同；Manager 使用连接地址，控制器把验证后的规范地址写入 Status。</li>
+<li>编辑站点不改变 Manager ID 和凭据引用，并发修改继续通过 UID 与资源版本冲突收敛。</li>
 <li><code>CodespaceComponent</code> 的角色、资源和运行配置由 CRD 与领域校验共同检查，管理页面与控制器使用同一字段模型。</li>
 <li>组件工作负载及凭据绑定当前组件 UID，同名重建不会继承旧身份。</li>
 <li>S3 凭据与 Gateway SSH 主机私钥只保存在 Secret，管理读取接口不返回明文。</li>

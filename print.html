@@ -1290,15 +1290,19 @@ make check
 <li>权限列表保持用户隔离、稳定排序和正确的使用数量；权限收窄或撤销后，列表与实际授权同步变化。</li>
 </ul>
 <h2 id="manager-与调度"><a class="header" href="#manager-与调度">Manager 与调度</a></h2>
-<p>用户或站点管理员先创建并命名 Manager，再生成一次性注册 Secret。Gitea 只保存 Secret 摘要；注册完成后，Manager 声明访问地址、SSH 主机指纹和环境标签。</p>
+<p>Gitea 为站点全局范围和每个用户范围分别维护一个可重复使用的 Manager 注册令牌。管理员从 Codespace Manager 管理面提交 Gitea 地址、注册令牌和显示名称；Gitea 根据令牌确定所有者，在同一事务中创建 Manager 并签发该 Manager 独有的运行密钥。注册响应只返回一次运行密钥，Codespace Manager 将它保存到受管 Kubernetes Secret。Gitea 在数据库保存当前范围注册令牌，Codespace 集群侧只在这次请求中使用它，不写入 CR 或 Secret。</p>
+<p>注册令牌用于批量接入同一管理范围，运行密钥用于区分已经注册的实例。二者分开后，新增 Manager 不需要修改 Gitea 中的预创建记录，轮换注册令牌也不会中断现有 Manager。管理员可以显式重置范围注册令牌；旧令牌随即停止接受新注册，已经签发的运行身份继续有效。</p>
+<p>Manager 注册接口只校验协议版本、注册令牌和名称，不要求运行身份请求头。声明、领取、续期、日志和完成等后续接口都要求 Manager ID 与运行密钥。个人范围令牌只能创建归该用户所有的 Manager，站点令牌创建全局 Manager。</p>
 <p>create 以未绑定状态入队。Manager 拉取任务时提交当前可接受的标签和容量，Gitea 按所有权、标签和排队顺序选择候选，并通过条件更新完成唯一领取。Manager 分配 Runtime UUID 并绑定后，resume、stop 和 delete 都返回同一 Manager。</p>
 <p>环境标签只决定首次调度。已有环境恢复时使用创建时保存的配置，因此标签变化不会隐式迁移环境。</p>
 <p>删除 Manager 会撤销其凭据并清理 Gitea 中绑定的业务记录。确认页面同时说明运行数据需在 Manager 管理面停用对应站点后清理，使业务身份撤销与不可逆的数据删除各自具有明确的操作人和确认步骤。</p>
 <h3 id="实现验收点-59"><a class="header" href="#实现验收点-59">实现验收点</a></h3>
 <ul>
-<li>注册 Secret 只在生成时显示，Gitea 只保存摘要。</li>
+<li>同一范围注册令牌可以注册多个 Manager，每个 Manager 获得不同的运行密钥。</li>
+<li>重置注册令牌后旧令牌不能继续注册，已注册 Manager 的认证保持有效。</li>
+<li>注册请求不需要 Manager 身份，其他 Manager RPC 仍同时校验 ID 和运行密钥。</li>
+<li>个人注册令牌创建的 Manager 归对应用户所有，不能跨用户领取操作。</li>
 <li>并发领取同一操作时只有一个 Manager 成功。</li>
-<li>个人 Manager 只能领取其所有者的操作。</li>
 <li>Runtime UUID 绑定后保持稳定，后续操作不重新调度。</li>
 <li>Manager 删除提示明确区分 Gitea 业务记录和运行平台数据的清理。</li>
 </ul>
@@ -1543,7 +1547,8 @@ make check
 <li>Pod 重建不会丢失 PVC 中的用户数据。</li>
 </ul>
 <h2 id="gitea-业务数据"><a class="header" href="#gitea-业务数据">Gitea 业务数据</a></h2>
-<p>Gitea 保存 Codespace、Manager、Dev Container 模板、运行期凭据、用户 Secret 和附加仓库授权。全局对象与个人对象通过所有者区分，并由查询和数据库约束共同限制可见范围。</p>
+<p>Gitea 保存 Codespace、Manager、Manager 注册令牌、Dev Container 模板、运行期凭据、用户 Secret 和附加仓库授权。全局对象与个人对象通过所有者区分，并由查询和数据库约束共同限制可见范围。</p>
+<p>Manager 注册令牌按所有者范围保存当前有效值，站点全局范围使用所有者 <code>0</code>，个人范围使用用户 ID。令牌只负责创建新的 Manager；每个 Manager 另存带随机盐的运行密钥摘要。范围令牌与实例密钥分开保存，使注册令牌轮换只收紧后续注册入口，不会改变现有实例的身份。删除用户时同时清理其个人注册令牌和 Manager。</p>
 <p>Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与锁定提交、环境、当前状态、操作版本、Manager 与 Runtime 绑定，以及确认后的 Dev Container 来源。仓库配置引用锁定提交中的路径；命名模板保存创建时选定的正文，之后修改模板只影响新环境。</p>
 <p>Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保证全局唯一。它使用规范小写 UUID v4 文本，由 Manager 通过 Go 标准库生成；固定版本和文本形式，使数据库、RPC、路由与 Kubernetes 资源能够直接比较同一运行身份，不需要在各层重复归一化。模型声明这项唯一约束，使普通启动和表重建都能保留它；SQL Server 在模型同步后把普通唯一索引调整为只约束非空 UUID 的过滤索引，因为排队记录尚未分配运行身份。<code>operation_r_version</code> 表示最新生命周期意图，<code>runtime_operation_r_version</code> 表示当前正在运行的实例由哪一次 create 或 resume 建立。两者分开保存，是因为排队中的 stop 已经增加操作版本，但在 stop 完成前访问入口仍应只接受原运行实例的 Metadata。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。</p>
 <h3 id="实现验收点-74"><a class="header" href="#实现验收点-74">实现验收点</a></h3>
@@ -1553,6 +1558,8 @@ make check
 <li>数据库初始化和表重建后，多个空 Runtime UUID 可以并存，重复的非空 Runtime UUID 会被数据库拒绝。</li>
 <li>running 状态始终具有有效的运行实例版本；进入 stopped、failed 或 deleting 后该版本清零。</li>
 <li>创建失败不会留下半条 Codespace、孤立授权或明文凭据。</li>
+<li>每个范围只有最新注册令牌可用于注册；同一有效令牌可以创建多个具有独立密钥摘要的 Manager。</li>
+<li>注册响应之外的查询不返回 Manager 运行密钥，Codespace Manager 不持久化注册令牌。</li>
 <li>模板修改不会改变已有 Codespace 的恢复输入。</li>
 <li>Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。</li>
 </ul>
@@ -1606,11 +1613,15 @@ make check
 <li>公共协议模块只生成 <code>codespace/v1</code>，内部协议只能由 Codespace 导入。</li>
 </ul>
 <h2 id="gitea-控制面"><a class="header" href="#gitea-控制面">Gitea 控制面</a></h2>
-<p>Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。</p>
+<p><code>RegisterManager</code> 使用范围注册令牌换取 Manager ID 和独立运行密钥。该方法不携带 Manager 身份请求头，因为身份正是在这次交换中建立；协议版本、令牌和名称仍在服务端校验。注册令牌可重复用于同一范围的多台 Manager，运行密钥只属于一次注册结果。这样管理面可以直接完成接入，而后续所有 RPC 仍具有稳定、可撤销的实例身份。</p>
+<p>注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。</p>
 <p>没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。</p>
 <p>ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公共协议包中的常量。传输限制与 Kubernetes 单个持久化对象的大小限制分别生效：前者容纳资源清单等批量消息，后者控制资源保存成本。</p>
 <h3 id="实现验收点-78"><a class="header" href="#实现验收点-78">实现验收点</a></h3>
 <ul>
+<li><code>RegisterManager</code> 只接受有效范围注册令牌并返回新的 Manager ID、运行密钥、规范名称和 Gitea Web 地址。</li>
+<li>除 <code>RegisterManager</code> 外，ManagerService 方法都要求有效的 Manager ID 与运行密钥。</li>
+<li>注册令牌重置不改变已经签发的运行身份。</li>
 <li>Manager 凭据只能操作对应的 Manager 记录。</li>
 <li>领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。</li>
 <li>每个 Runtime UUID 只绑定一个 Codespace，未绑定请求可以正常排队。</li>
@@ -1694,7 +1705,7 @@ make check
 <h2 id="身份容量与恢复"><a class="header" href="#身份容量与恢复">身份、容量与恢复</a></h2>
 <p>Manager 维护安装级内部 CA，并直接为 Manager、Agent、Gateway 和 Cache 签发短期证书。根 CA 代表当前管理命名空间的稳定信任边界，签发 CA 定期轮换，工作负载证书绑定站点、Codespace、Pod 或组件的 Kubernetes UID。内部连接同时验证统一信任链、证书用途和 URI 身份，使同名重建的资源不能沿用旧证书。</p>
 <p>根 CA 有效期为 10 年，用于保持安装恢复所需的信任边界；签发 CA 有效期为 1 年并提前 30 天轮换，用于减少长期在线私钥的暴露范围；工作负载证书有效期为 24 小时并提前 8 小时轮换，使短期控制面故障仍有恢复窗口。轮换只更新 Secret 或 Manager 内存中的证书，Pod 模板不包含证书内容摘要，因此普通轮换不会重建正在运行的工作负载。</p>
-<p>内部 CA 保存在管理命名空间的 Kubernetes Secret 中。Manager 首次启动时通过 Kubernetes API 原子创建，多个副本读取同一份结果；随后 Manager 使用内存服务器证书启动内部双向 TLS 接口。CA Secret 缺失但已经存在受管资源时，Manager 要求从备份恢复，而不是生成新的信任根。生产集群需要为 Secret 启用静态数据加密，并把内部 CA、管理员令牌、Gitea 注册 Secret、Gateway SSH 主机密钥、对象存储凭据和镜像凭据纳入备份与轮换。</p>
+<p>内部 CA 保存在管理命名空间的 Kubernetes Secret 中。Manager 首次启动时通过 Kubernetes API 原子创建，多个副本读取同一份结果；随后 Manager 使用内存服务器证书启动内部双向 TLS 接口。CA Secret 缺失但已经存在受管资源时，Manager 要求从备份恢复，而不是生成新的信任根。生产集群需要为 Secret 启用静态数据加密，并把内部 CA、管理员令牌、各 Gitea 站点的 Manager 运行密钥、Gateway SSH 主机密钥、对象存储凭据和镜像凭据纳入备份与轮换。Gitea 范围注册令牌保存在 Gitea 数据库，不属于 Kubernetes 备份。</p>
 <p>证书 URI 使用同一信任域并直接表达资源身份：Manager 使用 <code>spiffe://codespace/manager/&lt;management-namespace-uid&gt;</code>，Agent 使用 <code>spiffe://codespace/agent/&lt;site-uid&gt;/&lt;codespace-uid&gt;/&lt;pod-uid&gt;</code>，Gateway 和 Cache 分别使用 <code>spiffe://codespace/gateway/&lt;component-uid&gt;</code> 与 <code>spiffe://codespace/cache/&lt;component-uid&gt;</code>。管理命名空间、站点、Codespace、Pod 或组件同名重建后会获得新的 Kubernetes UID，因此旧证书不能代表新资源。URI 的构造和解析由同一个身份模块完成，使签发方、Manager、Agent 和 Gateway 使用完全相同的路径结构。</p>
 <p>浏览器访问管理页面和 Codespace Endpoint 使用集群入口的外部 HTTPS。Ingress 或 Gateway Listener 引用的 TLS Secret 可以由 cert-manager、云平台证书控制器或集群管理员维护；它不参与内部组件身份。SSH 使用独立的 Gateway 主机密钥。</p>
 <p>环境模板定义单个 Runtime 的资源请求，Gitea 站点定义总配额。Manager 统计实际资源和正在创建的任务，Kubernetes 调度器负责节点放置。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。</p>
@@ -1781,12 +1792,19 @@ make check
 </ul>
 <h2 id="管理配置与集群投影"><a class="header" href="#管理配置与集群投影">管理配置与集群投影</a></h2>
 <p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
+<p>新建 Gitea 站点时，管理 API 接收显示名称、Gitea 连接地址和注册令牌。服务端先验证站点配额以及模板、Gateway、Cache 的名称和 UID，再调用 Gitea 注册接口；成功后由服务端生成站点资源名，把返回的 Manager ID 写入 <code>GiteaSite</code>，并把运行密钥写入受管 Secret。这个顺序避免无效的本地配置在 Gitea 留下 Manager。注册令牌仅用于该次远程调用，不进入 CR、Secret 或读取响应。站点编辑保留原 Manager 身份和凭据引用，管理页面无需展示或回传这些内部字段。</p>
+<p>站点连接地址用于 Manager 发起控制面请求，适合填写集群能够到达的内部地址。Gitea 返回的规范 Web 地址由控制器在身份检查后写入 Status，供 Gateway 和用户入口使用。两者分别保存是为了支持公开地址与集群网络地址不同的部署，同时保证运行流量不会被意外切换到浏览器入口。</p>
+<p>Gitea 注册已经提交而后续 Kubernetes 写入失败时，两个系统之间没有可用的分布式事务。此时 Gitea 会保留一个尚未连接的 Manager，管理员可在 Gitea 的 Manager 页面删除它；管理 API 不自动重试注册，避免一次请求产生多个身份。</p>
 <p>Gateway 和 Cache 使用集群级 <code>CodespaceComponent</code> 保存声明式配置。组件控制器把配置投影为管理命名空间中的 Deployment、Service、NetworkPolicy、身份 Secret，以及按需创建的 PVC 和 Gateway API Route。Kubernetes API 因此能直接校验字段和角色，管理页面、控制器与组件控制流也读取同一种类型，配置的结构和生命周期保持一致。</p>
 <p>组件凭据保存在由组件 UID 拥有的 Secret 中。UID 是身份边界的原因在于同名资源可以被删除后重建，而新资源不能继承旧组件的证书、SSH 主机密钥或缓存密钥。S3 访问密钥只通过管理 API 写入 Secret，组件列表和 CR 均不返回明文。</p>
 <p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
 <h3 id="实现验收点-89"><a class="header" href="#实现验收点-89">实现验收点</a></h3>
 <ul>
 <li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
+<li>新建站点在远程注册前完成所有可本地验证的 Kubernetes 引用检查，资源名和 Manager 身份由服务端生成。</li>
+<li>注册令牌不写入 Kubernetes；运行密钥只写入当前站点拥有的 Secret，管理读取接口不返回明文。</li>
+<li>站点连接地址与 Gitea 返回的规范 Web 地址可以不同；Manager 使用连接地址，控制器把验证后的规范地址写入 Status。</li>
+<li>编辑站点不改变 Manager ID 和凭据引用，并发修改继续通过 UID 与资源版本冲突收敛。</li>
 <li><code>CodespaceComponent</code> 的角色、资源和运行配置由 CRD 与领域校验共同检查，管理页面与控制器使用同一字段模型。</li>
 <li>组件工作负载及凭据绑定当前组件 UID，同名重建不会继承旧身份。</li>
 <li>S3 凭据与 Gateway SSH 主机私钥只保存在 Secret，管理读取接口不返回明文。</li>
