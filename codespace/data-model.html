@@ -160,7 +160,7 @@
 <h2 id="数据归属"><a class="header" href="#数据归属">数据归属</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>数据层</th><th>权威内容</th><th>恢复方式</th></tr></thead><tbody>
 <tr><td>Gitea 数据库</td><td>所有权、仓库提交、授权、业务状态、操作和 Manager 绑定</td><td>从数据库恢复</td></tr>
-<tr><td>Kubernetes API</td><td>站点、环境模板、运行意图和资源状态</td><td>由 Manager 控制器重新核对</td></tr>
+<tr><td>Kubernetes API</td><td>站点、环境模板、组件、运行意图和资源状态</td><td>由 Manager 控制器重新核对</td></tr>
 <tr><td>Codespace PVC</td><td>工作区、Git 私钥、内部 Docker 和 IDE 数据</td><td>由新的 Runtime Pod 重新挂载</td></tr>
 <tr><td>组件内存</td><td>连接、Leader 工作集和短期授权缓存</td><td>从权威来源重建</td></tr>
 </tbody></table>
@@ -188,12 +188,14 @@
 <li>Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。</li>
 </ul>
 <h2 id="平台数据"><a class="header" href="#平台数据">平台数据</a></h2>
-<p><code>GiteaSite</code> 和 <code>EnvironmentTemplate</code> 是集群级资源；Codespace CR 位于站点命名空间。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。</p>
+<p><code>GiteaSite</code>、<code>EnvironmentTemplate</code> 和 <code>CodespaceComponent</code> 是集群级资源；Codespace CR 位于站点命名空间。集群级组件适合被多个站点按 UID 引用，组件工作负载仍位于管理命名空间，避免把平台入口和缓存复制到每个站点。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。</p>
 <p>PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。</p>
 <p>块卷初始化事实保存于 CR Status，与已有卷 UID 绑定：空值表示尚未发放格式化许可，<code>started</code> 表示已经发放，<code>ready</code> 表示文件系统检查并挂载成功。该事实不能从 PVC 中的文件推导，因为格式化可能在创建第一个文件前中断；它随 CR 保留，直到数据删除流程完成。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>不同站点的 Codespace 资源位于不同命名空间。</li>
+<li>站点通过名称和 UID 引用 Gateway、Cache 与环境模板，同名重建的资源不会自动取得旧授权。</li>
+<li>组件配置位于 <code>CodespaceComponent</code>，组件凭据位于管理命名空间中由当前组件 UID 拥有的 Secret。</li>
 <li>CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。</li>
 <li>删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。</li>
 <li>Cache 丢失后可以回源，不影响 PVC 中的环境数据。</li>
