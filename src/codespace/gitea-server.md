@@ -43,7 +43,11 @@ Codespace Token 由独立认证方法优先识别。通用 Token scope 与凭据
 
 ## Manager 与调度
 
-用户或站点管理员先创建并命名 Manager，再生成一次性注册 Secret。Gitea 只保存 Secret 摘要；注册完成后，Manager 声明访问地址、SSH 主机指纹和环境标签。
+Gitea 为站点全局范围和每个用户范围分别维护一个可重复使用的 Manager 注册令牌。管理员从 Codespace Manager 管理面提交 Gitea 地址、注册令牌和显示名称；Gitea 根据令牌确定所有者，在同一事务中创建 Manager 并签发该 Manager 独有的运行密钥。注册响应只返回一次运行密钥，Codespace Manager 将它保存到受管 Kubernetes Secret。Gitea 在数据库保存当前范围注册令牌，Codespace 集群侧只在这次请求中使用它，不写入 CR 或 Secret。
+
+注册令牌用于批量接入同一管理范围，运行密钥用于区分已经注册的实例。二者分开后，新增 Manager 不需要修改 Gitea 中的预创建记录，轮换注册令牌也不会中断现有 Manager。管理员可以显式重置范围注册令牌；旧令牌随即停止接受新注册，已经签发的运行身份继续有效。
+
+Manager 注册接口只校验协议版本、注册令牌和名称，不要求运行身份请求头。声明、领取、续期、日志和完成等后续接口都要求 Manager ID 与运行密钥。个人范围令牌只能创建归该用户所有的 Manager，站点令牌创建全局 Manager。
 
 create 以未绑定状态入队。Manager 拉取任务时提交当前可接受的标签和容量，Gitea 按所有权、标签和排队顺序选择候选，并通过条件更新完成唯一领取。Manager 分配 Runtime UUID 并绑定后，resume、stop 和 delete 都返回同一 Manager。
 
@@ -53,9 +57,11 @@ create 以未绑定状态入队。Manager 拉取任务时提交当前可接受�
 
 ### 实现验收点
 
-- 注册 Secret 只在生成时显示，Gitea 只保存摘要。
+- 同一范围注册令牌可以注册多个 Manager，每个 Manager 获得不同的运行密钥。
+- 重置注册令牌后旧令牌不能继续注册，已注册 Manager 的认证保持有效。
+- 注册请求不需要 Manager 身份，其他 Manager RPC 仍同时校验 ID 和运行密钥。
+- 个人注册令牌创建的 Manager 归对应用户所有，不能跨用户领取操作。
 - 并发领取同一操作时只有一个 Manager 成功。
-- 个人 Manager 只能领取其所有者的操作。
 - Runtime UUID 绑定后保持稳定，后续操作不重新调度。
 - Manager 删除提示明确区分 Gitea 业务记录和运行平台数据的清理。
 

@@ -24,7 +24,9 @@ Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端�
 
 ## Gitea 控制面
 
-Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。
+`RegisterManager` 使用范围注册令牌换取 Manager ID 和独立运行密钥。该方法不携带 Manager 身份请求头，因为身份正是在这次交换中建立；协议版本、令牌和名称仍在服务端校验。注册令牌可重复用于同一范围的多台 Manager，运行密钥只属于一次注册结果。这样管理面可以直接完成接入，而后续所有 RPC 仍具有稳定、可撤销的实例身份。
+
+注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。
 
 没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。
 
@@ -32,6 +34,9 @@ ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公�
 
 ### 实现验收点
 
+- `RegisterManager` 只接受有效范围注册令牌并返回新的 Manager ID、运行密钥、规范名称和 Gitea Web 地址。
+- 除 `RegisterManager` 外，ManagerService 方法都要求有效的 Manager ID 与运行密钥。
+- 注册令牌重置不改变已经签发的运行身份。
 - Manager 凭据只能操作对应的 Manager 记录。
 - 领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。
 - 每个 Runtime UUID 只绑定一个 Codespace，未绑定请求可以正常排队。

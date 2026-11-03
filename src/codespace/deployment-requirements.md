@@ -60,7 +60,7 @@ Manager 维护安装级内部 CA，并直接为 Manager、Agent、Gateway 和 Ca
 
 根 CA 有效期为 10 年，用于保持安装恢复所需的信任边界；签发 CA 有效期为 1 年并提前 30 天轮换，用于减少长期在线私钥的暴露范围；工作负载证书有效期为 24 小时并提前 8 小时轮换，使短期控制面故障仍有恢复窗口。轮换只更新 Secret 或 Manager 内存中的证书，Pod 模板不包含证书内容摘要，因此普通轮换不会重建正在运行的工作负载。
 
-内部 CA 保存在管理命名空间的 Kubernetes Secret 中。Manager 首次启动时通过 Kubernetes API 原子创建，多个副本读取同一份结果；随后 Manager 使用内存服务器证书启动内部双向 TLS 接口。CA Secret 缺失但已经存在受管资源时，Manager 要求从备份恢复，而不是生成新的信任根。生产集群需要为 Secret 启用静态数据加密，并把内部 CA、管理员令牌、Gitea 注册 Secret、Gateway SSH 主机密钥、对象存储凭据和镜像凭据纳入备份与轮换。
+内部 CA 保存在管理命名空间的 Kubernetes Secret 中。Manager 首次启动时通过 Kubernetes API 原子创建，多个副本读取同一份结果；随后 Manager 使用内存服务器证书启动内部双向 TLS 接口。CA Secret 缺失但已经存在受管资源时，Manager 要求从备份恢复，而不是生成新的信任根。生产集群需要为 Secret 启用静态数据加密，并把内部 CA、管理员令牌、各 Gitea 站点的 Manager 运行密钥、Gateway SSH 主机密钥、对象存储凭据和镜像凭据纳入备份与轮换。Gitea 范围注册令牌保存在 Gitea 数据库，不属于 Kubernetes 备份。
 
 证书 URI 使用同一信任域并直接表达资源身份：Manager 使用 `spiffe://codespace/manager/<management-namespace-uid>`，Agent 使用 `spiffe://codespace/agent/<site-uid>/<codespace-uid>/<pod-uid>`，Gateway 和 Cache 分别使用 `spiffe://codespace/gateway/<component-uid>` 与 `spiffe://codespace/cache/<component-uid>`。管理命名空间、站点、Codespace、Pod 或组件同名重建后会获得新的 Kubernetes UID，因此旧证书不能代表新资源。URI 的构造和解析由同一个身份模块完成，使签发方、Manager、Agent 和 Gateway 使用完全相同的路径结构。
 

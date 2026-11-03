@@ -4,9 +4,9 @@ Gitea owns authorization and lifecycle state. A separately deployed [Codespace M
 
 ## Screenshots
 
-![Codespace creation review](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-create.png)
-![Codespace Manager administration](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-managers.png)
-![Codespace Web IDE](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-web-ide.png?v=22db4df)
+![Codespace creation review](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-create.png?v=20261104)
+![Codespace Manager administration](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-managers.png?v=20261104)
+![Codespace Web IDE](https://raw.githubusercontent.com/ExplodingDragon/gitea-dev/main/pr/codespace-web-ide.png?v=20261104)
 
 Close https://github.com/go-gitea/gitea/issues/27766
 Close https://github.com/go-gitea/gitea/issues/33904

@@ -22,7 +22,9 @@
 
 ## Gitea 业务数据
 
-Gitea 保存 Codespace、Manager、Dev Container 模板、运行期凭据、用户 Secret 和附加仓库授权。全局对象与个人对象通过所有者区分，并由查询和数据库约束共同限制可见范围。
+Gitea 保存 Codespace、Manager、Manager 注册令牌、Dev Container 模板、运行期凭据、用户 Secret 和附加仓库授权。全局对象与个人对象通过所有者区分，并由查询和数据库约束共同限制可见范围。
+
+Manager 注册令牌按所有者范围保存当前有效值，站点全局范围使用所有者 `0`，个人范围使用用户 ID。令牌只负责创建新的 Manager；每个 Manager 另存带随机盐的运行密钥摘要。范围令牌与实例密钥分开保存，使注册令牌轮换只收紧后续注册入口，不会改变现有实例的身份。删除用户时同时清理其个人注册令牌和 Manager。
 
 Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与锁定提交、环境、当前状态、操作版本、Manager 与 Runtime 绑定，以及确认后的 Dev Container 来源。仓库配置引用锁定提交中的路径；命名模板保存创建时选定的正文，之后修改模板只影响新环境。
 
@@ -35,6 +37,8 @@ Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保�
 - 数据库初始化和表重建后，多个空 Runtime UUID 可以并存，重复的非空 Runtime UUID 会被数据库拒绝。
 - running 状态始终具有有效的运行实例版本；进入 stopped、failed 或 deleting 后该版本清零。
 - 创建失败不会留下半条 Codespace、孤立授权或明文凭据。
+- 每个范围只有最新注册令牌可用于注册；同一有效令牌可以创建多个具有独立密钥摘要的 Manager。
+- 注册响应之外的查询不返回 Manager 运行密钥，Codespace Manager 不持久化注册令牌。
 - 模板修改不会改变已有 Codespace 的恢复输入。
 - Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。
 
