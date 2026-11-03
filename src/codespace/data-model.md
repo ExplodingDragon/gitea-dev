@@ -7,7 +7,7 @@
 | 数据层         | 权威内容                                              | 恢复方式                    |
 | -------------- | ----------------------------------------------------- | --------------------------- |
 | Gitea 数据库   | 所有权、仓库提交、授权、业务状态、操作和 Manager 绑定 | 从数据库恢复                |
-| Kubernetes API | 站点、环境模板、运行意图和资源状态                    | 由 Manager 控制器重新核对   |
+| Kubernetes API | 站点、环境模板、组件、运行意图和资源状态              | 由 Manager 控制器重新核对   |
 | Codespace PVC  | 工作区、Git 私钥、内部 Docker 和 IDE 数据             | 由新的 Runtime Pod 重新挂载 |
 | 组件内存       | 连接、Leader 工作集和短期授权缓存                     | 从权威来源重建              |
 
@@ -40,7 +40,7 @@ Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保�
 
 ## 平台数据
 
-`GiteaSite` 和 `EnvironmentTemplate` 是集群级资源；Codespace CR 位于站点命名空间。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。
+`GiteaSite`、`EnvironmentTemplate` 和 `CodespaceComponent` 是集群级资源；Codespace CR 位于站点命名空间。集群级组件适合被多个站点按 UID 引用，组件工作负载仍位于管理命名空间，避免把平台入口和缓存复制到每个站点。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。
 
 PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。
 
@@ -49,6 +49,8 @@ PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC�
 ### 实现验收点
 
 - 不同站点的 Codespace 资源位于不同命名空间。
+- 站点通过名称和 UID 引用 Gateway、Cache 与环境模板，同名重建的资源不会自动取得旧授权。
+- 组件配置位于 `CodespaceComponent`，组件凭据位于管理命名空间中由当前组件 UID 拥有的 Secret。
 - CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。
 - 删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。
 - Cache 丢失后可以回源，不影响 PVC 中的环境数据。

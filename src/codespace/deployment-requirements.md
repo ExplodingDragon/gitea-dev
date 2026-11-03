@@ -4,7 +4,7 @@
 
 ## Kubernetes 基础能力
 
-Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass、Service，以及入口使用的 Ingress 或 Gateway API。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。
+Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass 和 Service；使用 Gateway API 暴露 Codespace 时还需要已配置的 Gateway 与监听器。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。Gateway 与 Cache 在管理页面创建后由 Manager 部署，因此 Helm 只负责控制面，不需要预先知道组件数量和域名。
 
 管理服务默认为 `ClusterIP`，首次配置通过 `kubectl port-forward` 完成。Manager 多副本使用 Lease 选举；健康副本保持 Ready，内部 RPC 与管理服务只选择当前 Leader。Ready 表示副本可以参与接替，Leader 标签表示副本可以处理有状态请求，这两个信号分别服务可用性和单写者约束。
 
@@ -14,6 +14,8 @@ Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、
 - 默认安装只提供集群内管理入口，端口转发可以完成首次配置。
 - 内部 RPC 与管理服务只把流量发送给当前 Leader。
 - Leader 和 Cache 维护 Lease 位于管理命名空间。
+- Helm 安装后存在 `GiteaSite`、`EnvironmentTemplate`、`CodespaceComponent` 和 `Codespace` 四类 CRD。
+- Manager 可以读取现有 Gateway，并只能创建和维护组件对应的 HTTPRoute 与 TCPRoute。
 
 ## 隔离、存储与设备
 
@@ -34,7 +36,7 @@ Manager、Gateway、Cache 和 Runtime 使用同一个平台镜像引用，但作
 
 标签模式在创建 Pod 时检查最新镜像。Manager、Gateway 和 Cache 会随每次平台构建滚动更新，用户 Runtime 保持运行，直到普通生命周期操作需要创建新的 Pod。摘要模式始终引用同一内容，适合生产和故障复现。这样既能让开发集群及时取得更新，也不会为了刷新标签而中断用户会话。
 
-Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS、TLS 和监听器由集群入口管理。
+Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。文件系统 Cache 的 PVC 与组件同名并由组件拥有；改用 S3 后控制器回收这块缓存卷。每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS、TLS 和监听器由集群入口管理，父 Gateway 与监听器在各 Gateway 组件中选择。
 
 ### 实现验收点
 
@@ -45,6 +47,7 @@ Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使�
 - Runtime 无法访问其他站点的 Runtime 网络。
 - HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。
 - Cache 清空后可以在原授权范围内回源。
+- 文件系统与 S3 缓存使用同一授权流程，切换后只保留当前后端所需的工作负载资源。
 
 ## 身份、容量与恢复
 
@@ -64,7 +67,7 @@ Manager 维护安装级内部 CA，并直接为 Manager、Agent、Gateway 和 Ca
 
 ### 实现验收点
 
-- Secret 不出现在 ConfigMap、CR、标签或普通日志中。
+- 长期凭据只保存在对应 Kubernetes Secret 或 Gitea 加密字段中，CR、标签和普通日志只保存非敏感引用。
 - Manager 首次启动后生成唯一的安装级内部 CA，多副本不会产生不同信任根。
 - 平台证书包含证书、私钥和 CA 信任链，并绑定当前 Kubernetes UID 和正确的客户端或服务器用途。
 - Manager、Agent、Gateway 和 Cache 对同一张证书 URI 得到一致的角色与资源 UID，额外或缺失的路径段不能通过身份校验。

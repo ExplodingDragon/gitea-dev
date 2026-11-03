@@ -8,6 +8,8 @@ Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接
 
 `EnvironmentTemplate` 定义 RuntimeClass、资源、存储、Git SSH 密钥类型和 Dev Container 附加配置。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改，Secret 使用只写接口。
 
+`CodespaceComponent` 定义一个 Gateway 或 Cache。组件是集群级资源，因为多个站点可以引用同一个平台入口或缓存；它生成的 Pod、Service、NetworkPolicy、身份 Secret 和缓存卷集中在管理命名空间。站点保存组件名称和 UID，Manager 在建立控制流和投影路由时再次核对角色与 UID，因此删除后创建的同名组件不会接管旧站点关系。
+
 ### 实现验收点
 
 - Manager 只连接一个 Kubernetes API。
@@ -15,6 +17,8 @@ Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接
 - Manager、Gateway、Cache 和 Runtime 使用同一份显式标签或摘要镜像引用。
 - 模板更新只影响新环境；摘要模式下平台升级也只影响新环境。
 - 管理 API 不返回长期 Secret 明文。
+- 一个组件声明只选择 Gateway 或 Cache 角色，控制器能从声明恢复对应工作负载。
+- 站点引用、组件证书和凭据均绑定组件 UID。
 
 ## Runtime 与持久数据
 
@@ -48,11 +52,13 @@ Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。它从 Manager 获取当�
 
 路由快照只包含当前 Gateway UID 关联的已就绪站点，以及这些站点命名空间中绑定有效、Pod 和访问目标可用的实例。Manager 使用组件 UID、站点 Gateway UID 和实例 Site UID 的缓存索引定位候选，避免每个 Gateway 周期扫描整个集群。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。
 
-Gateway SSH 主机密钥由 Manager 生成，私钥保存在 Kubernetes Secret 中。轮换时创建新的 Secret 和 Gateway 工作负载，再发布新的公钥指纹。Agent 提供 PTY、命令、SFTP、HTTP Endpoint 和回环端口转发；Dev Container 通过本地 Unix socket 管理 Endpoint。
+Gateway SSH 主机密钥由 Manager 生成，私钥保存在 Kubernetes Secret 中。轮换时 Manager 更新当前组件拥有的 Secret，凭据资源版本随 Pod 模板变化并触发 Gateway 滚动更新，再发布新的公钥指纹。使用固定 Secret 名称可以让 Deployment 始终引用当前组件的密钥，组件 UID 与所有者关系则防止同名重建后继承旧密钥。Agent 提供 PTY、命令、SFTP、HTTP Endpoint 和回环端口转发；Dev Container 通过本地 Unix socket 管理 Endpoint。
 
 SSH 命令正常退出时先有界排空输出再发送退出状态；断连时同时关闭 RPC 与本地管道，释放被慢客户端阻塞的读取和写入。完成通知可以重复观察，重复关闭保持幂等。TCP 的输入半关闭仍允许读取剩余响应，避免截断请求完成后的数据。
 
 外部 DNS、TLS 和监听器由 Kubernetes Ingress 或 Gateway API 管理，使应用授权与平台证书分别由对应组件负责。
+
+Gateway 组件可以引用一个现有 Gateway API `Gateway` 及监听器名称。Manager 只读取父 Gateway 验证监听协议，并为该组件维护 HTTPRoute 和可选 TCPRoute；未填写父 Gateway 时，组件仍提供集群内 Service，由集群管理员使用其他入口方式暴露。父监听器属于单个 Gateway 组件的部署选择，放在组件配置中可以让同一集群的多个入口使用不同域名和监听器。
 
 ### 实现验收点
 
@@ -64,6 +70,8 @@ SSH 命令正常退出时先有界排空输出再发送退出状态；断连时�
 - 每张票据只绑定一种访问能力。
 - 本地端口转发只访问当前 Dev Container 的回环地址。
 - Pod 或目标版本变化后，旧路由和票据失效。
+- 配置父 Gateway 时，HTTP 监听器与可选 SSH 监听器存在且协议匹配，Manager 只维护当前组件拥有的 Route。
+- 取消父 Gateway 或 SSH 监听器后，对应 Route 被控制器清理，组件 Service 保持可用。
 
 ## Cache
 
