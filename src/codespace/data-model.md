@@ -30,6 +30,8 @@ Codespace 保存恢复业务状态所需的确定输入：所有者、仓库与�
 
 Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保证全局唯一。它使用规范小写 UUID v4 文本，由 Manager 通过 Go 标准库生成；固定版本和文本形式，使数据库、RPC、路由与 Kubernetes 资源能够直接比较同一运行身份，不需要在各层重复归一化。模型声明这项唯一约束，使普通启动和表重建都能保留它；SQL Server 在模型同步后把普通唯一索引调整为只约束非空 UUID 的过滤索引，因为排队记录尚未分配运行身份。`operation_r_version` 表示最新生命周期意图，`runtime_operation_r_version` 表示当前正在运行的实例由哪一次 create 或 resume 建立。两者分开保存，是因为排队中的 stop 已经增加操作版本，但在 stop 完成前访问入口仍应只接受原运行实例的 Metadata。用户 Secret 加密保存，列表只返回名称与适用范围。Open Code 只保存摘要、目标和过期时间，并由数据库事务一次消费。运行材料按当前权限签发，不作为 Codespace 快照长期保存。
 
+操作创建时间和开始时间分别表达排队与已领取，执行截止时间是 Gitea 保存的当前租约边界。Manager 报告已经持久化的当前版本后，Gitea 才更新截止时间；重新下发未观察操作只读取剩余时间。尚未领取的操作没有执行截止时间：create 等待可用容量并允许用户删除，resume 等待原 Manager 并允许用户取消。`manager_id` 表示当前领取者，不代表 Runtime 已经绑定；已领取但尚未绑定的 create 被确定拒绝或执行超时后会清除该字段，使 failed 记录不继续占用已经结束的执行身份。
+
 ### 实现验收点
 
 - 多个未领取的 Codespace 可以同时排队，每个已绑定 Runtime UUID 只对应一个 Codespace。
@@ -40,11 +42,16 @@ Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保�
 - 每个范围只有最新注册令牌可用于注册；同一有效令牌可以创建多个具有独立密钥摘要的 Manager。
 - 注册响应之外的查询不返回 Manager 运行密钥，Codespace Manager 不持久化注册令牌。
 - 模板修改不会改变已有 Codespace 的恢复输入。
+- 未领取的 create 在容量不足时保持排队并可删除；未领取的 resume 可以取消并回到 stopped。
+- 未观察 operation 的重新下发不改变执行截止时间，精确观察当前版本后才更新租约。
+- 未绑定 create 失败后 Runtime UUID 保持为空，Manager 绑定被清除，业务记录保留为可诊断的 failed 状态。
 - Secret、Open Code 和运行期 Token 的明文不会出现在列表、日志或普通读取接口中。
 
 ## 平台数据
 
-`GiteaSite`、`EnvironmentTemplate` 和 `CodespaceComponent` 是集群级资源；Codespace CR 位于站点命名空间。集群级组件适合被多个站点按 UID 引用，组件工作负载仍位于管理命名空间，避免把平台入口和缓存复制到每个站点。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。
+`GiteaSite`、`EnvironmentTemplate` 和 `CodespaceComponent` 是集群级资源；Codespace CR 位于站点命名空间。集群级组件适合被多个站点按 UID 引用，组件工作负载仍位于管理命名空间，避免把平台入口和缓存复制到每个站点。环境模板使用 `metadata.name` 作为 Gitea 环境标签，站点用名称和 UID 引用它；这让管理页面、Manager 声明、Gitea 调度和 Runtime 快照比较同一个标识，也允许多个站点安全共享同一模板。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。
+
+环境模板保存 Dev Container 平台附加配置、完整的出站代理 URL、直连目标和附加 CA，这些内容共同决定工作负载的构建和运行行为，适合由声明资源持续协调。平台附加配置包括 Web IDE、Features 和一份生命周期脚本；脚本以 `build`、`start`、`stop` 参数区分最终镜像构建、每次启动和正常停止。代理需要认证时，用户名和密码使用标准 URL 用户信息表示；管理页面可以读取和编辑完整 URL，因为它本身就是管理员维护的运行配置，运行进程也必须取得同一值。创建 Codespace 时，Manager 把完整模板运行配置写入 `Codespace.Spec.Runtime` 快照，并从该快照生成 Codespace 自有代理 Secret；Pod 只引用 Secret 键。Cache 的代理配置则从组件声明投影到组件已有的 Secret。采用实例快照的原因是模板修改只应影响后续创建，已有 Codespace 在停止、恢复和 Pod 重建后仍需要使用创建时已经确认的镜像、脚本和网络环境。
 
 PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。
 
@@ -53,8 +60,12 @@ PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC�
 ### 实现验收点
 
 - 不同站点的 Codespace 资源位于不同命名空间。
+- 环境模板只使用 `metadata.name` 作为环境标签，管理页面、站点引用、Manager 声明和 Runtime 快照看到同一名称。
 - 站点通过名称和 UID 引用 Gateway、Cache 与环境模板，同名重建的资源不会自动取得旧授权。
 - 组件配置位于 `CodespaceComponent`，组件凭据位于管理命名空间中由当前组件 UID 拥有的 Secret。
+- 完整代理 URL、直连目标和 CA 可以从环境模板或 Cache 组件审计，运行 Secret 只保存可从对应声明或 Codespace 快照重新生成的环境投影。
+- Codespace 创建后拥有独立代理 Secret，模板代理 URL 或 CA 的后续修改不会改变已有环境，Pod 重建继续使用同一快照。
+- 生命周期脚本与环境模板一起进入 Codespace 运行快照；模板后续修改只影响新建实例。
 - CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。
 - 删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。
 - Cache 丢失后可以回源，不影响 PVC 中的环境数据。
@@ -66,16 +77,19 @@ Gitea ID 表示业务关系，Runtime UUID 表示跨站点运行身份，操作�
 
 创建事务原子保存 Codespace、初始操作和用户确认的授权。领取、完成、超时与恢复通过读取时的状态、操作版本和绑定关系进行条件更新；更新不到记录表示其他请求已经推进状态。用户活动代数独立保护活动更新和自动停止取消，因此用户活动与 Manager 操作结果可以各自收敛。
 
+Kubernetes Status 按事实来源分工：资源控制器记录 Namespace、Pod、PVC 和条件，Agent 记录启动进度与访问目标，站点协调器记录清单代数、绑定和操作确认。每次写入先读取同一 UID 的最新资源，再核对 generation、操作版本与类型或 Pod UID，并把本流程负责的字段合并到最新 Status。中止操作可以沿用原操作版本，因此版本和类型共同组成操作身份。这样 Agent 上报与控制器观察可以并行推进，Kubernetes 的 `resourceVersion` 仍负责发现真实冲突，同一次远程 Gitea 调用也不会因本地 Status 重试而重复执行。
+
 日志按当前操作版本和单调偏移追加。指标、Endpoint 和 ready 信息属于可重建展示数据；Gitea 以持久化的运行实例版本判断它们是否属于当前 Runtime，缓存缺失不阻止已经满足业务前置条件的操作完成。delete 完成后清理业务关系、运行凭据、日志和展示数据。
 
-Gitea 内部扫描和删除使用数据库主键定位 Codespace，再比较当前操作快照。Runtime UUID 用于跨组件身份，在 Manager 绑定前可以为空；用主键维护使尚未分配运行身份的记录也能正常超时和清理。
+Gitea 内部扫描和删除使用数据库主键定位 Codespace，再比较当前操作快照。Runtime UUID 用于跨组件身份，在 Manager 绑定前可以为空；用主键维护使尚未分配运行身份的记录也能由用户取消、由已领取操作的时限收敛，或随 Manager 关系清理。
 
 ### 实现验收点
 
-- 状态写入只接受当前操作版本、Pod 身份和目标版本。
+- 状态写入只接受当前操作版本与类型、Pod 身份和目标版本。
+- Kubernetes Status 的并发写入保留其他流程已经提交的字段；generation、操作版本或资源 UID 变化时，旧观察结果等待新一轮协调。
 - 并发领取和完成依靠数据库条件更新与唯一约束只产生一个结果。
 - 日志只由当前操作按单调偏移追加。
 - 展示数据过期不触发主状态转换。
 - stop 排队或执行期间，Endpoint 只接受建立当前运行实例的 create/resume 版本；新操作版本不能冒充新的 Runtime。
 - delete 完成后旧 Token、Open Code 和日志不可继续使用。
-- 尚未绑定 Runtime UUID 的 queued/running 记录可以超时，Manager 删除也能清理这些记录。
+- 尚未绑定 Runtime UUID 的排队记录可以由用户退出；已领取记录可以按执行时限收敛，Manager 删除也能清理相关记录。
