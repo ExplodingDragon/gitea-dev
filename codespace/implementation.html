@@ -191,24 +191,79 @@
 <li>发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。</li>
 </ul>
 <h2 id="管理配置与集群投影"><a class="header" href="#管理配置与集群投影">管理配置与集群投影</a></h2>
-<p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或验证字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
-<p>新建 Gitea 站点时，管理 API 接收显示名称、Gitea 连接地址和注册令牌。服务端先验证站点配额以及模板、Gateway、Cache 的名称和 UID，再调用 Gitea 注册接口；成功后由服务端生成站点资源名，把返回的 Manager ID 写入 <code>GiteaSite</code>，并把运行密钥写入受管 Secret。这个顺序避免无效的本地配置在 Gitea 留下 Manager。注册令牌仅用于该次远程调用，不进入 CR、Secret 或读取响应。站点编辑保留原 Manager 身份和凭据引用，管理页面无需展示或回传这些内部字段。</p>
+<p>管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或角色特有字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 <code>resourceVersion</code>，写入前核对同名对象仍是用户看到的实例。</p>
+<p>管理页面始终使用当前浏览器来源的相对 API 地址，不保存单独的“管理公开地址”。这是因为页面可能通过端口转发、集群内代理或 Ingress 访问，访问地址属于部署入口而不是管理员身份。管理 Token、服务端会话、同站 Cookie 和 CSRF 继续承担鉴权；Cookie 是否带 <code>Secure</code> 根据实际 TLS 请求或 HTTPS Origin 决定。站点、环境模板和组件的新资源名由服务端生成，管理员只填写有业务含义的显示名称、Tag 和说明，避免把 Kubernetes 标识误当作可修改配置。</p>
+<p>管理 API 从当前集群读取带隔离标签的 RuntimeClass、StorageClass、IngressClass、TLS Secret 和 cert-manager Issuer，管理页面据此提供下拉选择。保存模板或组件时，服务端重新读取被引用资源并核对隔离标签、资源类型和当前身份，因为页面加载后集群资源仍可能被删除或修改。CPU、内存、存储、缓存容量和时长在页面中按“数值 + 单位”编辑，提交后转换为 Kubernetes quantity、字节大小或 duration 字符串；这样既保留 Kubernetes 原生语义，也减少手写单位造成的配置错误。</p>
+<p>管理页面把页面级操作、列表行操作和表单提交操作分别放在固定位置。页面级操作位于标题右侧，列表行操作使用右对齐的等高图标按钮，删除操作位于最右侧；编辑表单按业务章节组织，两列字段使用统一网格，URL、证书、JSON 和多行内容占据整行，窄屏下自动变为单列。不同操作采用独立样式，是因为它们的作用范围和使用频率不同；明确的布局边界也避免新增字段后依赖表格末列或 DOM 层级等隐式规则发生错位。</p>
+<p>环境模板保存后由控制器重新读取 RuntimeClass 与 StorageClass，并用当前 generation 写入 <code>Ready</code> Condition。依赖可用时直接就绪，依赖缺失或隔离标签不匹配时记录明确原因；资源恢复后同一协调流程自动恢复就绪。Condition 只描述 Kubernetes 中可观察的依赖并绑定当前配置版本，因此配置变化后会重新计算结论。</p>
+<p>Runtime 的 Git 凭据由 Agent 写入 Pod 内存卷。宿主侧克隆使用 <code>/run/codespace</code>，映射进主 Dev Container 后使用 <code>/var/lib/gitea-codespace</code>；配置代码分别生成对应路径的 Git credential helper 命令和 SSH 命令。HTTP helper 绑定经过身份检查的 Gitea 基础地址，仅为该地址下的仓库读取 Token；SSH 命令固定使用站点私钥和 <code>known_hosts</code>。采用 Git 原生配置可以让 Token 只在对应站点认证时从文件读取，也避免运行用户执行 root 挂载目录中的脚本。站点的运行出站网络同时承担 Gitea 克隆与生命周期访问，页面把它表述为 CIDR 和 TCP 端口列表，便于管理员根据克隆错误中的协议与目标主机定位缺少的规则。</p>
+<p>管理页面把初次加载和保存作为两个独立的异步状态。保存时从当前表单创建请求快照，服务端返回写入后的完整资源，页面用该响应更新列表；失败时编辑器、输入值和未保存标记保持不变。这样资源版本冲突或短暂网络错误不会让管理员重新填写配置，也不会因为保存成功后的额外列表请求失败而把成功写入显示成失败。</p>
+<p>新建 Gitea 站点时，管理 API 接收显示名称、Gitea 连接地址和注册令牌。服务端先验证可选站点配额以及模板、Gateway、Cache 的名称和 UID，再调用 Gitea 注册接口；成功后由服务端生成站点资源名，把返回的 Manager ID 写入 <code>GiteaSite</code>，并把运行密钥写入受管 Secret。这个顺序避免无效的本地配置在 Gitea 留下 Manager。注册令牌仅用于该次远程调用，不进入 CR、Secret 或读取响应。站点编辑保留原 Manager 身份和凭据引用，管理页面无需展示或回传这些内部字段。</p>
+<p>站点可以保存一组 PEM 格式的 CA 证书。留空时注册、身份检查和运行协调使用系统信任库；填写时在系统信任库上追加这些证书。所有面向该站点的 HTTP Client 都从同一构造路径取得超时、重定向策略和信任库，因此不同站点的证书不会进入全局进程状态。保存已有站点前会使用原 Manager 凭据和新地址、新 CA 完成身份检查；检查失败时旧资源保持不变，页面继续保留草稿。</p>
 <p>站点连接地址用于 Manager 发起控制面请求，适合填写集群能够到达的内部地址。Gitea 返回的规范 Web 地址由控制器在身份检查后写入 Status，供 Gateway 和用户入口使用。两者分别保存是为了支持公开地址与集群网络地址不同的部署，同时保证运行流量不会被意外切换到浏览器入口。</p>
 <p>Gitea 注册已经提交而后续 Kubernetes 写入失败时，两个系统之间没有可用的分布式事务。此时 Gitea 会保留一个尚未连接的 Manager，管理员可在 Gitea 的 Manager 页面删除它；管理 API 不自动重试注册，避免一次请求产生多个身份。</p>
-<p>Gateway 和 Cache 使用集群级 <code>CodespaceComponent</code> 保存声明式配置。组件控制器把配置投影为管理命名空间中的 Deployment、Service、NetworkPolicy、身份 Secret，以及按需创建的 PVC 和 Gateway API Route。Kubernetes API 因此能直接校验字段和角色，管理页面、控制器与组件控制流也读取同一种类型，配置的结构和生命周期保持一致。</p>
+<p>Gateway 和 Cache 使用集群级 <code>CodespaceComponent</code> 保存声明式配置。组件控制器把配置投影为管理命名空间中的 Deployment、Service、NetworkPolicy、身份 Secret，以及按需创建的 PVC、Ingress 和 SSH LoadBalancer Service。Kubernetes API 因此能直接校验字段和角色，管理页面、控制器与组件控制流也读取同一种类型，配置的结构和生命周期保持一致。</p>
+<p>控制器更新 CR Status 时重新读取当前 UID 对应的对象，并只合并当前流程负责的观察结果。配置校验结果同时绑定其 generation，Runtime 结果同时绑定操作版本和 Pod UID；Status 冲突重试不会包含远程 Gitea RPC。Deployment、Service、Ingress、PVC 和 PDB 通过补丁提交期望规格，使 Kubernetes 内置控制器并行更新其 Status 时仍能正常收敛。</p>
+<p>站点协调器只把已经持久化到 Codespace CR 且持有当前执行许可的普通操作加入 <code>ObservedOperations</code>。Gitea 因此可以在 Fetch 响应丢失或 Leader 重启时重新下发当前输入，而 Manager 的幂等校验会复用相同 Runtime UUID 和操作版本并恢复许可。确定性 create/resume 拒绝先撤销许可，再通过 <code>FinalizeOperation</code> 提交失败；提交暂时失败时 Gitea 仍会重新下发，成功后局部 CR 复用 Runtime 控制器已有的 delete/stop 恢复动作。暂时性 Kubernetes 与网络错误继续由协调循环重试。未绑定且已进入清理的 CR 不参与身份绑定和完整资源清单，使站点恢复状态只取决于仍可执行的 Runtime。</p>
+<p>Gateway 规格保存期望副本数。控制器为多副本 Gateway 配置零不可用滚动更新、一个额外更新副本、跨节点软分散和最多一个不可用的 PDB；状态中至少一个副本就绪表示入口可用，少于期望数表示降级。Cache 没有副本配置，控制器固定生成一个副本和 Recreate 策略；管理状态还需要同时确认其 Kubernetes Lease，避免把只启动但尚未取得单写许可的进程标记为可用。</p>
 <p>组件凭据保存在由组件 UID 拥有的 Secret 中。UID 是身份边界的原因在于同名资源可以被删除后重建，而新资源不能继承旧组件的证书、SSH 主机密钥或缓存密钥。S3 访问密钥只通过管理 API 写入 Secret，组件列表和 CR 均不返回明文。</p>
+<p>环境模板和 Cache 的出站代理使用同一个结构。管理页面提交并回显完整的代理 URL、直连目标和可选 CA；需要认证时，用户名和密码使用标准 URL 用户信息表示，并按 URL 规则编码。完整 URL 是运行工具最终消费的配置，而且管理员和运行进程都能读取它，因此单独维护“保留、替换、清除”凭据状态不会形成额外的安全边界。服务端从声明生成大小写两套标准代理环境变量，并自动加入 Kubernetes Service、回环地址等平台直连目标。Agent、Dev Container 构建和容器运行使用同一份代理变量名称清单，使新增工具或调整变量时不会在不同执行阶段形成不一致。创建 Codespace 时直接从 Codespace 中已经确认的模板快照生成实例 Secret，随后 Runtime Pod、Agent、内层 Docker 和 Dev Container 只读取这份实例投影；Cache 则把组件声明投影到已有的组件 Secret。这样声明、实例快照和运行环境之间只有一条可重建的数据路径，同时公共 Gitea 协议不需要承载 Kubernetes 或代理实现细节。</p>
+<p>Dev Container 引擎把代理环境作为单次平台输入处理。Dockerfile、Feature 和 Compose 构建使用 Docker 预定义代理构建参数，主容器和关联 Compose 服务接收相同环境，仓库声明的直连目标与平台目标合并去重。只有平台配置了代理地址时，引擎才把 Compose 服务名和显式网络别名加入 <code>NO_PROXY</code>，使服务间访问继续使用 Compose 内部 DNS，同时不改变未启用代理的容器环境。Compose 的隐式默认网络和短格式网络在解析模型中可以没有额外网络配置；引擎仍保留服务名，并只从存在的配置读取别名，这是标准 Compose 配置能够直接运行所必需的行为。代理输入不合并进 <code>devcontainer.json</code> 的解析结果，也不写入 Runtime 的持久状态和镜像缓存标识；恢复时由 Pod Secret 从 Codespace 快照重新投影。这样既符合常见工具读取 <code>HTTP_PROXY</code>、<code>HTTPS_PROXY</code>、<code>ALL_PROXY</code> 和 <code>NO_PROXY</code> 的方式，也不会为同一代理配置维护第二套凭据状态。</p>
+<p>容器内的运行时子命令负责准备和监督 Web IDE。创建阶段只写一次仓库设置，监督命令以远程用户和工作区环境脱离生命周期请求运行，通过文件锁阻止重复实例，并在 code-server 退出后按有上限的间隔重启。创建和恢复流程把启动错误与平台连接阶段的 <code>postAttachCommand</code> 错误写入操作日志后继续，因为 Web IDE 属于附加服务，不能改变 Dev Container 已经可用的事实。Workspace endpoint 是否发布只由环境模板的 Web IDE 开关决定，连接命令仅为这个内置端点提供短时间等待，使重启过程不扩散到其他端口转发。</p>
+<p>Cache 控制连接身份、Registry HTTPS 证书和 Registry 签名密钥分别保存。组件控制器根据同名 Service 推导 DNS 地址，签发只含该名称的短期服务证书，并把 <code>443/https</code> Service 投影到容器 <code>8443</code>。文件型证书源在启动时校验证书、私钥和信任根，随后复用内存中的完整快照；新 TLS 握手每分钟最多检查一次 Secret 投影文件，成功后原子替换快照。这样既能在不重建 Pod 的情况下使用续期证书，也不会把文件读取放入每次握手。Runtime Agent 在启动 Docker 前把内部根证书安装到对应主机的 <code>certs.d</code> 目录，证书续期、组件 API 身份和 Registry 数据访问因此保持各自明确的边界，管理 API 也无需保存可推导的缓存地址。</p>
+<p>Manager 下发的短期缓存令牌由 Agent 在创建操作期间写入 Runtime 内存卷中的标准 Docker <code>config.json</code>。Runtime Pod 的 <code>DOCKER_CONFIG</code> 指向该目录，使进程内 Docker CLI 与 Compose Bake 启动的外部 Buildx 使用同一凭据。Agent 在构建返回后删除文件，恢复状态只保存 Dev Container 结构和容器身份。Cache Registry 使用 HTTPS Basic challenge 接收固定用户名和短期令牌，这条标准认证路径已经包含所需的作用域和有效期校验，因此不需要单独的令牌交换协议。</p>
 <p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
+<p>Gateway 和 Cache 可以由多个站点共享。Cache 的授权和存储路径包含站点 UID；Gateway 从 Runtime 快照把站点 UID 保留到每个 Endpoint 路由，Open Token、浏览器会话、公开 Endpoint 和 SSH 授权在连接当前路由前核对该身份。允许结果缓存、并发授权合并和公开 Endpoint 的单实例连接限制也把站点 UID 放入键中。不同 Gitea 实例可能产生相同的数字用户、仓库 ID 或短时间内相同的路由字段，因此共享组件需要把站点身份作为隔离边界；站点变化会替换路由并结束旧连接，旧站点的允许结果也不能用于新站点。</p>
+<p>Gateway 启动 HTTP 与 SSH 服务前初始化同一份 Runtime 路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接在当前路由存在且站点 UID 一致时进入代理。路由存储因此既提供目标地址，也提供连接时的运行身份事实；远程授权与当前运行时路由共同构成连接前置条件。</p>
+<p>Gateway 浏览器会话由组件 Secret 中独立的 32 字节密钥认证加密。票据携带稳定会话标识、资源身份、签发时间、绝对期限和空闲期限；副本验证成功后只在本地建立连接计数与活动记录。SSH 主机密钥轮换只替换主机密钥字段，会话密钥保持稳定，因此正常主机密钥维护不会让所有浏览器会话同时失效。</p>
+<p>Gateway 控制流按实例汇报活动并获得限时许可。断流时 Manager 保留报告到许可期限，Gateway 在相同期限到达时关闭服务；重建流只沿用剩余期限，收到 Manager 的有效响应后才更新许可。自动停止只有在所有仍可能提供服务的副本都完成上报后才开始计算空闲时间。这把网络分区和半开连接时的安全判断收敛到一个明确期限，也避免引入跨副本共享计数服务。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
+<li>端口转发、HTTP 代理和 HTTPS Ingress 使用同一管理页面，不需要修改 Manager 中的公开地址；未认证或 CSRF 无效的写请求仍被拒绝。</li>
 <li>新建站点在远程注册前完成所有可本地验证的 Kubernetes 引用检查，资源名和 Manager 身份由服务端生成。</li>
+<li>新建站点、环境模板和组件的请求不携带 Kubernetes 资源名，服务端响应包含生成后的名称、UID 和资源版本。</li>
 <li>注册令牌不写入 Kubernetes；运行密钥只写入当前站点拥有的 Secret，管理读取接口不返回明文。</li>
 <li>站点连接地址与 Gitea 返回的规范 Web 地址可以不同；Manager 使用连接地址，控制器把验证后的规范地址写入 Status。</li>
+<li>站点 CA 留空时使用系统信任库；填写多个有效证书时注册、身份检查和运行协调均能连接，错误证书不会覆盖已有站点配置。</li>
 <li>编辑站点不改变 Manager ID 和凭据引用，并发修改继续通过 UID 与资源版本冲突收敛。</li>
 <li><code>CodespaceComponent</code> 的角色、资源和运行配置由 CRD 与领域校验共同检查，管理页面与控制器使用同一字段模型。</li>
+<li>站点、模板、组件和 Runtime 的 Status 更新会保留并发写入的独立字段；配置 generation 或运行身份变化时不会提交旧观察结果。</li>
+<li>Kubernetes 内置控制器更新工作负载 Status 时，Manager 仍能通过规格补丁收敛 Deployment、Service、Ingress、PVC 和 PDB。</li>
+<li>RuntimeClass、StorageClass、IngressClass、TLS Secret 和 Issuer 来自当前集群，下拉框中的引用在保存时再次核验。</li>
+<li>页面级操作、列表行操作和表单提交操作位于各自固定区域；列表删除按钮保持最右，宽屏字段按两列对齐，URL、证书、JSON 与多行内容占据整行，窄屏自动变为单列。</li>
+<li>环境模板在依赖可用时自动产生当前 generation 的就绪状态，依赖失效与恢复均由控制器收敛。</li>
+<li>Agent 与主 Dev Container 的 Git 配置使用各自可见的凭据路径，HTTP helper 只匹配当前 Gitea 基础地址，HTTP 和 SSH 克隆均不依赖挂载的可执行 helper。</li>
+<li>克隆错误记录协议与目标主机，站点运行出站网络可据此配置，错误和配置中均不包含认证材料。</li>
+<li>CPU、内存、存储、缓存容量和时长可以按明确单位编辑，保存结果能够被对应的 Kubernetes 或运行时解析器读取。</li>
+<li>环境资源上限和站点配额可以关闭；启用上限时 request 不超过 limit，文件系统缓存的最大容量与保留空间之和不超过 PVC 容量。</li>
+<li>保存失败后表单内容和未保存状态仍然存在；保存成功后列表使用写接口返回的完整资源更新。</li>
 <li>组件工作负载及凭据绑定当前组件 UID，同名重建不会继承旧身份。</li>
+<li>Cache 地址以同名 Service 为唯一来源，管理 API、CRD、内部协议和页面展示同一推导结果。</li>
+<li>Cache 控制身份、HTTPS 服务证书和 Registry 签名密钥分别存放，证书用途不能互换。</li>
+<li>文件证书源一分钟内只使用同一份有效内存快照；续期文件投影完成后，新 TLS 连接在下一次检查时加载整组证书材料，不依赖 Pod 重建。</li>
+<li>Runtime 内存卷中的标准 Docker 配置可以被外部 Buildx 读取，创建结束后不再保留 Registry 凭据。</li>
+<li>Cache Registry 的 Basic 认证直接验证 Manager 签发的短期令牌，协议中只有一条认证路径。</li>
 <li>S3 凭据与 Gateway SSH 主机私钥只保存在 Secret，管理读取接口不返回明文。</li>
+<li>环境模板和 Cache 共用代理字段与校验规则，包含标准用户信息的完整代理 URL 可以提交并原样读取。</li>
+<li>创建操作从 Codespace 配置快照生成实例代理 Secret，不依赖环境模板 Secret；模板后续修改不会改变已有环境的恢复结果。</li>
+<li>Dockerfile、Feature、Compose 构建及所有运行服务收到同一代理与直连规则，代理认证不会写入 Dev Container 状态、配置摘要或普通日志。</li>
+<li>Agent、构建参数和容器环境使用相同的大小写代理变量集合，调整其中一处支持范围时不会遗漏其他执行阶段。</li>
+<li>Compose 启用代理时，服务名和显式网络别名加入直连列表；隐式默认网络和短格式网络不需要额外配置，未启用代理时容器环境保持原样。</li>
+<li>Web IDE 使用容器内运行时子命令保持单实例并自动重启；初始化和连接错误进入操作日志，但不会删除环境或让 create、resume 失败。</li>
+<li>Workspace endpoint 只随模板开关发布，连接等待只作用于该端点并有固定上限。</li>
 <li>Gateway 快照不会列出绑定其他 Gateway 的站点或其他站点命名空间中的 Runtime。</li>
+<li>Gateway 会话使用站点 UID 与用户 ID 的组合身份，同一数字用户 ID 在不同站点分别计算并发限制。</li>
+<li>Gateway 的 Open Code、浏览器会话、公开 Endpoint 和 SSH 授权只连接站点 UID 与当前路由一致的 Runtime。</li>
+<li>Gateway 的 HTTP 与 SSH 入口使用同一份已初始化路由存储，每次代理连接都要求当前路由存在且站点 UID 一致。</li>
+<li>Gateway 的允许结果缓存、并发授权合并和公开 Endpoint 单实例连接限制按站点 UID 隔离；路由切换站点后旧连接和旧会话停止使用。</li>
+<li>Gateway 副本数、Deployment、PDB 和管理状态使用同一期望值；部分副本就绪时状态为可用但降级。</li>
+<li>浏览器会话可在同一 Gateway 组件的副本间使用，空闲续期不能超过最初绝对期限。</li>
+<li>自动停止在失联副本许可到期前保持等待，许可到期时该副本已经关闭用户连接。</li>
+<li>Cache 只生成一个 Recreate 副本，管理状态同时核对 Deployment 就绪与运行租约。</li>
+<li>Fetch 响应丢失后相同 operation 会重新到达，Manager 复用持久化输入；只有持久观察当前版本才获得续租。</li>
+<li>确定性 create/resume 拒绝在 Gitea 进入稳定状态，局部资源分别通过 delete/stop 收敛；暂时性错误保留重试。</li>
+<li>未绑定清理 CR 不参与 Gitea 身份绑定和完整资源清单，也不阻塞站点从 recovering 进入 online。</li>
 <li>缓存索引命中后仍核对当前资源身份，删除或同名重建的资源不能沿用旧授权。</li>
 </ul>
 <h2 id="测试层次"><a class="header" href="#测试层次">测试层次</a></h2>
@@ -221,10 +276,15 @@
 <tr><td>Helm 测试</td><td>RBAC、身份、服务、网络策略以及标签和摘要镜像</td></tr>
 </tbody></table>
 </div>
-<p>测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 使用 <code>make lint</code> 检查格式、生成文件、Helm 和静态规则，<code>make test</code> 运行后端的非端到端测试，<code>make test-frontend</code> 运行管理界面浏览器测试，<code>make test-e2e</code> 编排真实 Kubernetes 全链路。统一入口使本地和自动化执行相同阶段，也避免各子系统各自维护一套环境变量、资源和清理脚本。</p>
+<p>测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 使用 <code>make lint</code> 检查格式、生成文件、Helm、<code>go vet</code> 和 <code>staticcheck</code>，<code>make test</code> 运行后端的非端到端测试，<code>make test-frontend</code> 运行管理界面浏览器测试，<code>make test-e2e</code> 编排真实 Kubernetes 全链路。静态检查集中在同一入口并固定工具版本，使本地与持续集成得到一致结果；统一测试入口也避免各子系统各自维护一套环境变量、资源和清理脚本。</p>
+<p>Dev Container 兼容测试使用官方配置表示验证 Feature 字符串简写和字符串布尔选项，并分别覆盖生命周期来源顺序、依赖循环、锁文件所有权与标准化、Compose 默认工作区、内部代理直连目标与跨服务端点。Compose 代理测试使用真实加载模型验证隐式默认网络和显式别名，使标准的省略网络配置不会只在端到端环境中暴露错误。恢复测试验证宿主初始化可以再次执行、同一操作的替换 Pod 不会重放未知结果，并验证恢复状态只有一个容器生命周期命令来源。选择这些语义测试的原因是它们决定最终运行行为，单纯检查字段或函数是否存在无法发现命令顺序、目标容器或恢复重复执行错误。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
 <li>状态机覆盖成功、并发抢占、非当前版本和恢复路径。</li>
+<li>Dev Container 测试验证 Feature 选项、依赖排序、生命周期命令组、Compose 服务端点和恢复初始化的实际语义。</li>
+<li>Compose 代理测试加载隐式默认网络并验证服务名、显式别名与已有直连目标的合并结果。</li>
+<li>Agent 测试验证替换 Pod 不会重放同一操作，宿主命令只接收明确提供的非敏感环境。</li>
+<li>状态测试真实制造 <code>resourceVersion</code> 冲突，并验证控制器、Agent 与站点协调器的独立事实都被保留。</li>
 <li>权限测试覆盖对象 ID 篡改、跨用户、跨站点和凭据重放。</li>
 <li>前端测试在项目支持的浏览器中稳定，不依赖精确计时。</li>
 <li>本地和自动化使用相同的公开测试入口。</li>

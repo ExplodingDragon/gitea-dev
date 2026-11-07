@@ -162,7 +162,7 @@
 <tr><td><code>ManagerService</code></td><td>Manager → Gitea</td><td><code>codespace-proto-go</code></td><td>Manager 身份、生命周期、运行材料、日志、状态和访问判定</td></tr>
 <tr><td><code>ComponentService</code></td><td>Gateway/Cache → Manager</td><td>Codespace 内部</td><td>组件配置、访问授权、Agent 票据和 Cache 维护许可</td></tr>
 <tr><td><code>AgentControlService</code></td><td>Agent ↔ Manager</td><td>Codespace 内部</td><td>Runtime 命令、结果、心跳和日志</td></tr>
-<tr><td><code>AgentAccessService</code></td><td>Gateway ↔ Agent</td><td>Codespace 内部</td><td>PTY、SFTP、HTTP 和回环端口转发</td></tr>
+<tr><td><code>AgentAccessService</code></td><td>Gateway ↔ Agent</td><td>Codespace 内部</td><td>Shell、命令、SFTP、HTTP 和回环端口转发</td></tr>
 <tr><td><code>RuntimeEndpointService</code></td><td>Dev Container → Agent</td><td>Codespace 内部</td><td>通过本地 Unix socket 管理 HTTP Endpoint</td></tr>
 </tbody></table>
 </div>
@@ -178,6 +178,9 @@
 <h2 id="gitea-控制面"><a class="header" href="#gitea-控制面">Gitea 控制面</a></h2>
 <p><code>RegisterManager</code> 使用范围注册令牌换取 Manager ID 和独立运行密钥。该方法不携带 Manager 身份请求头，因为身份正是在这次交换中建立；协议版本、令牌和名称仍在服务端校验。注册令牌可重复用于同一范围的多台 Manager，运行密钥只属于一次注册结果。这样管理面可以直接完成接入，而后续所有 RPC 仍具有稳定、可撤销的实例身份。</p>
 <p>注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。</p>
+<p>Runtime 信息还携带主 Dev Container 解析完成后的 <code>workspaceFolder</code>。Agent 把它与访问目标一起上报，Manager 保存到 Codespace 状态后再放入公共 Runtime Metadata，Gitea 据此生成 VS Code 和 Zed 的 SSH 打开地址。选择解析后的容器路径，是因为 Dockerfile、Compose、Feature 和变量替换都可能改变编辑器实际应打开的位置；主机工作区路径不能表达这个结果。该字段属于可重建的运行事实，由 Kubernetes Codespace 状态持久化并在 Gitea 中按 Runtime Metadata 缓存。启动阶段可以尚未取得路径，发布 ready 时必须同时提供有效的绝对容器路径。</p>
+<p><code>FetchOperations</code> 使用至少一次交付。<code>ObservedOperation</code> 表示 Manager 已经把该 Runtime UUID 和操作版本持久化到 Kubernetes，并持有当前版本的本地执行许可，而不是仅在内存中收到消息。Gitea 对精确匹配当前版本的观察记录续租；未观察或低版本观察会在现有租约内重新返回当前 payload，返回的有效期是数据库租约的剩余时间。Manager Leader 重启后通过一次重新下发恢复本地许可；确定拒绝撤销许可，失败提交暂时不可达时仍会再次收到同一 payload。这个定义使请求和响应丢失可以安全重试，也确保尚未接受或已经拒绝的操作不会因轮询自动延长。</p>
+<p><code>FinalizeOperation</code> 使用 Codespace ID、操作版本、类型和认证 Manager 定位业务操作。Runtime 已绑定时还必须精确匹配 Runtime UUID；未绑定 create 的确定性失败使用空 Runtime UUID 提交，使错误能够在分配运行身份前收敛。过期、重复或已经被新操作替代的最终报告按幂等成功处理，但不能修改当前状态。采用 Codespace ID 作为基础定位，是因为 create 在绑定前还没有 Runtime UUID，而数据库业务行已经具有稳定身份。</p>
 <p>没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。</p>
 <p>ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公共协议包中的常量。传输限制与 Kubernetes 单个持久化对象的大小限制分别生效：前者容纳资源清单等批量消息，后者控制资源保存成本。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
@@ -187,9 +190,12 @@
 <li>注册令牌重置不改变已经签发的运行身份。</li>
 <li>Manager 凭据只能操作对应的 Manager 记录。</li>
 <li>领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。</li>
+<li>未观察或低版本观察返回当前 operation 且不延长租约，精确观察当前版本才返回续租结果。</li>
+<li><code>FinalizeOperation</code> 始终携带 Codespace ID；已绑定操作同时匹配 Runtime UUID，未绑定 create 只接受失败终态和空 Runtime UUID。</li>
 <li>每个 Runtime UUID 只绑定一个 Codespace，未绑定请求可以正常排队。</li>
 <li>运行材料按请求时的用户和仓库权限生成。</li>
 <li>create/resume 完成不依赖展示缓存命中，后续 Runtime 报告必须匹配持久化的运行实例版本。</li>
+<li>ready Runtime Metadata 包含主 Dev Container 的解析后工作目录；Manager 重启或 Endpoint 更新后仍能从 Codespace 状态恢复同一路径。</li>
 <li>两端接受相同大小范围的 RPC 消息，资源保存仍执行自己的对象大小校验。</li>
 </ul>
 <h2 id="组件与-agent"><a class="header" href="#组件与-agent">组件与 Agent</a></h2>
@@ -197,7 +203,7 @@
 <p>Agent 以当前 Codespace CR 和 Pod 身份建立控制流。生命周期命令绑定操作版本，日志使用独立流，避免大量输出阻塞控制命令。Agent 先把阶段和结果原子写入 PVC，再向 Manager 上报，重连时复用已经完成的结果。</p>
 <p>块卷挂载前使用 <code>PrepareVolume</code> 请求确认。Manager 根据 mTLS 身份读取当前 CR、Pod 和 PVC，并校验操作许可；首次请求持久记录格式化已开始后返回成功，挂载后确认请求把状态更新为就绪。这个独立请求发生在 PVC 日志可用之前，使卷初始化也能获得持久化保护，Agent 仍只访问 Manager 服务。</p>
 <p>Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。</p>
-<p>Gateway 使用按能力签发的短期票据访问 PTY、SFTP、HTTP Endpoint 或回环端口。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。</p>
+<p>Gateway 使用按能力签发的短期票据访问 Shell、命令、SFTP、HTTP Endpoint 或回环端口。Shell 与命令是两种独立能力，因为 SSH Shell 请求可以在没有 PTY 时通过标准输入接收脚本，而命令请求携带需要由登录 Shell 求值的明确内容。PTY 是这两种请求都可以附带的终端属性。这样 Agent 可以按实际请求签发和校验票据，VS Code Remote-SSH 等客户端也能通过无 PTY Shell 执行初始化脚本。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。</p>
 <p>内部 Proto 生成到 <code>codespace/internal/rpc</code>，从 Go 包边界上阻止其他仓库依赖运行实现。需要跨越 Gitea 与 Manager 的业务类型由公共协议定义，内部协议直接引用这些类型，避免维护重复消息。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
@@ -205,6 +211,7 @@
 <li>控制流重连后可以从完整快照恢复配置。</li>
 <li>控制流建立失败和运行中断都进入现有重连流程，取消请求会释放连接。</li>
 <li>Agent 票据只适用于一个 Runtime、Pod、目标版本和访问能力。</li>
+<li>无 PTY Shell 能持续读取标准输入直到 EOF；命令请求必须携带非空命令，二者不能共用同一能力票据。</li>
 <li>日志背压不会阻止控制命令。</li>
 <li>Dev Container 可以通过本地 socket 增删和查询 Endpoint。</li>
 <li>公共业务类型在公共协议中只有一份定义。</li>
