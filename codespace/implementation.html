@@ -166,6 +166,7 @@
 </div>
 <p>公共协议先在 Proto 仓库修改、生成、测试并发布，再更新两个实现仓库的远程依赖。Codespace 内部协议随实现一起生成和测试，并从固定的公共协议依赖读取共享业务类型。Gitea 的业务规则放在 model/service，router 负责请求与响应；Codespace 按控制面、Runtime、Gateway、Cache、Dev Container 和管理界面组织。</p>
 <p>逻辑优先留在拥有该行为的领域。只有多个流程共享同一不变量时才提取接口或公共包，以免单次调用的小函数和空抽象分散主要流程。</p>
+<p>进程入口只依赖对应领域包的启动接口，路由表、会话、认证缓存和后端适配等协作对象留在所属包内。这样命令层只负责参数、信号和进程生命周期，领域实现可以在不扩大跨包依赖的情况下调整。Gateway 因此只向命令层提供运行入口，HTTP、SSH、Agent 和 Manager 之间的内部协作由 Gateway 包完整拥有。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
 <ul>
 <li>每项功能有唯一仓库和领域归属。</li>
@@ -173,6 +174,7 @@
 <li>公共与内部 Proto 均可重复生成，Gitea 与 Codespace 使用已发布的公共模块。</li>
 <li>Gitea 只依赖公共业务协议；Agent、Gateway 与 Cache 的内部协议由 Codespace 项目维护。</li>
 <li>接口对应真实替换边界，较长流程按稳定业务阶段组织。</li>
+<li>命令层不构造领域内部协作对象；Gateway 的跨包入口只有完整运行流程。</li>
 </ul>
 <h2 id="镜像构建与发布"><a class="header" href="#镜像构建与发布">镜像构建与发布</a></h2>
 <p>Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pnpm 12.16.1 和固定版本的 Helm。拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查和镜像冒烟验证。这样可以在合并前同时验证源代码、已提交的前端资源、CRD、Helm 模板和最终运行环境。</p>
@@ -206,17 +208,23 @@
 <p>控制器更新 CR Status 时重新读取当前 UID 对应的对象，并只合并当前流程负责的观察结果。配置校验结果同时绑定其 generation，Runtime 结果同时绑定操作版本和 Pod UID；Status 冲突重试不会包含远程 Gitea RPC。Deployment、Service、Ingress、PVC 和 PDB 通过补丁提交期望规格，使 Kubernetes 内置控制器并行更新其 Status 时仍能正常收敛。</p>
 <p>站点协调器只把已经持久化到 Codespace CR 且持有当前执行许可的普通操作加入 <code>ObservedOperations</code>。Gitea 因此可以在 Fetch 响应丢失或 Leader 重启时重新下发当前输入，而 Manager 的幂等校验会复用相同 Runtime UUID 和操作版本并恢复许可。确定性 create/resume 拒绝先撤销许可，再通过 <code>FinalizeOperation</code> 提交失败；提交暂时失败时 Gitea 仍会重新下发，成功后局部 CR 复用 Runtime 控制器已有的 delete/stop 恢复动作。暂时性 Kubernetes 与网络错误继续由协调循环重试。未绑定且已进入清理的 CR 不参与身份绑定和完整资源清单，使站点恢复状态只取决于仍可执行的 Runtime。</p>
 <p>Gateway 规格保存期望副本数。控制器为多副本 Gateway 配置零不可用滚动更新、一个额外更新副本、跨节点软分散和最多一个不可用的 PDB；状态中至少一个副本就绪表示入口可用，少于期望数表示降级。Cache 没有副本配置，控制器固定生成一个副本和 Recreate 策略；管理状态还需要同时确认其 Kubernetes Lease，避免把只启动但尚未取得单写许可的进程标记为可用。</p>
+<p>Manager、Gateway 和 Cache 在各自 Pod 的 <code>8081</code> 端口提供独立的明文 HTTP 健康服务，并统一使用 <code>/healthz</code> 表示进程存活、<code>/readyz</code> 表示可以接收业务流量。这个端口只由 Kubelet 直接探测，不加入 Service、Ingress 和业务 NetworkPolicy 端口，因此健康检查不依赖内部证书，也不会成为公开业务接口。Gateway 在 HTTP 与 SSH 监听成功且运行许可有效时就绪，控制流短暂断开期间继续使用剩余许可；Cache 在取得单写许可、完成存储初始化并启动 mTLS Registry 后就绪。外部控制面暂时不可用只影响就绪状态，进程自身仍然存活，避免无效重启扩大故障。</p>
 <p>组件凭据保存在由组件 UID 拥有的 Secret 中。UID 是身份边界的原因在于同名资源可以被删除后重建，而新资源不能继承旧组件的证书、SSH 主机密钥或缓存密钥。S3 访问密钥只通过管理 API 写入 Secret，组件列表和 CR 均不返回明文。</p>
 <p>环境模板和 Cache 的出站代理使用同一个结构。管理页面提交并回显完整的代理 URL、直连目标和可选 CA；需要认证时，用户名和密码使用标准 URL 用户信息表示，并按 URL 规则编码。完整 URL 是运行工具最终消费的配置，而且管理员和运行进程都能读取它，因此单独维护“保留、替换、清除”凭据状态不会形成额外的安全边界。服务端从声明生成大小写两套标准代理环境变量，并自动加入 Kubernetes Service、回环地址等平台直连目标。Agent、Dev Container 构建和容器运行使用同一份代理变量名称清单，使新增工具或调整变量时不会在不同执行阶段形成不一致。创建 Codespace 时直接从 Codespace 中已经确认的模板快照生成实例 Secret，随后 Runtime Pod、Agent、内层 Docker 和 Dev Container 只读取这份实例投影；Cache 则把组件声明投影到已有的组件 Secret。这样声明、实例快照和运行环境之间只有一条可重建的数据路径，同时公共 Gitea 协议不需要承载 Kubernetes 或代理实现细节。</p>
 <p>Dev Container 引擎把代理环境作为单次平台输入处理。Dockerfile、Feature 和 Compose 构建使用 Docker 预定义代理构建参数，主容器和关联 Compose 服务接收相同环境，仓库声明的直连目标与平台目标合并去重。只有平台配置了代理地址时，引擎才把 Compose 服务名和显式网络别名加入 <code>NO_PROXY</code>，使服务间访问继续使用 Compose 内部 DNS，同时不改变未启用代理的容器环境。Compose 的隐式默认网络和短格式网络在解析模型中可以没有额外网络配置；引擎仍保留服务名，并只从存在的配置读取别名，这是标准 Compose 配置能够直接运行所必需的行为。代理输入不合并进 <code>devcontainer.json</code> 的解析结果，也不写入 Runtime 的持久状态和镜像缓存标识；恢复时由 Pod Secret 从 Codespace 快照重新投影。这样既符合常见工具读取 <code>HTTP_PROXY</code>、<code>HTTPS_PROXY</code>、<code>ALL_PROXY</code> 和 <code>NO_PROXY</code> 的方式，也不会为同一代理配置维护第二套凭据状态。</p>
+<p>标准 Dev Container 包负责解析配置、安装 Feature、调整远程用户以及创建和控制 Docker 资源。Codespace 的 Gitea CLI、模板脚本和其他平台镜像内容由 <code>internal/devcontainerruntime</code> 通过一个最终镜像定制回调写入临时构建上下文。Docker 引擎继续统一负责目标平台探测、缓存、代理、构建标签和临时目录清理，因此单容器和 Compose 使用相同的构建保障；运行时层掌握平台配置及执行顺序，因此平台能力不会与标准 Dev Container 语义混在一起。镜像定制发生在 Feature 和远程用户镜像之后，使管理员的 <code>build</code> 脚本仍是最终可配置构建动作。</p>
 <p>容器内的运行时子命令负责准备和监督 Web IDE。创建阶段只写一次仓库设置，监督命令以远程用户和工作区环境脱离生命周期请求运行，通过文件锁阻止重复实例，并在 code-server 退出后按有上限的间隔重启。创建和恢复流程把启动错误与平台连接阶段的 <code>postAttachCommand</code> 错误写入操作日志后继续，因为 Web IDE 属于附加服务，不能改变 Dev Container 已经可用的事实。Workspace endpoint 是否发布只由环境模板的 Web IDE 开关决定，连接命令仅为这个内置端点提供短时间等待，使重启过程不扩散到其他端口转发。</p>
 <p>Cache 控制连接身份、Registry HTTPS 证书和 Registry 签名密钥分别保存。组件控制器根据同名 Service 推导 DNS 地址，签发只含该名称的短期服务证书，并把 <code>443/https</code> Service 投影到容器 <code>8443</code>。文件型证书源在启动时校验证书、私钥和信任根，随后复用内存中的完整快照；新 TLS 握手每分钟最多检查一次 Secret 投影文件，成功后原子替换快照。这样既能在不重建 Pod 的情况下使用续期证书，也不会把文件读取放入每次握手。Runtime Agent 在启动 Docker 前把内部根证书安装到对应主机的 <code>certs.d</code> 目录，证书续期、组件 API 身份和 Registry 数据访问因此保持各自明确的边界，管理 API 也无需保存可推导的缓存地址。</p>
 <p>Manager 下发的短期缓存令牌由 Agent 在创建操作期间写入 Runtime 内存卷中的标准 Docker <code>config.json</code>。Runtime Pod 的 <code>DOCKER_CONFIG</code> 指向该目录，使进程内 Docker CLI 与 Compose Bake 启动的外部 Buildx 使用同一凭据。Agent 在构建返回后删除文件，恢复状态只保存 Dev Container 结构和容器身份。Cache Registry 使用 HTTPS Basic challenge 接收固定用户名和短期令牌，这条标准认证路径已经包含所需的作用域和有效期校验，因此不需要单独的令牌交换协议。</p>
-<p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，最终授权仍读取并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
+<p>Manager 默认由 Kubernetes API Priority and Fairness 调度 API 请求，不再叠加 client-go 的低吞吐令牌桶；当 kubeconfig 明确提供 QPS 或限流器时仍采用运维配置。控制器工作队列继续负责单对象重试和退避，因此 API Server 负责集群级公平，控制器负责业务级收敛，两层职责不会重复限制同一批请求。</p>
+<p>Manager 在进程内按站点复用 Gitea Manager API 客户端和 HTTP Transport。连接构造统一核对 Secret 的 UID、站点所有权、删除状态和密钥内容，随后缓存只保留客户端与 Transport，不保留完整 Kubernetes Secret。连接指纹包含站点 UID、连接地址、规范地址、Manager 身份、凭据引用和 CA Bundle，一分钟绝对有效期结束后重新读取 Secret 并构造连接；并发首次读取合并为一次。这个窗口避免协调、状态上报和访问授权反复读取 Secret 与建立 TLS 连接，同时让凭据或 CA 更新在有限时间内生效。站点注册和管理页面的连通性检查仍使用独立的一次性连接，因为它们需要验证尚未成为当前运行配置的输入。</p>
+<p>Gateway 投影通过 controller-runtime 字段索引按组件 UID 找到配置、按 Gateway UID 找到站点、再按 Site UID 找到站点命名空间中的 Runtime。索引用于缩小候选范围，路由构造复用已经核对的站点并只读取对应 Pod；签发 Agent 访问票据时仍实时读取 Runtime、站点和 Pod，并核对资源 UID、Pod UID 和所有权，因为缓存索引不能替代实时身份校验。</p>
 <p>Gateway 和 Cache 可以由多个站点共享。Cache 的授权和存储路径包含站点 UID；Gateway 从 Runtime 快照把站点 UID 保留到每个 Endpoint 路由，Open Token、浏览器会话、公开 Endpoint 和 SSH 授权在连接当前路由前核对该身份。允许结果缓存、并发授权合并和公开 Endpoint 的单实例连接限制也把站点 UID 放入键中。不同 Gitea 实例可能产生相同的数字用户、仓库 ID 或短时间内相同的路由字段，因此共享组件需要把站点身份作为隔离边界；站点变化会替换路由并结束旧连接，旧站点的允许结果也不能用于新站点。</p>
-<p>Gateway 启动 HTTP 与 SSH 服务前初始化同一份 Runtime 路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接在当前路由存在且站点 UID 一致时进入代理。路由存储因此既提供目标地址，也提供连接时的运行身份事实；远程授权与当前运行时路由共同构成连接前置条件。</p>
+<p>Gateway 启动 HTTP 与 SSH 服务前初始化同一份 Runtime 路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接在当前路由存在且站点 UID 一致时进入代理。路由存储因此既提供目标地址，也提供连接时的运行身份事实；远程授权与当前运行时路由共同构成连接前置条件。成功授权缓存 30 秒，拒绝与错误不缓存，使短时间内重复资源请求可以复用业务判定，而权限收回仍由短缓存窗口和运行中会话的定期复核收敛。</p>
+<p>Gateway 到 Agent 的连接建立包含票据签发、内部流创建、打开请求和 Agent 接受，整个阶段最多等待 15 秒；接受后移除建立计时器，由原始用户请求控制长连接寿命。HTTP Endpoint 另外使用 30 秒响应头超时，但不限制响应体、WebSocket、SSH 或 SFTP 的总时长。区分建立与传输阶段的原因是不可达目标需要及时释放连接额度，而远程开发会话本身必须能够长期运行。</p>
 <p>Gateway 浏览器会话由组件 Secret 中独立的 32 字节密钥认证加密。票据携带稳定会话标识、资源身份、签发时间、绝对期限和空闲期限；副本验证成功后只在本地建立连接计数与活动记录。SSH 主机密钥轮换只替换主机密钥字段，会话密钥保持稳定，因此正常主机密钥维护不会让所有浏览器会话同时失效。</p>
-<p>Gateway 控制流按实例汇报活动并获得限时许可。断流时 Manager 保留报告到许可期限，Gateway 在相同期限到达时关闭服务；重建流只沿用剩余期限，收到 Manager 的有效响应后才更新许可。自动停止只有在所有仍可能提供服务的副本都完成上报后才开始计算空闲时间。这把网络分区和半开连接时的安全判断收敛到一个明确期限，也避免引入跨副本共享计数服务。</p>
+<p>Gateway 控制流按实例汇报活动并获得限时许可。Manager 从同一控制流最近一次成功路由快照取得允许上报的 Runtime 集合，忽略已经离开快照的活动项；Gateway 只在某个 Runtime 从无连接变为有连接或从有连接变为无连接时立即上报，固定心跳继续完成最终收敛。自动停止只关心是否存在活动连接，这种边沿上报可以避免每个浏览器资源请求触发控制消息和 Kubernetes 查询。</p>
+<p>断流时 Manager 保留报告到许可期限，Gateway 在相同期限到达时关闭服务；重建流只沿用剩余期限，收到 Manager 的有效响应后才更新许可。自动停止只有在所有仍可能提供服务的副本都完成上报后才开始计算空闲时间。这把网络分区和半开连接时的安全判断收敛到一个明确期限，也避免引入跨副本共享计数服务。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>站点、模板和组件端点拒绝属于其他资源类型的请求字段。</li>
@@ -250,14 +258,25 @@
 <li>Dockerfile、Feature、Compose 构建及所有运行服务收到同一代理与直连规则，代理认证不会写入 Dev Container 状态、配置摘要或普通日志。</li>
 <li>Agent、构建参数和容器环境使用相同的大小写代理变量集合，调整其中一处支持范围时不会遗漏其他执行阶段。</li>
 <li>Compose 启用代理时，服务名和显式网络别名加入直连列表；隐式默认网络和短格式网络不需要额外配置，未启用代理时容器环境保持原样。</li>
+<li>标准 Dev Container 包只提供通用镜像定制回调和容器状态操作，Codespace 平台镜像内容由运行时层生成。</li>
+<li>单容器和 Compose 的主服务在 Feature 与远程用户处理后执行同一最终镜像定制流程，并共用缓存、代理与目标平台信息。</li>
+<li>Gitea CLI 安装和模板 <code>build</code>、<code>start</code>、<code>stop</code> 行为由运行时层按环境模板配置执行，通用 Docker 引擎不解释这些平台字段。</li>
 <li>Web IDE 使用容器内运行时子命令保持单实例并自动重启；初始化和连接错误进入操作日志，但不会删除环境或让 create、resume 失败。</li>
 <li>Workspace endpoint 只随模板开关发布，连接等待只作用于该端点并有固定上限。</li>
 <li>Gateway 快照不会列出绑定其他 Gateway 的站点或其他站点命名空间中的 Runtime。</li>
+<li>Manager 默认依赖 API Priority and Fairness 处理集群请求；kubeconfig 显式配置的客户端限流保持生效。</li>
+<li>同一站点的一分钟运行请求复用 Gitea 客户端和 HTTP Transport；每次创建连接都核对凭据所有权，缓存不保留完整 Secret，站点身份、凭据引用或 CA 配置变化后创建新连接。</li>
+<li>Gateway 快照复用已经读取的站点，Agent 票据签发仍实时核对 Runtime、站点与 Pod 身份。</li>
 <li>Gateway 会话使用站点 UID 与用户 ID 的组合身份，同一数字用户 ID 在不同站点分别计算并发限制。</li>
 <li>Gateway 的 Open Code、浏览器会话、公开 Endpoint 和 SSH 授权只连接站点 UID 与当前路由一致的 Runtime。</li>
 <li>Gateway 的 HTTP 与 SSH 入口使用同一份已初始化路由存储，每次代理连接都要求当前路由存在且站点 UID 一致。</li>
 <li>Gateway 的允许结果缓存、并发授权合并和公开 Endpoint 单实例连接限制按站点 UID 隔离；路由切换站点后旧连接和旧会话停止使用。</li>
+<li>成功授权在 30 秒内复用，拒绝和错误实时返回；活动上报只接受当前路由快照中的 Runtime。</li>
+<li>同一 Runtime 的连接数在正数之间变化不触发即时活动上报，固定心跳仍能同步当前活动状态。</li>
+<li>Agent 流未在 15 秒内接受时释放资源，HTTP 上游未在 30 秒内返回响应头时终止请求；已建立的长连接不受这两个建立超时影响。</li>
 <li>Gateway 副本数、Deployment、PDB 和管理状态使用同一期望值；部分副本就绪时状态为可用但降级。</li>
+<li>Manager、Gateway 和 Cache 使用 <code>8081</code>、<code>/healthz</code> 和 <code>/readyz</code> 提供独立健康检查，组件 Service 与 Ingress 不发布健康端口。</li>
+<li>Gateway 在许可有效的控制流短暂中断期间保持就绪；Cache 只有取得租约并启动 Registry 后才就绪，Kubelet 不探测 mTLS 业务端口。</li>
 <li>浏览器会话可在同一 Gateway 组件的副本间使用，空闲续期不能超过最初绝对期限。</li>
 <li>自动停止在失联副本许可到期前保持等待，许可到期时该副本已经关闭用户连接。</li>
 <li>Cache 只生成一个 Recreate 副本，管理状态同时核对 Deployment 就绪与运行租约。</li>
