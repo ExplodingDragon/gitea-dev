@@ -157,69 +157,58 @@
                     <main>
                         <h1 id="上游同步流程"><a class="header" href="#上游同步流程">上游同步流程</a></h1>
 <h2 id="一固定同步输入"><a class="header" href="#一固定同步输入">一、固定同步输入</a></h2>
-<p>同步前获取 <code>upstream/main</code>、仍在维护的 PR 引用和 <code>origin/self</code>，为每个输入记录完整提交哈希。完整哈希使合并父提交、迁移映射和测试结果指向同一份代码，即使 PR 后续继续提交也不会改变本轮记录。</p>
-<p>内层工作分支使用 <code>self</code>，起点是已经推送的 <code>origin/self</code>。同步前同时核对 <code>modelmigration/migrations.go</code> 的最后编号、迁移映射最后一行和文档中的期望数据库版本；三者一致后，后续差异才能明确归属于本轮来源更新。</p>
+<p>每轮开始时分别获取 <code>upstream/main</code>、Codespace PR #38337 和 Pages PR #40071 的当前头，并记录完整提交哈希。再确认内层位于 <code>self</code>、工作树干净、外层用户的其他改动保持原状。</p>
+<p>固定提交让本轮结果可以重复审计，也为下一轮提供明确的增量起点。PR 头若已经包含目标上游提交，就由 PR 合并带入该上游历史。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>同步记录包含 <code>upstream/main</code>、相关 PR、<code>origin/self</code> 的完整哈希。</li>
-<li>内层当前分支为 <code>self</code>，同步起点可由 <code>origin/self</code> 复现。</li>
-<li>代码中的最后迁移、映射表和期望数据库版本表达同一序列。</li>
+<li>维护记录包含三个来源的完整提交哈希和获取日期。</li>
+<li>开始合并前，内层分支为 <code>self</code> 且没有未提交文件。</li>
+<li>上次同步的两个 PR 头均可从当前 <code>self</code> 历史解析。</li>
 </ul>
-<h2 id="二合并上游与-pr-更新"><a class="header" href="#二合并上游与-pr-更新">二、合并上游与 PR 更新</a></h2>
-<p>每个来源通过双父合并进入 <code>self</code>。PR 头已经包含目标 <code>upstream/main</code> 时，先合并包含实际功能变化的 PR，由它同时带入上游；随后合并其他 PR 头补齐来源历史。文件树不变的合并仍被保留，因为第二父明确表示同步位置，并改善下一轮共同祖先计算。</p>
-<p>自动合并结果先按业务行为审阅。普通文件保留来源 PR 的当前实现；两个 PR 修改同一行为时，组合双方可观察行为，并记录调用顺序、权限、事务和测试依据。生成文件使用仓库规定的生成入口更新。两个来源提出互斥业务语义时，以具体行为差异提交设计审阅，再形成合并提交。</p>
+<h2 id="二按正常方式合并业务代码"><a class="header" href="#二按正常方式合并业务代码">二、按正常方式合并业务代码</a></h2>
+<p>先合并包含主要业务变化的 PR，再合并另一个 PR 的最新头。两个合并都保留第二父，使 PR 原始提交和作者顺序完整进入 <code>self</code>。非数据库冲突按两个功能正常组合后的行为解决，例如仓库转移同时满足上游通知、Codespace 写锁和 Pages 生命周期更新。</p>
+<p>合并完成后检查来源祖先关系，并比较每个合并相对第一父的文件差异。这个步骤确认业务代码来自固定 PR 头，而不是维护分支重新实现的一套近似逻辑。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>每个当前 PR 头都是 <code>self</code> 的祖先，并可作为对应合并提交的第二父定位。</li>
-<li>PR 头包含目标上游时，目标上游也是最终 <code>self</code> 的祖先。</li>
-<li>文件树不变的来源更新仍有双父提交，且树对象与第一父相同。</li>
-<li>人工组合的业务行为在冲突记录中有原因、最终顺序和测试入口。</li>
+<li>每个 PR 更新都有对应的双父合并提交。</li>
+<li>两个固定 PR 头和目标上游提交均为新 <code>self</code> 的祖先。</li>
+<li>非数据库冲突的结果覆盖双方已有测试所表达的行为。</li>
 </ul>
-<h2 id="三移植数据库变化"><a class="header" href="#三移植数据库变化">三、移植数据库变化</a></h2>
-<p>比较上次固定的 PR 头与本轮 PR 头之间的 <code>modelmigration</code> 差异，并按变化落点选择一种方式：</p>
-<ol>
-<li>来源没有数据库差异时，保留现有 patch 和数据库版本，只更新“当前已同步 PR 头”。</li>
-<li>来源增加尚未进入 <code>self</code> 的新迁移时，按来源相对顺序为它分配 <code>self</code> 末尾的连续编号。</li>
-<li>来源修改已经进入 <code>self</code> 的旧迁移时，现有 patch 保持已发布结构，把新增表、列、索引或数据变换放进末尾新的 <code>patchN</code>。</li>
-</ol>
-<p>第三种方式保证已经运行 <code>self</code> 的数据库会执行增量，也让低版本数据库按同一原生序列得到相同结构。新文件使用 <code>pr-&lt;来源 PR&gt;-v&lt;self 编号&gt;-patch&lt;序号&gt;.go</code>，并在迁移列表、映射、逐项文档、版本文档和验证记录中同步登记。</p>
-<p>迁移记录使用独立普通提交。提交只包含迁移列表、迁移实现和直接测试，使来源业务代码与 <code>self</code> 的数据库安排可以分别审阅。</p>
+<h2 id="三安排数据库迁移"><a class="header" href="#三安排数据库迁移">三、安排数据库迁移</a></h2>
+<p>对比上次与本次来源头的 <code>modelmigration</code> 变化，逐项判断它属于全新来源迁移，还是对已经进入 <code>self</code> 的来源迁移追加内容。文件名使用 <code>pr-&lt;来源 PR&gt;-v&lt;来源迁移编号&gt;-patch&lt;N&gt;</code> 保存稳定来源身份，实际执行位置统一追加到 <code>self</code> 迁移列表末尾。</p>
+<p>来源的完整建表迁移若已经由 <code>self</code> 早期迁移执行，就比较结构差异并只移植增量。上游新增迁移若与 <code>self</code> 已发布编号冲突，则保持实现内容，重新安排到 <code>self</code> 的连续末尾编号。这样旧 <code>self</code> 实例能沿原生迁移器升级，非数据库代码仍与来源一致。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>新迁移从当前末尾连续编号，<code>ExpectedDBVersion()</code> 等于最后编号加一。</li>
-<li>已发布 patch 与其固定提交或上一已发布头内容一致。</li>
-<li>旧迁移的来源增量在新 patch 中可独立执行，并有幂等性与关键约束测试。</li>
-<li>迁移记录提交只包含 <code>modelmigration</code> 及直接测试。</li>
-<li>文件名、映射、逐项文档和实际注册编号一致。</li>
+<li>每项来源数据库变化都在迁移映射中有唯一记录。</li>
+<li><code>self</code> 迁移编号从上一项开始连续递增。</li>
+<li>已发布迁移的来源增量拥有独立实现和直接测试。</li>
 </ul>
-<h2 id="四代码质量与完整验证"><a class="header" href="#四代码质量与完整验证">四、代码质量与完整验证</a></h2>
-<p>先审阅来源更新是否已经清理被替代的入口、模板、前端组件和测试，再执行 <code>make fmt</code>、<code>make tidy</code> 和许可证生成检查。静态检查使用 <code>make checks</code> 与 <code>make lint</code>，构建使用 <code>make build</code>；测试使用 <code>make test-migration</code>、<code>make test-backend</code>、<code>make test-frontend</code> 和适用的集成测试目标。Gitea 测试统一由 Make 入口启动，以采用仓库维护的构建标签、超时和环境设置。</p>
-<p>完整集成测试存在已确认的环境差异时，验证记录写明测试名、实际值、期望值、工具版本和与本轮代码的关系。Playwright 端到端测试需要浏览器及系统动态库，环境具备后直接运行标准 Make 目标。维护文档使用 mdBook 构建验证链接和结构。</p>
+<h2 id="四验证代码与升级路径"><a class="header" href="#四验证代码与升级路径">四、验证代码与升级路径</a></h2>
+<p>使用 Gitea 仓库规定的 Make 目标执行格式化、依赖整理、生成检查、静态检查、构建、迁移测试、完整后端测试、前端测试、集成测试和端到端测试。迁移直接测试至少覆盖重复执行、保留数据和本次关键结构变化。</p>
+<p>集成测试的环境差异需要记录测试名、工具版本、实际值和期望值；与本轮无关且经用户确认的既知差异可以保留记录，其他失败继续修复。完成后执行 <code>make clean</code>，确保测试二进制和临时目录不进入提交。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>格式化、依赖、许可证、静态检查、构建、迁移、后端和前端测试都有实际结果。</li>
-<li>功能相关集成测试在完整集成套件或定向 Make 目标中运行。</li>
-<li>环境相关失败记录具体断言和工具版本，其他测试继续运行到套件结束。</li>
-<li>文档可以由当前仓库的 mdBook 配置完整构建。</li>
+<li>Gitea 测试均从仓库 Make 目标启动。</li>
+<li>数据库版本从上一版 <code>self</code> 实际升级到新期望版本。</li>
+<li>清理后内层工作树干净，没有测试二进制或临时集成目录。</li>
 </ul>
-<h2 id="五固定外层仓库并推送"><a class="header" href="#五固定外层仓库并推送">五、固定外层仓库并推送</a></h2>
-<p>验证完成后，先在内层 <code>self</code> 提交所有计划内代码并确认工作树干净。外层 <code>main</code> 只暂存内层 Gitea 提交指针和 <code>src/maintenance/self/</code> 文档；外层其他在制功能改动保持原状态。推送前重新获取远端并确认没有远端前进，然后先推内层 <code>self</code>，验证远端哈希，再推外层 <code>main</code>。</p>
-<p>这个顺序保证外层提交引用的内层对象已经可从远端取得，同时维持外层 <code>main</code> 作为部署和维护文档入口、内层 <code>self</code> 作为 Gitea 实现分支的职责划分。</p>
+<h2 id="五更新维护文档"><a class="header" href="#五更新维护文档">五、更新维护文档</a></h2>
+<p>同步更新总览、数据库版本、迁移映射、Git 历史、冲突记录、逐项迁移说明和验证记录。文档说明每项设计为什么这样安排，并把结果转成可验证行为。</p>
+<p>文件名中的来源迁移编号与 <code>self</code> 实际编号分别记录，防止下一轮因为上游顺延迁移而误改维护文件身份。文档构建通过后，再固定外层子模块指针。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>内层维护提交已推送到 <code>origin/self</code>，远端哈希等于本地 <code>self</code>。</li>
-<li>外层维护提交只包含 <code>gitea</code> 指针和 <code>src/maintenance/self/</code> 文档。</li>
-<li>外层 <code>main</code> 推送后，远端提交可以取得它引用的内层 Gitea 对象。</li>
-<li>外层已有的其他在制改动保持未暂存或原有暂存状态。</li>
+<li>每个设计章节末尾都有“实现验收点”。</li>
+<li>所有提交、来源头、迁移编号和期望版本与代码一致。</li>
+<li><code>src/SUMMARY.md</code> 能进入全部当前逐项迁移说明。</li>
 </ul>
-<h2 id="六处理版本机制变化"><a class="header" href="#六处理版本机制变化">六、处理版本机制变化</a></h2>
-<p>如果上游更换迁移版本存储方式，或真实数据库来源无法由连续编号表达，本轮同步在最后一个已验证提交处结束，并记录来源分支、数据库版本、冲突编号和目标结构。获得明确的升级来源与目标后，再设计一次性转换。</p>
-<p>这种处理让常规同步始终只维护 Gitea 原生版本状态，同时为真实出现的特殊升级保留明确输入和恢复点。</p>
+<h2 id="六提交与推送"><a class="header" href="#六提交与推送">六、提交与推送</a></h2>
+<p>先提交并推送内层 <code>gitea/self</code>，确认远端 <code>self</code> 指向本轮最终提交。然后在外层只暂存 <code>gitea</code> 子模块指针、<code>src/maintenance/self/</code> 和 <code>src/SUMMARY.md</code>，提交并推送 <code>gitea-dev/main</code>。</p>
+<p>这个顺序保证外层记录引用的内层提交已经在远端可获取，同时保护外层其他子模块和设计文档中的用户改动。每次推送前重新获取远端分支，确认没有未接入的新提交。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>错误记录包含来源、当前数据库版本、冲突迁移和预期目标结构。</li>
-<li>最后一个已验证提交可以检出、构建和运行。</li>
-<li>新转换方案开始前有可复现的数据库来源和升级目标。</li>
+<li><code>origin/self</code> 与内层本地 <code>self</code> 指向同一提交。</li>
+<li>外层维护提交只包含 Gitea 指针和本轮维护文档。</li>
+<li><code>origin/main</code> 与外层本地 <code>main</code> 指向同一提交，其他用户改动仍保持未暂存状态。</li>
 </ul>
 
                     </main>

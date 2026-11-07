@@ -156,65 +156,49 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="合并结果与冲突解决记录"><a class="header" href="#合并结果与冲突解决记录">合并结果与冲突解决记录</a></h1>
-<h2 id="2026-11-04-更新结果"><a class="header" href="#2026-11-04-更新结果">2026-11-04 更新结果</a></h2>
-<p>本轮固定 Codespace PR #38337 头 <code>18086bdaa7bcb226306e3713647e7ff6e3dac30d</code>、Pages PR #40071 头 <code>d362d8afbb4f5184f01cb0e33b316f5eeea9810e</code> 和它们共同包含的 <code>upstream/main@4d00ed2a1e2f4d32b66a71c3eecabc6d6703f6c0</code>。</p>
-<p>Codespace 合并由 Git 自动完成，合并提交 <code>74ef7df9ba</code> 相对原 <code>self</code> 修改 82 个文件。变化包括 Manager 按站点或用户作用域领取注册令牌、通过 RPC 注册、保存长期运行身份，以及九项上游修复。旧的网页预创建 Manager、网页重置 Manager 密钥和对应弹窗、前端组件及过时测试已由来源提交整体清理。</p>
-<p>Pages 最新头只合并相同的上游提交。Codespace 合并完成后，它需要的内容已经全部存在，因此 <code>0a47af0f52</code> 的树与第一父 <code>d552c30170</code> 相同。仍保留双父合并，是为了准确固定 Pages 当前头并为下一次同步建立共同祖先。</p>
+<h2 id="本轮固定结果"><a class="header" href="#本轮固定结果">本轮固定结果</a></h2>
+<p>2026-11-07 从 <code>self@0a47af0f52</code> 合并 Codespace PR <code>68bcefaa69</code> 和 Pages PR <code>e645501a81</code>，两者都包含 <code>upstream/main@c74f2f9216</code>。最终头为 <code>53d76a7ab0</code>，业务代码按两个 PR 的正常组合运行，数据库期望版本从 368 提升到 372。</p>
+<p>本轮只把数据库迁移执行位置作为长期维护差异。其他冲突以保留上游当前行为、Codespace 功能和 Pages 功能为目标解决。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>Codespace 和 Pages 合并过程没有未解决的文本冲突。</li>
-<li><code>74ef7df9ba</code> 的第二父为 <code>18086bdaa7</code>，<code>0a47af0f52</code> 的第二父为 <code>d362d8afbb</code>。</li>
-<li><code>d552c30170^{tree}</code> 与 <code>0a47af0f52^{tree}</code> 相同。</li>
-<li>代码中已经没有旧的 <code>CreateManager</code>、<code>ResetManagerSecret</code> 和 <code>manager_secret_modal</code> 实现入口。</li>
+<li>三个固定来源均为最终头的祖先。</li>
+<li>最终迁移列表连续到 371，期望数据库版本为 372。</li>
+<li><code>git status</code> 不包含未解决冲突标记或未合并路径。</li>
 </ul>
-<h2 id="本轮数据库迁移安排"><a class="header" href="#本轮数据库迁移安排">本轮数据库迁移安排</a></h2>
-<p>自动合并会把来源 PR 新增的注册令牌表放进现有 <code>pr-38337-v365-patch1.go</code>。这一文件对应已经发布的 <code>self</code> 迁移 365，旧 <code>self</code> 数据库不会再次执行它。为了让版本 367 的数据库也能获得新表，迁移提交 <code>d552c30170</code> 恢复原 patch1，并把新增表定义移到 <code>pr-38337-v367-patch2.go</code>。</p>
-<p>这不是业务实现分叉：<code>ManagerRegistrationToken</code> 模型、服务、RPC、页面和测试保持来源 PR 内容。<code>self</code> 只改变建表发生的迁移位置，并补充直接迁移测试。低版本数据库执行完整序列，旧 <code>self</code> 数据库执行迁移 367，两条路径都得到当前业务模型需要的表。</p>
+<h2 id="迁移列表与来源文件冲突"><a class="header" href="#迁移列表与来源文件冲突">迁移列表与来源文件冲突</a></h2>
+<p>两个 PR 的最新头都在上游迁移 365—367 之后把自己的完整建表迁移放到 368。<code>self</code> 已经在 365—367 发布 Codespace、Pages 和 Manager 注册令牌，因此合并时保留这三项既有含义，并把上游三项迁移追加为 368—370。</p>
+<p>Codespace 完整迁移不重复注册，因为它的基础表和注册令牌已由 <code>self</code> 建立；来源新增的索引删除独立成为迁移 371。Pages 完整迁移也不重复注册，因为 <code>self</code> 迁移 366 已经建立相同五张表。来源文件改用稳定名称，实际编号在迁移列表和映射中记录。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>d552c30170</code> 的差异只包含四个 <code>modelmigration</code> 文件。</li>
-<li>patch1 的对象哈希为 <code>2d7a6d19571fc53b8de2b591e23344eb89e77712</code>，与本轮开始时一致。</li>
-<li>patch2 建立 <code>codespace_manager_registration_token</code>，并验证重复执行、列、索引和令牌唯一约束。</li>
-<li>完成迁移 367 后数据库版本为 368。</li>
+<li><code>AddCodespaceTables</code>、<code>AddPagesTables</code>、<code>AddCodespaceManagerRegistrationTokenTable</code> 各注册一次。</li>
+<li>上游 365—367 的实现分别注册为 <code>self</code> 368—370。</li>
+<li>Codespace <code>queued_timeout</code> 索引由迁移 371 删除，迁移可以重复执行。</li>
 </ul>
-<h2 id="初次组合两个-pr-的冲突"><a class="header" href="#初次组合两个-pr-的冲突">初次组合两个 PR 的冲突</a></h2>
-<p>Pages PR #40071 初次合并到已经包含 Codespace PR #38337 的 <code>self</code> 时产生五个文本冲突。两项功能修改相邻的路由、生命周期和测试位置，冲突来自共同插入点。合并提交 <code>5ccb5d3a0d01dcf96849c7a2eb418140b5bc4f51</code> 保存组合结果。</p>
-<div class="table-wrapper"><table><thead><tr><th>文件</th><th>Codespace 行为</th><th>Pages 行为</th><th>最终组合</th></tr></thead><tbody>
-<tr><td><code>modelmigration/migrations.go</code></td><td>注册 Codespace 365</td><td>注册 Pages 365</td><td>Codespace 365，Pages 366</td></tr>
-<tr><td><code>routers/api/v1/api.go</code></td><td>比较接口支持 Codespace 令牌鉴权</td><td>注册 Pages 仓库接口</td><td>保留 Pages 接口，比较接口继续使用 Codespace 鉴权链</td></tr>
-<tr><td><code>services/org/org.go</code></td><td>复用组织删除前置检查</td><td>组织变私有时同步关闭 Pages</td><td>保留前置检查并传递 Pages 状态时间</td></tr>
-<tr><td><code>services/repository/delete.go</code></td><td>仓库级锁和 Codespace 解绑</td><td>Pages 生命周期锁、删除状态和内容清理</td><td>按统一锁顺序执行双方清理</td></tr>
-<tr><td><code>tests/integration/api_admin_test.go</code></td><td>增加 Codespace 定时任务</td><td>增加三个 Pages 定时任务</td><td>使用 50 条分页并断言总数与数组均为 34</td></tr>
-</tbody></table>
-</div>
+<h2 id="仓库转移冲突"><a class="header" href="#仓库转移冲突">仓库转移冲突</a></h2>
+<p><code>services/repository/transfer.go</code> 同时发生三类变化：上游改用已加载的旧所有者对象发送通知；Codespace 使用仓库级 <code>WorkingLockKey</code> 串行化写操作；Pages 在转移期间锁定生命周期状态并更新时间。最终实现按“仓库写锁、加载所有者、Pages 生命周期锁、数据库事务、对象通知”的关系组合三者。</p>
+<p>Pages 最新头还补充转移测试，验证转移完成后站点仍存在且 <code>PagesUpdatedUnixNano</code> 增加。这个冲突结果属于两个 PR 的正常组合，不是 <code>self</code> 专用业务分支。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>初次人工冲突文件与表中五项一致。</li>
-<li>Codespace 为迁移 365，Pages 为迁移 366，两项迁移函数保持各自来源结构。</li>
-<li>Pages 路由和 Codespace 比较接口鉴权都能从最终路由表访问。</li>
-<li>管理 API 定时任务测试断言 34 项并读取足够的分页结果。</li>
+<li>接受转移和直接转移路径都使用仓库级写锁。</li>
+<li>通知服务接收转移前已加载的旧所有者对象。</li>
+<li>Pages 生命周期锁覆盖转移事务，转移测试验证更新时间增加。</li>
 </ul>
-<h2 id="仓库与组织生命周期组合"><a class="header" href="#仓库与组织生命周期组合">仓库与组织生命周期组合</a></h2>
-<p>组织变为私有时，最终实现保留 Codespace 的删除前置检查，并把同一个 Pages 状态时间传给本轮派生仓库更新。这样仓库可见性和 Pages 状态在同一业务变化中具有一致顺序。</p>
-<p>仓库删除按以下顺序组合两项功能：</p>
-<ol>
-<li>取得仓库级全局锁；</li>
-<li>取得 Pages 生命周期锁和状态时间；</li>
-<li>开启仓库删除事务；</li>
-<li>解绑 Codespace 关系；</li>
-<li>标记 Pages 删除状态并收集摘要；</li>
-<li>删除仓库及其他关联数据并提交；</li>
-<li>释放 Pages 生命周期锁；</li>
-<li>清理仓库文件、Pages 成品和域名；</li>
-<li>返回后释放仓库级全局锁。</li>
-</ol>
-<p>仓库转移采用相同的锁顺序，因此删除、转移、Codespace 清理和 Pages 生命周期更新可以围绕同一仓库串行化。数据库内的两项清理都在仓库行删除前完成，外部存储在事务成功后处理，保持 Gitea 现有事务边界。</p>
+<h2 id="数据库兼容边界"><a class="header" href="#数据库兼容边界">数据库兼容边界</a></h2>
+<p>上一版 <code>self</code> 数据库版本 368 与当前分支保持连续关系，本轮直接执行 368—371。分叉前版本不高于 365 的数据库也能按完整 <code>self</code> 序列升级。</p>
+<p>迁移 365 之后的上游、Codespace PR 和 Pages PR 数据库使用了不同编号含义，因此它们继续沿各自分支升级。明确这条边界的原因是 Gitea 只存储版本数字；在数字相同但历史不同的情况下，根据表是否存在自动猜测来源会增加不可验证分支，也会掩盖错误部署。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>组织变私有会同时更新仓库可见性与 Pages 状态。</li>
-<li>仓库删除事务内先完成 Codespace 解绑和 Pages 状态提交，再删除仓库行。</li>
-<li>仓库删除与转移都按仓库级锁、Pages 生命周期锁的顺序取得锁。</li>
-<li>外部文件和 Pages 成品只在数据库事务成功后清理。</li>
+<li>旧 <code>self@0a47af0f52</code> 的版本 368 可以升级到 372。</li>
+<li>分叉前数据库可以执行 365—371 得到完整结构。</li>
+<li>迁移代码不包含按猜测表结构切换分支历史的识别逻辑。</li>
+</ul>
+<h2 id="代码组合检查"><a class="header" href="#代码组合检查">代码组合检查</a></h2>
+<p>非数据库代码由两个 PR 头与共同上游组成。迁移目录中的文件名、注册位置、增量实现和直接测试表达 <code>self</code> 的升级历史；业务模型、服务、路由、模板和前端保持来源实现。完整后端、前端、集成和浏览器测试用于验证这种组合。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>Codespace 和 Pages 的模型、服务及路由测试通过。</li>
+<li>仓库转移组合行为有直接后端测试覆盖。</li>
+<li><code>self</code> 特有的代码差异可以在 <code>modelmigration</code> 目录和迁移列表中定位。</li>
 </ul>
 
                     </main>

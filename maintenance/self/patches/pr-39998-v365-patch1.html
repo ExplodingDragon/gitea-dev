@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Codespace PR #38337 迁移 367 patch2 - Gitea Pages 与 Codespace 设计文档</title>
+        <title>上游 PR #39998 来源迁移 365 patch1 - Gitea Pages 与 Codespace 设计文档</title>
 
 
         <!-- Custom HTML head -->
@@ -155,73 +155,41 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="codespace-pr-38337迁移-367-patch2"><a class="header" href="#codespace-pr-38337迁移-367-patch2">Codespace PR #38337：迁移 367 patch2</a></h1>
-<h2 id="来源与目的"><a class="header" href="#来源与目的">来源与目的</a></h2>
-<p>本项迁移来自 Codespace PR #38337 的提交 <code>3fc98fc1c089092a2d77978f8d070fe595f595f2</code>。该提交把 Manager 注册流程改为按站点或用户作用域领取注册令牌，并在来源的旧迁移 365 中增加 <code>codespace_manager_registration_token</code> 表。</p>
-<p>上一版 <code>self</code> 已经完成迁移 365 和 366，数据库版本为 367。为了让这类数据库执行新建表操作，<code>self</code> 把来源增量安排为下一个迁移 367，并命名为 Codespace <code>patch2</code>。迁移完成后数据库版本为 368。</p>
+                        <h1 id="上游-pr-39998来源迁移-365-patch1"><a class="header" href="#上游-pr-39998来源迁移-365-patch1">上游 PR #39998：来源迁移 365 patch1</a></h1>
+<h2 id="来源与执行位置"><a class="header" href="#来源与执行位置">来源与执行位置</a></h2>
+<p>上游提交 <code>d919301d36504d5fd79bb01b318b67befa3c7abc</code> 用迁移取代运行时对双重编码 JSON 的兼容处理。该变化在上游注册为迁移 365；<code>self</code> 的 365—367 已发布，因此实际注册为迁移 368，完成后数据库版本为 369。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>来源变化提交为 <code>3fc98fc1c0</code>，当前同步 PR 头为 <code>18086bdaa7</code>。</li>
-<li><code>migrations.go</code> 将 <code>AddCodespaceManagerRegistrationTokenTable</code> 注册为迁移 367。</li>
-<li>文件名为 <code>pr-38337-v367-patch2.go</code>，完成后的数据库版本为 368。</li>
+<li>文件名为 <code>pr-39998-v365-patch1.go</code>。</li>
+<li><code>NormalizeLegacyConfigJSON</code> 在 <code>self</code> 中注册为迁移 368。</li>
+<li>实现内容与 <code>upstream/main@c74f2f9216:modelmigration/v29/v365.go</code> 一致。</li>
 </ul>
-<h2 id="表结构"><a class="header" href="#表结构">表结构</a></h2>
-<p>迁移建立 <code>codespace_manager_registration_token</code>，字段与当前业务模型一致：</p>
-<div class="table-wrapper"><table><thead><tr><th>字段</th><th>作用</th><th>数据库约束</th></tr></thead><tbody>
-<tr><td><code>id</code></td><td>主键标识</td><td>XORM 默认主键行为</td></tr>
-<tr><td><code>token</code></td><td>40 字符注册令牌</td><td>唯一索引</td></tr>
-<tr><td><code>user_id</code></td><td>0 表示站点作用域，正数表示个人用户作用域</td><td>普通索引</td></tr>
-<tr><td><code>is_active</code></td><td>标记当前令牌是否有效</td><td>布尔字段</td></tr>
-<tr><td><code>created</code></td><td>创建时间</td><td><code>created</code> 自动时间</td></tr>
-<tr><td><code>updated</code></td><td>更新时间</td><td><code>updated</code> 自动时间</td></tr>
-</tbody></table>
-</div>
-<p>用户作用域查询和令牌精确查找是注册、轮换与失效校验的核心路径，因此分别保留用户索引和令牌唯一索引。迁移只负责建立结构，令牌由设置服务首次访问时生成。</p>
+<h2 id="数据处理"><a class="header" href="#数据处理">数据处理</a></h2>
+<p>迁移遍历 <code>repo_unit.config</code> 和 <code>login_source.cfg</code>，把历史双重编码 JSON 转换为正常 JSON。无法安全转换的值按来源实现保留或由登录源处理逻辑停用，避免迁移过程中凭空重写未知内容。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>表包含 <code>id</code>、<code>token</code>、<code>user_id</code>、<code>is_active</code>、<code>created</code>、<code>updated</code> 六列。</li>
-<li><code>token</code> 有唯一索引，<code>user_id</code> 有普通索引。</li>
-<li>插入两个相同令牌时，第二次插入返回数据库错误。</li>
-<li>迁移执行后，业务模型的 <code>TableName()</code> 与迁移表名一致。</li>
+<li>正常 JSON 保持正常，双重编码 JSON 被解码一次。</li>
+<li>仓库单元与登录源两条数据路径均有测试覆盖。</li>
+<li>来源直接测试以 <code>pr-39998-v365-patch1_test.go</code> 名称保留并通过。</li>
 </ul>
-<h2 id="升级行为"><a class="header" href="#升级行为">升级行为</a></h2>
-<p>全新安装和数据库版本 365 会按 365、366、367 依次建立完整结构。上一版 <code>self</code> 的版本 367 只执行本项。当前 Codespace PR 单独建立的版本 366 已经可能由来源迁移 365 建立该表；它进入 <code>self</code> 后执行 Pages 366，再由本项通过 <code>Sync</code> 幂等确认结构。</p>
-<p>这三条路径都由 Gitea 原生迁移器处理，并在完成后记录版本 368。</p>
+<h2 id="升级关系"><a class="header" href="#升级关系">升级关系</a></h2>
+<p>上一版 <code>self</code> 数据库版本为 368，启动当前代码时首先执行本项。全新安装和分叉前数据库则先完成 Codespace、Pages 与注册令牌迁移，再执行本项，最终结构与旧 <code>self</code> 升级结果一致。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>AddCodespaceManagerRegistrationTokenTable</code> 连续执行两次均成功。</li>
-<li>旧 <code>self</code> 数据库无需重新执行迁移 365 即可获得新表。</li>
-<li>当前 Codespace PR 数据库已有同名表时，迁移 367 可以完成幂等同步。</li>
-<li>所有可接受来源完成后数据库版本均为 368。</li>
-</ul>
-<h2 id="文件提交与测试"><a class="header" href="#文件提交与测试">文件、提交与测试</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>项目</th><th>值</th></tr></thead><tbody>
-<tr><td>来源变化提交</td><td><code>3fc98fc1c089092a2d77978f8d070fe595f595f2</code></td></tr>
-<tr><td>当前已同步 PR 头</td><td><code>18086bdaa7bcb226306e3713647e7ff6e3dac30d</code></td></tr>
-<tr><td><code>self</code> 文件</td><td><code>modelmigration/v29/pr-38337-v367-patch2.go</code></td></tr>
-<tr><td>直接测试</td><td><code>modelmigration/v29/pr-38337-v367-patch2_test.go</code></td></tr>
-<tr><td><code>self</code> 迁移编号</td><td>367</td></tr>
-<tr><td>完成后的数据库版本</td><td>368</td></tr>
-<tr><td>迁移记录提交</td><td><code>d552c301702c721fd6a30c730b6e4a9844bfb049</code></td></tr>
-</tbody></table>
-</div>
-<p>直接测试使用 Gitea 迁移测试环境，覆盖重复执行、完整列集合、令牌唯一索引、用户索引和重复令牌约束。完整 <code>make test-migration</code> 同时验证历史迁移和当前期望版本。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>迁移实现与直接测试在同一个迁移记录提交中。</li>
-<li><code>make test-migration</code> 成功执行 patch2 直接测试和全部历史迁移测试。</li>
-<li>迁移记录提交不包含 Codespace 业务代码或 Pages 代码。</li>
+<li>版本 368 的旧 <code>self</code> 将本项作为第一项待执行迁移。</li>
+<li>迁移成功后数据库版本为 369，并继续执行 369—371。</li>
+<li>完整迁移测试确认历史数据库可经过本项到达 372。</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../../maintenance/self/patches/pr-38337-v365-patch1.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../../maintenance/self/patches/pr-40071-v365-patch1.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../../../maintenance/self/patches/pr-40071-v366-patch1.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../../maintenance/self/patches/pr-40231-v366-patch1.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -231,11 +199,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../../maintenance/self/patches/pr-38337-v365-patch1.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../../maintenance/self/patches/pr-40071-v365-patch1.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../../../maintenance/self/patches/pr-40071-v366-patch1.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../../maintenance/self/patches/pr-40231-v366-patch1.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

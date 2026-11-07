@@ -157,62 +157,75 @@
                     <main>
                         <h1 id="gitea-self-分支维护总览"><a class="header" href="#gitea-self-分支维护总览">Gitea self 分支维护总览</a></h1>
 <h2 id="维护目标"><a class="header" href="#维护目标">维护目标</a></h2>
-<p><code>self</code> 是本项目直接维护的 Gitea 分支。它从上游提交 <code>d3021b69eec62d40752f7034ced4dd091fe085af</code> 建立，通过双父合并完整保留 Codespace PR #38337、Pages PR #40071 和它们包含的上游历史。外层 <code>gitea-dev/main</code> 固定已验证的内层提交并保存维护文档，内层 <code>gitea/self</code> 承载可以部署的 Gitea 代码与数据库迁移序列。</p>
-<p>两个 PR 在上游各自开发时都从迁移 365 开始。<code>self</code> 直接采用自己的连续迁移序列：Codespace 基础结构为 365，Pages 为 366，Codespace Manager 注册令牌表为 367。数据库进入这组序列后继续沿 <code>self</code> 升级，当前期望数据库版本为 368。</p>
+<p><code>self</code> 是本项目直接部署和持续升级的 Gitea 分支。内层仓库使用 <code>gitea/self</code> 保存代码与数据库迁移，外层仓库使用 <code>gitea-dev/main</code> 固定已验证的内层提交并保存维护记录。</p>
+<p>非数据库代码按普通方式合并 Codespace PR #38337、Pages PR #40071 和它们包含的上游更新，保留两个 PR 的原始提交以及双父合并记录。数据库迁移采用 <code>self</code> 自己的连续编号，因为迁移 365 之后，<code>self</code>、上游和两个 PR 已经对相同版本号赋予不同结构含义。当前 <code>self</code> 头为 <code>53d76a7ab066085c21af9098862392ba1d2fc420</code>，期望数据库版本为 372。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>外层仓库当前分支为 <code>main</code>，内层 Gitea 当前分支为 <code>self</code>。</li>
-<li>内层分支同时包含两个 PR 的完整提交历史和上游 <code>main@4d00ed2a1e</code>。</li>
-<li>迁移列表连续注册 365、366、367，<code>ExpectedDBVersion()</code> 返回 368。</li>
+<li>内层当前分支为 <code>self</code>，外层当前分支为 <code>main</code>。</li>
+<li><code>upstream/main@c74f2f9216</code>、Codespace PR 头 <code>68bcefaa69</code> 和 Pages PR 头 <code>e645501a81</code> 都是当前 <code>self</code> 的祖先。</li>
+<li><code>modelmigration.ExpectedDBVersion()</code> 对当前代码返回 372。</li>
 </ul>
-<h2 id="当前组成"><a class="header" href="#当前组成">当前组成</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>内容</th><th>固定来源</th><th><code>self</code> 中的记录</th></tr></thead><tbody>
-<tr><td>初始上游基线</td><td><code>upstream/main@d3021b69ee</code></td><td><code>self</code> 建立点</td></tr>
-<tr><td>当前上游更新</td><td><code>upstream/main@4d00ed2a1e</code></td><td>随两个最新 PR 头进入</td></tr>
-<tr><td>Codespace 初始实现</td><td>PR #38337 <code>1c0f24e4fd</code></td><td>合并提交 <code>6702aa22fe</code></td></tr>
-<tr><td>Codespace 上一轮更新</td><td>PR #38337 <code>abd341fa30</code></td><td>合并提交 <code>2117f129ac</code></td></tr>
-<tr><td>Codespace 当前实现</td><td>PR #38337 <code>18086bdaa7</code></td><td>合并提交 <code>74ef7df9ba</code></td></tr>
-<tr><td>Pages 初始实现</td><td>PR #40071 <code>534024baa2</code></td><td>合并提交 <code>5ccb5d3a0d</code></td></tr>
-<tr><td>Pages 上一轮更新</td><td>PR #40071 <code>ca49ed1a84</code></td><td>合并提交 <code>157dca8bb2</code></td></tr>
-<tr><td>Pages 当前实现</td><td>PR #40071 <code>d362d8afbb</code></td><td>合并提交 <code>0a47af0f52</code></td></tr>
-<tr><td>Codespace 基础迁移</td><td>PR #38337 原迁移 365</td><td><code>pr-38337-v365-patch1.go</code></td></tr>
-<tr><td>Pages 基础迁移</td><td>PR #40071 原迁移 365</td><td><code>pr-40071-v366-patch1.go</code></td></tr>
-<tr><td>Manager 注册令牌迁移</td><td>PR #38337 提交 <code>3fc98fc1c0</code> 对原迁移 365 的增量</td><td><code>pr-38337-v367-patch2.go</code></td></tr>
-<tr><td>当前 <code>self</code> 头提交</td><td>两个最新 PR 头均已接入</td><td><code>0a47af0f52</code></td></tr>
+<h2 id="本轮更新结果"><a class="header" href="#本轮更新结果">本轮更新结果</a></h2>
+<p>本轮从上一版 <code>self@0a47af0f52</code> 接入以下固定来源：</p>
+<div class="table-wrapper"><table><thead><tr><th>来源</th><th>固定提交</th><th>接入记录</th></tr></thead><tbody>
+<tr><td>上游主线</td><td><code>c74f2f921678fcb39b02852f566070fcae82a127</code></td><td>随两个 PR 的最新头进入</td></tr>
+<tr><td>Codespace PR #38337</td><td><code>68bcefaa69a3075e0b805abcaa34d2504d493fb7</code></td><td>双父合并 <code>31061a3800</code></td></tr>
+<tr><td>Pages PR #40071</td><td><code>e645501a8168070aa6daeee2789d8c4616c8b985</code></td><td>双父合并 <code>53d76a7ab0</code></td></tr>
+<tr><td>迁移文件整理</td><td>当前来源迁移身份保持稳定</td><td>普通提交 <code>e401021a12</code></td></tr>
+<tr><td><code>self</code> 迁移 368—371</td><td>三项上游迁移和一项 Codespace 增量</td><td>普通提交 <code>dc1a1f5b68</code></td></tr>
 </tbody></table>
 </div>
-<p>本轮 Codespace 更新带入 Manager 按站点或用户作用域注册的新流程，以及上游从 <code>1f51d2c318</code> 到 <code>4d00ed2a1e</code> 的九项提交。Pages 最新头只合并同一上游 <code>main</code>，因此它的更新合并提交保留第二父历史，但文件树与第一父提交相同。</p>
+<p>Codespace 和 Pages 的业务实现均按各自 PR 当前头合并。<code>services/repository/transfer.go</code> 同时保留上游的仓库所有者对象通知、Codespace 仓库写锁和 Pages 生命周期更新，这是两个 PR 正常组合后的行为。<code>self</code> 相对正常合并结果的长期维护差异只位于数据库迁移列表、迁移文件名、迁移实现和直接测试。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>PR #38337 头 <code>18086bdaa7</code>、PR #40071 头 <code>d362d8afbb</code> 和上游 <code>4d00ed2a1e</code> 都是当前 <code>self</code> 的祖先。</li>
-<li><code>74ef7df9ba</code> 和 <code>0a47af0f52</code> 都有两个父提交，第二父分别是本轮固定的两个 PR 头。</li>
-<li><code>0a47af0f52</code> 的文件树与第一父 <code>d552c30170</code> 相同，Pages 更新没有重复引入文件变化。</li>
+<li><code>31061a3800</code> 的第二父是 <code>68bcefaa69</code>，<code>53d76a7ab0</code> 的第二父是 <code>e645501a81</code>。</li>
+<li>仓库转移路径同时调用 <code>WorkingLockKey</code>、<code>LoadOwner</code>、<code>LockLifecycleState</code> 和对象形式的转移通知。</li>
+<li>数据库目录之外的业务代码不包含用于识别或绕过其他分支数据库的兼容层。</li>
 </ul>
-<h2 id="数据库维护方式"><a class="header" href="#数据库维护方式">数据库维护方式</a></h2>
-<p><code>self</code> 使用 Gitea 现有的 <code>version</code> 表、<code>modelmigration/migrations.go</code> 和迁移执行流程。每次数据库变化都在列表末尾分配下一个连续编号。已经进入 <code>self</code> 的迁移文件表示可能已经执行过的数据库历史，因此它的结构保持稳定；来源 PR 后续把新表追加到旧迁移时，<code>self</code> 把这部分增量放入新的 <code>patchN</code>，让低版本数据库和已经运行 <code>self</code> 的数据库都能沿同一序列到达最新结构。</p>
-<p>本轮 PR #38337 把 <code>codespace_manager_registration_token</code> 表追加到来源迁移 365。<code>self</code> 保留已发布的 Codespace 365 和 Pages 366，把新表独立注册为迁移 367。这样业务实现与上游 PR 一致，<code>self</code> 相对来源功能代码的维护差异集中在数据库迁移位置及其直接测试。</p>
+<h2 id="数据库升级关系"><a class="header" href="#数据库升级关系">数据库升级关系</a></h2>
+<p><code>self</code> 已发布的迁移 365—367 依次建立 Codespace、Pages 和 Codespace Manager 注册令牌结构。本轮在末尾追加迁移 368—371：</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: right"><code>self</code> 迁移</th><th>内容</th><th style="text-align: right">完成后版本</th></tr></thead><tbody>
+<tr><td style="text-align: right">368</td><td>规范化旧的仓库单元和登录源 JSON</td><td style="text-align: right">369</td></tr>
+<tr><td style="text-align: right">369</td><td>删除 OpenID 2.0 的 <code>user_open_id</code> 表</td><td style="text-align: right">370</td></tr>
+<tr><td style="text-align: right">370</td><td>为仓库增加 <code>latest_release_id</code></td><td style="text-align: right">371</td></tr>
+<tr><td style="text-align: right">371</td><td>删除 Codespace 已停用的排队超时索引</td><td style="text-align: right">372</td></tr>
+</tbody></table>
+</div>
+<p>昨天版本为 368 的 <code>self</code> 实例会顺序执行 368、369、370、371，因此可以直接升级到今天的版本 372。全新安装、分叉前数据库以及更早的 <code>self</code> 数据库也会沿同一序列升级。</p>
+<p>迁移 365 之后建立的上游数据库或单独 PR 数据库使用了另一套编号含义，它们继续沿各自分支升级。这个边界让 <code>self</code> 只维护一条可验证的原生迁移序列，也避免根据表结构猜测数据库来源。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>pr-38337-v365-patch1.go</code> 与本轮开始时 <code>self@157dca8bb2</code> 中的文件内容一致。</li>
-<li>注册令牌表只由 <code>pr-38337-v367-patch2.go</code> 创建，迁移 367 可以重复执行。</li>
-<li>迁移 367 验证列结构、令牌唯一索引和用户索引，重复令牌插入会得到数据库错误。</li>
-<li>除 <code>modelmigration</code> 及其直接测试外，本轮 Codespace 与 Pages 业务代码均来自两个固定 PR 头。</li>
+<li>版本 368 的 <code>self</code> 数据库有且只有四项待执行迁移，完成后版本为 372。</li>
+<li>数据库版本不高于 365 的分叉前实例会执行 <code>self</code> 尚未完成的全部迁移。</li>
+<li>运维记录能区分数据库来自 <code>self</code>，还是来自迁移 365 之后的上游或单独 PR。</li>
+</ul>
+<h2 id="迁移文件命名"><a class="header" href="#迁移文件命名">迁移文件命名</a></h2>
+<p>来源迁移文件使用以下格式：</p>
+<pre><code class="language-text">pr-&lt;来源 PR&gt;-v&lt;来源迁移编号&gt;-patch&lt;同一来源迁移的增量序号&gt;.go
+</code></pre>
+<p>文件名固定描述变化来自哪里，不跟随它在 <code>self</code> 中的实际执行位置变化。例如 <code>pr-38337-v365-patch3.go</code> 表示 Codespace PR #38337 对其来源迁移 365 的第三项数据库变化，它在当前 <code>self</code> 中实际注册为迁移 371。实际执行编号统一记录在 <code>migrations.go</code>、迁移映射和逐项说明中。</p>
+<p>这样设计后，后续上游移动迁移编号或再次合并 PR 时，维护文件仍能按来源稳定识别，Git 重命名也不会掩盖真实的迁移内容变化。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>所有来源化文件名都能指出来源 PR、来源迁移编号和增量序号。</li>
+<li>文件名中的来源编号与 <code>self</code> 实际编号分别记录，不混用含义。</li>
+<li>同一 PR、同一来源迁移的 <code>patchN</code> 按进入 <code>self</code> 的变化顺序递增。</li>
 </ul>
 <h2 id="文档入口"><a class="header" href="#文档入口">文档入口</a></h2>
 <ul>
-<li><a href="database-versioning.html">数据库版本与升级范围</a>解释迁移编号、数据库版本和可接受来源。</li>
-<li><a href="migration-map.html">迁移映射</a>记录来源变化到 <code>self</code> 编号的对应关系。</li>
-<li><a href="git-history.html">Git 历史结构</a>说明双父合并和迁移记录提交的职责。</li>
-<li><a href="upstream-sync.html">上游同步流程</a>给出以后接收上游、PR 和旧迁移增量的步骤。</li>
-<li><a href="conflict-resolutions.html">冲突解决记录</a>解释初次组合冲突和本轮迁移拆分理由。</li>
-<li><a href="verification.html">验证记录</a>列出执行过的检查、完整集成测试结果和环境限制。</li>
-<li><code>patches/</code> 为每一项 <code>self</code> 迁移保存来源、结构、升级行为和验证入口。</li>
+<li><a href="database-versioning.html">数据库版本与升级范围</a>说明版本 372 和支持的升级来源。</li>
+<li><a href="migration-map.html">迁移映射</a>记录七项来源迁移与 <code>self</code> 编号的对应关系。</li>
+<li><a href="git-history.html">Git 历史结构</a>记录双父合并和迁移移植提交。</li>
+<li><a href="upstream-sync.html">上游同步流程</a>给出下一轮接收上游与两个 PR 的完整流程。</li>
+<li><a href="conflict-resolutions.html">合并结果与冲突解决</a>说明本轮三个关键冲突如何组合。</li>
+<li><a href="verification.html">验证记录</a>保存实际执行的检查、测试结果和已确认的环境差异。</li>
+<li><code>patches/</code> 为每项来源迁移保存原因、执行位置和验证方式。</li>
 </ul>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>维护者可以从本页定位每个来源提交、合并提交、迁移编号和详细说明。</li>
-<li>三个当前迁移都在 <code>migration-map.md</code> 和对应的 <code>patches/</code> 文档中有记录。</li>
-<li>验证文档中的提交、数据库版本和测试结果与当前 <code>self</code> 一致。</li>
+<li>每项当前迁移都能从映射表进入对应逐项说明。</li>
+<li>Git 提交、数据库版本和测试结果在各文档中一致。</li>
+<li>每个设计章节末尾都有可直接执行或检查的“实现验收点”。</li>
 </ul>
 
                     </main>
