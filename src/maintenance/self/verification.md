@@ -2,119 +2,94 @@
 
 ## 验证范围与环境
 
-本页记录 2026-11-04 对 Gitea `self` 提交 `0a47af0f52a34516290caf54516f0a52a7e1743a` 的验证。环境为 Linux `6.18.60-1-lts`、Go `go1.27.3-X:nodwarf5`、Git `2.56.0`、Node.js `v24.22.1` 和 pnpm `12.16.1`。Gitea 的格式化、静态检查、构建和测试均从仓库 Make 目标启动。
+本页记录 2026-11-07 对 `self@53d76a7ab066085c21af9098862392ba1d2fc420` 的完整验证。环境为 Linux `6.18.60-1-lts`、Go `go1.27.3-X:nodwarf5`、Git `2.56.0`、Node.js `v24.22.1`、pnpm `12.16.1`。
 
-验证覆盖本轮上游九项提交、Codespace Manager 注册令牌流程、Pages 当前头、迁移 367 和此前两个 PR 的组合行为。
+验证覆盖 `upstream/main@c74f2f9216`、Codespace PR `68bcefaa69`、Pages PR `e645501a81`、`self` 迁移 368—371，以及昨天版本 368 到今天版本 372 的升级序列。
 
 **实现验收点**
 
-- 验证日期、内层完整提交和五项主要工具版本已记录。
-- 当前 `self` 可以解析到记录的提交 `0a47af0f52`。
-- 所有 Gitea 测试命令都使用 Make 入口。
+- 验证日期、最终完整提交和五项主要工具版本已记录。
+- 三个固定来源都是被验证提交的祖先。
+- 所有 Gitea 构建与测试均使用仓库 Make 目标。
 
-## 格式化、生成、静态检查与构建
+## 格式化、依赖、静态检查与构建
+
+| 命令 | 结果 | 说明 |
+| --- | --- | --- |
+| `make fmt` | 通过 | 未产生待提交格式差异 |
+| `make tidy` | 通过 | Go 模块声明保持整洁 |
+| `make go-licenses` | 通过 | 许可证清单无需更新 |
+| `make checks` | 通过 | 模块、生成文件、格式和漏洞调用检查完成 |
+| `make lint` | 通过 | Go 报告 0 项，621 个模板通过，前端、文档和配置检查通过 |
+| `make build` | 通过 | 生产前端资源与 Gitea 二进制构建成功 |
+
+`make checks` 报告依赖 `github.com/blakesmith/ar` 的上游记录 `GO-2026-6905`，当前没有修复版本；Gitea 的检查目标按既有规则记录后继续，命令状态为 0。构建版本为 `29.0.0+dev-410-g53d76a7ab0`。
+
+第一次 lint 受到先前集成测试遗留的 Bleve 二进制索引影响，标准 `make clean` 清理精确测试产物后重新执行，完整 lint 通过。最终提交不包含这些产物。
+
+**实现验收点**
+
+- 六个标准目标最终均以状态 0 退出。
+- 漏洞记录包含编号、依赖和当前无修复版本的事实。
+- 清理后重新运行的完整 lint 通过，内层没有生成文件差异。
+
+## 迁移、后端与前端测试
 
 | 命令 | 结果 | 覆盖内容 |
 | --- | --- | --- |
-| `make fmt` | 通过，未产生待提交格式差异 | Go 与仓库格式规则 |
-| `make tidy` | 通过，依赖声明整洁 | Go 模块和许可证依赖输入 |
-| `make go-licenses` | 通过，现有清单为最新 | Go 许可证生成结果 |
-| `make checks` | 通过 | pnpm 锁文件、SVG、Go 模块、OpenAPI、Swagger、格式和漏洞调用扫描 |
-| `make lint` | 通过，Go 报告 `0 issues`，626 个模板无错误 | Go、TypeScript、Vue、CSS、模板、OpenAPI、Markdown、工作流、JSON 与 YAML |
-| `make build` | 通过 | Vite 生产资源和无 CGO Gitea 二进制 |
+| `make migrations.individual.test#v29` | 通过 | 当前 v29 逐项迁移直接测试 |
+| `make test-migration` | 通过 | 历史迁移、迁移集成和全部逐项迁移 |
+| `make test-backend` | 通过 | 全部后端包，包括 Codespace、Pages 和仓库转移 |
+| `make test-frontend` | 121 个测试文件、396 项测试全部通过 | Vitest 前端测试 |
 
-漏洞扫描没有发现代码实际调用的漏洞；依赖模块中检测到的一项记录不在当前调用路径。构建版本为 `29.0.0+dev-365-g0a47af0f52`。
+迁移 371 的直接测试先建立包含 `queued_timeout` 与 `running_timeout` 的旧 Codespace 表并写入数据，连续执行两次迁移，然后验证前者已删除、后者保留且数据未丢失。完整迁移测试确认当前期望数据库版本为 372。
 
 **实现验收点**
 
-- 六个命令均以状态 0 退出。
-- 格式化、依赖整理和生成检查后，内层工作树没有新增源码差异。
-- 前端生产资源和 Gitea 主二进制均成功生成。
-
-## 单元测试与迁移测试
-
-| 命令 | 结果 | 覆盖内容 |
-| --- | --- | --- |
-| `make test-migration` | 通过 | SQLite 历史迁移、全部 `modelmigration` 包和迁移 367 直接测试 |
-| `make test-backend` | 通过 | 全部后端包，包括 Codespace、Pages、RPC、路由和服务测试 |
-| `make test-frontend` | 121 个测试文件、396 项测试全部通过 | Vitest 前端单元测试 |
-
-迁移 367 的直接测试连续执行两次迁移，检查六列、令牌唯一索引、用户索引和重复令牌错误。完整迁移目标同时确认当前序列可以从历史数据库运行，并得到期望数据库版本 368。
-
-**实现验收点**
-
-- 三个测试目标均以状态 0 退出。
-- `services/codespace`、`routers/api/codespace/manager`、`models/pages` 和 `services/pages` 均在后端全量测试中通过。
-- `TestAddCodespaceManagerRegistrationTokenTable` 在完整迁移测试中通过。
-- 当前期望数据库版本为 368。
+- 四个测试目标均以状态 0 退出。
+- `TestDropCodespaceQueuedTimeoutIndex` 覆盖重复执行、目标索引、保留索引和数据保留。
+- Codespace、Pages 和 `services/repository` 后端包测试通过。
 
 ## 完整集成测试
 
-执行了 `make test-integration`，测试套件从 Actions 开始运行到最后的 Workflow Run API 测试。Codespace、Pages 和 `/tmp/todo-mi.md` 关注的 Actions 路由行为均通过，其中包括：
+执行了 `make test-integration`，套件从 Actions 开始运行到最后的 Workflow Run API。Codespace 路由、Manager 设置、生命周期状态机、Pages 管理端和仓库转移相关行为均通过。
 
-- `TestActionsRoute`；
-- `TestPagesActionsDeploymentAPI`；
-- `TestAPIPagesVersions`；
-- `TestCodespaceRoutes`、`TestCodespaceManagerSettings` 和 `TestCodespaceTokenAPIRoutePolicy`；
-- `TestAPIPullUpdateCodespaceTokenAllowsForkHead`。
-
-套件唯一失败为已确认的 `TestAPIDownloadArchive` 环境差异。Git 2.56.0 在普通 API 路径和 GitHub 风格路径各生成 264 字节 `tar.gz`，固定夹具期望 266 字节；两处断言属于同一个测试。该差异在此前上游基线验证中已经复现，涉及的归档实现和测试不属于本轮 Codespace、Pages 或迁移变化。用户已确认本轮不处理该错误，因此验证记录保留实际结果，功能实现不增加环境特判。
+唯一失败是用户已确认无需处理的 `TestAPIDownloadArchive` 环境差异。Git 2.56.0 在普通 API 路径和 GitHub 风格路径生成 264 字节的 `tar.gz`，固定夹具期望 266 字节；两个断言属于同一测试，套件其余部分运行到末尾。该差异在此前基线验证中已经出现，归档代码和测试不属于本轮改动，因此保留实际记录而不加入环境特判。
 
 **实现验收点**
 
-- 完整集成套件运行到末尾，退出状态只由 `TestAPIDownloadArchive` 的两处 264/266 字节断言产生。
-- Codespace Manager 注册与设置、Pages Actions 部署和版本 API 测试均在该套件中通过。
-- Actions 仓库管理员权限与 Codespace 令牌只读路由测试通过。
-- 已知失败记录包含测试名、Git 版本、实际值、期望值和不处理原因。
+- 集成套件运行到最后一个测试文件。
+- 唯一失败为 `TestAPIDownloadArchive` 的两处 264/266 字节断言。
+- Codespace 和 Pages 集成测试均通过，没有第二类失败。
 
-## 端到端测试环境
+## 端到端测试
 
-`make test-frontend` 准备 Playwright 浏览器时报告当前系统缺少 `libicu74`、`libxml2`、`libflite1`、`libharfbuzz-icu0`、`libmanette-0.2-0` 和 `libhyphen0`。Vitest 不依赖这些动态库，因此前端单元测试完整通过；真实浏览器端到端测试需要这些库，本机没有运行 `make test-e2e`。
-
-源码不为本机环境增加绕过分支。安装上述系统库后，可以直接使用仓库标准 `make test-e2e` 补充浏览器验证。
+执行 `make test-e2e`。宿主机 Playwright 检查提示缺少六项浏览器动态库，但仓库目标使用容器启动 Gitea 和浏览器，因此完整运行 Chromium、Firefox 和 WebKit 测试。最终 198 项通过，6 项按上游浏览器条件跳过，命令状态为 0。
 
 **实现验收点**
 
-- 缺少的六项系统库和受影响的测试类型已记录。
-- 前端单元测试结果与 Playwright 环境限制分开记录。
-- 具备系统库的环境可以直接使用标准 Make 目标补跑。
+- `make test-e2e` 状态为 0。
+- 结果为 198 项通过、6 项跳过、0 项失败。
+- 三种浏览器引擎都实际运行了测试。
 
-## Git、迁移边界与代码清理检查
+## Git 与迁移边界检查
 
-`upstream/main@4d00ed2a1e`、Codespace PR 头 `18086bdaa7` 和 Pages PR 头 `d362d8afbb` 都是当前 `self` 的祖先。两笔更新合并保留双父历史；Pages 合并树与第一父相同。Codespace 更新中的旧网页预创建 Manager、重置密钥弹窗、前端组件和对应过时测试已由来源提交删除，当前搜索只保留运行身份需要的 `GenerateManagerSecret` 等有效实现。
-
-`d552c30170` 把 `self` 特有变化限制在迁移列表、恢复后的 patch1、新 patch2 和直接测试。patch1 对象哈希与本轮开始的 `self` 相同，业务模型和服务保持来源 PR 实现。
+祖先检查确认上游和两个 PR 头均已接入。上游源迁移文件与 `self` 的三个来源化文件逐字一致；Codespace 和 Pages 完整建表迁移各只注册一次。最终业务合并中的仓库转移同时具备 Codespace 写锁、Pages 生命周期锁和上游对象通知。
 
 **实现验收点**
 
-- 三个来源祖先检查均成功。
-- `74ef7df9ba` 和 `0a47af0f52` 的父提交与固定 PR 头一致。
-- 代码中没有合并冲突标记，也没有旧 Manager 创建或密钥弹窗入口。
-- patch1 对象哈希为 `2d7a6d19571fc53b8de2b591e23344eb89e77712`。
+- 三项 `git merge-base --is-ancestor` 检查均成功。
+- 上游 v365、v366、v367 与对应来源化文件比较无差异。
+- 迁移列表连续为 365—371，最终版本为 372。
 
-## 文档与产物清理
+## 文档、计划与产物清理
 
-外层维护文档和目录使用仓库现有 Node.js 依赖执行 Markdown 检查，结果通过。随后使用临时输出目录执行 `mdbook build`，HTML 构建成功。`mdbook-mermaid` 报告它由 mdBook 0.5.0 构建而当前命令为 0.5.4，该兼容提示没有影响预处理和 HTML 输出。临时目录在命令结束时删除。
+最终重新读取 `/tmp/todo-mi.md`。该文件描述 Codespace 仓库中此前 CI 测试修复，完成审计已经记录测试与 lint 通过；本轮 Gitea 更新没有改动它限定的 Codespace 两个测试文件，也没有改变协议、CRD 或生产 Gateway 行为。
 
-内层执行 `make clean`，删除 Gitea 二进制、集成测试二进制、临时配置、集成测试工作目录和生成产物。清理后内层工作树保持干净。
-
-**实现验收点**
-
-- mdBook 成功生成完整 HTML 文档。
-- `src/SUMMARY.md` 与全部 `src/maintenance/self/**/*.md` 通过 Markdown 检查。
-- 临时文档输出目录已删除。
-- `make clean` 状态为 0，最终内层提交不包含测试二进制或集成测试目录。
-- 内层 `self` 工作树干净，外层只由维护提交暂存 Gitea 指针与维护文档。
-
-## `/tmp/todo-mi.md` 闭环复核
-
-最终重新读取了 `/tmp/todo-mi.md`。其中九项实现验收点全部为已完成状态；当前 `self` 继续保留该计划要求的九个上游提交、`gitea.dev/sdk v1.5.0`、Codespace 协议依赖、仓库 Actions 管理权限和 Codespace 令牌只读边界。完整集成测试也再次覆盖对应路由行为。
-
-该文件中的“不新增迁移”描述的是上一轮只合并 `upstream/main` 到 `feat-remote-dev` 的范围。本轮 `self` 迁移 367 来自其后新增的 Codespace 提交 `3fc98fc1c0`，用于当前 Manager 注册令牌功能；它不改变上一轮上游同步结论。当前 Codespace 外部契约变化已经在 `src/codespace/` 的设计文档中体现，维护分支的编号安排则由本目录记录。
+内层最终执行 `make clean`，删除 Gitea 二进制、测试二进制、临时配置、集成测试目录和生成产物。外层维护文档通过 Markdown 检查并由 mdBook 完整构建后，只暂存 Gitea 指针与本目录文档。
 
 **实现验收点**
 
-- `/tmp/todo-mi.md` 中没有未勾选验收项，已勾选项共九项。
-- 九个上游提交都是当前 `self` 的祖先。
-- `go.mod` 同时包含 `gitea.dev/codespace-proto-go` 当前协议版本和 `gitea.dev/sdk v1.5.0`。
-- Actions 管理、读取和 Codespace 令牌边界与计划一致，并已通过完整集成测试。
+- `/tmp/todo-mi.md` 的完成审计与当前外层用户改动保持原样。
+- `make clean` 状态为 0，内层工作树干净。
+- Markdown 检查和 mdBook 构建通过，外层其他用户改动未进入维护提交。
