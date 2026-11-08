@@ -87,9 +87,11 @@ Manager、Gateway 和 Cache 在各自 Pod 的 `8081` 端口提供独立的明文
 
 Dev Container 引擎把代理环境作为单次平台输入处理。Dockerfile、Feature 和 Compose 构建使用 Docker 预定义代理构建参数，主容器和关联 Compose 服务接收相同环境，仓库声明的直连目标与平台目标合并去重。只有平台配置了代理地址时，引擎才把 Compose 服务名和显式网络别名加入 `NO_PROXY`，使服务间访问继续使用 Compose 内部 DNS，同时不改变未启用代理的容器环境。Compose 的隐式默认网络和短格式网络在解析模型中可以没有额外网络配置；引擎仍保留服务名，并只从存在的配置读取别名，这是标准 Compose 配置能够直接运行所必需的行为。代理输入不合并进 `devcontainer.json` 的解析结果，也不写入 Runtime 的持久状态和镜像缓存标识；恢复时由 Pod Secret 从 Codespace 快照重新投影。这样既符合常见工具读取 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY` 的方式，也不会为同一代理配置维护第二套凭据状态。
 
-标准 Dev Container 包负责解析配置、安装 Feature、调整远程用户以及创建和控制 Docker 资源。Codespace 的 Gitea CLI、模板脚本和其他平台镜像内容由 `internal/devcontainerruntime` 通过一个最终镜像定制回调写入临时构建上下文。Docker 引擎继续统一负责目标平台探测、缓存、代理、构建标签和临时目录清理，因此单容器和 Compose 使用相同的构建保障；运行时层掌握平台配置及执行顺序，因此平台能力不会与标准 Dev Container 语义混在一起。镜像定制发生在 Feature 和远程用户镜像之后，使管理员的 `build` 脚本仍是最终可配置构建动作。
+标准 Dev Container 包负责解析配置、安装 Feature、调整远程用户以及创建和控制 Docker 资源。Codespace 的 Gitea CLI 由平台镜像预先校验并提供，模板脚本和这些平台制品由 `internal/devcontainerruntime` 通过一个最终镜像定制回调写入临时构建上下文。Docker 引擎继续统一负责目标平台探测、缓存、代理、构建标签和临时目录清理，因此单容器和 Compose 使用相同的构建保障；运行时层掌握平台配置及执行顺序，因此平台能力不会与标准 Dev Container 语义混在一起。镜像定制发生在 Feature 和远程用户镜像之后，使管理员的 `build` 脚本仍是最终可配置构建动作。
 
-容器内的运行时子命令负责准备和监督 Web IDE。创建阶段只写一次仓库设置，监督命令以远程用户和工作区环境脱离生命周期请求运行，通过文件锁阻止重复实例，并在 code-server 退出后按有上限的间隔重启。创建和恢复流程把启动错误与平台连接阶段的 `postAttachCommand` 错误写入操作日志后继续，因为 Web IDE 属于附加服务，不能改变 Dev Container 已经可用的事实。Workspace endpoint 是否发布只由环境模板的 Web IDE 开关决定，连接命令仅为这个内置端点提供短时间等待，使重启过程不扩散到其他端口转发。
+平台镜像在 Docker 构建前准备默认 code-server 独立发行包和 `gitea.codespace` VSIX，镜像构建只复制已生成制品。Agent 在创建或恢复时选择内置程序，或使用 Pod 代理与 CA 环境下载并安全替换模板指定的归档。程序目录与 VSIX 只读挂载，用户数据和扩展目录从 Codespace PVC 读写挂载。这种边界让编辑器更新不进入仓库镜像构建，同时使 Pod 替换与 Web IDE 重启都能保留用户数据。程序准备失败时，新建流程不加入 Web IDE 挂载，恢复流程不启动 Web IDE，两条路径都保留 SSH 等基础访问；后续恢复会重新准备，因此附加编辑器不会改变 Codespace 生命周期结果。
+
+容器内的运行时子命令负责初始化和监督 Web IDE。它只在设置文件不存在时写入模板与仓库合并结果，并在普通扩展之前安装或更新平台 VSIX。VSIX 只执行 `/usr/local/bin/gitea-codespace-endpoint` 的版本化 JSON 列表和现有 set/delete 命令，所有端口操作因此仍由 CLI 通过 Agent Unix socket 校验和执行。监督命令以远程用户和工作区环境脱离生命周期请求运行，通过文件锁阻止重复实例，并在 code-server 退出后按有上限的间隔重启。初始化、VSIX 安装、code-server 启动或平台连接阶段的 `postAttachCommand` 失败只写入操作日志，因为 Web IDE 属于附加服务，不改变 Dev Container 已可用的事实。Workspace endpoint 是否发布只由环境模板的 Web IDE 开关决定，连接命令仅为这个内置端点提供短时间等待，使重启过程不扩散到其他端口转发。
 
 Cache 控制连接身份、Registry HTTPS 证书和 Registry 签名密钥分别保存。组件控制器根据同名 Service 推导 DNS 地址，签发只含该名称的短期服务证书，并把 `443/https` Service 投影到容器 `8443`。文件型证书源在启动时校验证书、私钥和信任根，随后复用内存中的完整快照；新 TLS 握手每分钟最多检查一次 Secret 投影文件，成功后原子替换快照。这样既能在不重建 Pod 的情况下使用续期证书，也不会把文件读取放入每次握手。Runtime Agent 在启动 Docker 前把内部根证书安装到对应主机的 `certs.d` 目录，证书续期、组件 API 身份和 Registry 数据访问因此保持各自明确的边界，管理 API 也无需保存可推导的缓存地址。
 
@@ -149,6 +151,10 @@ Gateway 控制流按实例汇报活动并获得限时许可。Manager 从同一�
 - 标准 Dev Container 包只提供通用镜像定制回调和容器状态操作，Codespace 平台镜像内容由运行时层生成。
 - 单容器和 Compose 的主服务在 Feature 与远程用户处理后执行同一最终镜像定制流程，并共用缓存、代理与目标平台信息。
 - Gitea CLI 安装和模板 `build`、`start`、`stop` 行为由运行时层按环境模板配置执行，通用 Docker 引擎不解释这些平台字段。
+- Web IDE 程序和强制 VSIX 由平台镜像提供并只读挂载；自定义归档使用当前 Pod 架构安全替换单一持久化程序目录。
+- Web IDE 程序缺失、归档下载失败或程序不兼容时只记录附加服务错误，Dev Container 创建和 SSH 访问继续完成，后续恢复重新尝试准备。
+- 初始设置只在目标文件不存在时写入，模板与仓库扩展安装后不删除用户扩展，Pod 替换与恢复保留用户数据。
+- Codespace VSIX 调用端口 CLI 的版本化 JSON 输出和现有写命令，端口业务规则仍只有一份。
 - Web IDE 使用容器内运行时子命令保持单实例并自动重启；初始化和连接错误进入操作日志，但不会删除环境或让 create、resume 失败。
 - Workspace endpoint 只随模板开关发布，连接等待只作用于该端点并有固定上限。
 - Gateway 快照不会列出绑定其他 Gateway 的站点或其他站点命名空间中的 Runtime。

@@ -51,7 +51,7 @@ Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保�
 
 `GiteaSite`、`EnvironmentTemplate` 和 `CodespaceComponent` 是集群级资源；Codespace CR 位于站点命名空间。集群级组件适合被多个站点按 UID 引用，组件工作负载仍位于管理命名空间，避免把平台入口和缓存复制到每个站点。环境模板使用 `metadata.name` 作为 Gitea 环境标签，站点用名称和 UID 引用它；这让管理页面、Manager 声明、Gitea 调度和 Runtime 快照比较同一个标识，也允许多个站点安全共享同一模板。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。
 
-环境模板保存 Dev Container 平台附加配置、完整的出站代理 URL、直连目标和附加 CA，这些内容共同决定工作负载的构建和运行行为，适合由声明资源持续协调。平台附加配置包括 Web IDE、Features 和一份生命周期脚本；脚本以 `build`、`start`、`stop` 参数区分最终镜像构建、每次启动和正常停止。代理需要认证时，用户名和密码使用标准 URL 用户信息表示；管理页面可以读取和编辑完整 URL，因为它本身就是管理员维护的运行配置，运行进程也必须取得同一值。创建 Codespace 时，Manager 把完整模板运行配置写入 `Codespace.Spec.Runtime` 快照，并从该快照生成 Codespace 自有代理 Secret；Pod 只引用 Secret 键。Cache 的代理配置则从组件声明投影到组件已有的 Secret。采用实例快照的原因是模板修改只应影响后续创建，已有 Codespace 在停止、恢复和 Pod 重建后仍需要使用创建时已经确认的镜像、脚本和网络环境。
+环境模板保存 Dev Container 平台附加配置、完整的出站代理 URL、直连目标和附加 CA，这些内容共同决定工作负载的构建和运行行为，适合由声明资源持续协调。平台附加配置包括 Web IDE、Features 和一份生命周期脚本；Web IDE 保存启用状态、可选的 code-server 归档地址、初始设置和默认扩展，脚本以 `build`、`start`、`stop` 参数区分最终镜像构建、每次启动和正常停止。代理需要认证时，用户名和密码使用标准 URL 用户信息表示；管理页面可以读取和编辑完整 URL，因为它本身就是管理员维护的运行配置，运行进程也必须取得同一值。创建 Codespace 时，Manager 把完整模板运行配置写入 `Codespace.Spec.Runtime` 快照，并从该快照生成 Codespace 自有代理 Secret；Pod 只引用 Secret 键。Cache 的代理配置则从组件声明投影到组件已有的 Secret。采用实例快照的原因是模板修改只应影响后续创建，已有 Codespace 在停止、恢复和 Pod 重建后仍需要使用创建时已经确认的镜像、脚本和网络环境。
 
 PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC，delete 确认清理后才回收 PVC。Cache 保存可重新生成的性能数据，不属于业务备份。
 
@@ -66,6 +66,7 @@ PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC�
 - 完整代理 URL、直连目标和 CA 可以从环境模板或 Cache 组件审计，运行 Secret 只保存可从对应声明或 Codespace 快照重新生成的环境投影。
 - Codespace 创建后拥有独立代理 Secret，模板代理 URL 或 CA 的后续修改不会改变已有环境，Pod 重建继续使用同一快照。
 - 生命周期脚本与环境模板一起进入 Codespace 运行快照；模板后续修改只影响新建实例。
+- Web IDE 的启用状态、归档地址、初始设置和默认扩展一起进入 Codespace 运行快照；模板后续修改不会改变已有实例的编辑器来源和初始化输入。
 - CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。
 - 删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。
 - Cache 丢失后可以回源，不影响 PVC 中的环境数据。

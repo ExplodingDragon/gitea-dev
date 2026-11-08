@@ -53,17 +53,19 @@ Gateway 处理无状态入口和短期连接，可以配置 1 到 64 个主动�
 
 Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 即使来自同一个平台镜像，也运行在不同 Pod 中；同一镜像用于统一发布和审计，不会合并各自的进程与权限边界。用户镜像运行在该 Docker 中，不直接成为 Kubernetes Pod 容器。
 
-环境模板显式选择 Kata、Sysbox 或 Native 隔离方式。Kata 与 Sysbox 绑定已标记的 RuntimeClass，Native 绑定集群默认 CRI；运行依赖失效时保留原选择，因为自动切换会改变隔离语义和设备可见范围。仓库配置和环境模板进入同一 Dev Container 解析路径；环境模板可以追加标准 Dev Container Features。Web IDE 使用平台维护的 `ghcr.io/coder/devcontainer-features/code-server:2`，管理员直接填写该 Feature 的 options 对象，因此新版本增加的标准选项不需要同步扩展管理 API。平台最后覆盖内部监听地址、端口、认证、工作区、TLS、遥测和更新检查，因为这些值需要与 Gateway 和 Codespace 生命周期保持一致。仓库 `customizations.vscode` 继续负责项目设置与扩展；Feature options 中的公共扩展在构建时安装，仓库扩展在首次创建时补充，两者使用各自的标准语义。
+环境模板显式选择 Kata、Sysbox 或 Native 隔离方式。Kata 与 Sysbox 绑定已标记的 RuntimeClass，Native 绑定集群默认 CRI；运行依赖失效时保留原选择，因为自动切换会改变隔离语义和设备可见范围。仓库配置和环境模板进入同一 Dev Container 解析路径；环境模板可以追加标准 Dev Container Features。Web IDE 的默认 code-server 与 Codespace 扩展由平台镜像提供，Agent 在运行时把程序以只读方式挂载到主 Dev Container。这样不会改写仓库的 Dev Container 镜像层，也不会因编辑器版本变化使仓库构建缓存失效。默认程序需要与 Dev Container 的系统运行库兼容；其他系统可以用含 `{arch}` 的 HTTP(S) 归档地址提供适配后的 code-server。自定义归档只替换程序，内部监听、认证、遥测和更新策略仍由 Codespace 固定控制。模板设置和扩展先应用，仓库 `customizations.vscode` 的同名设置和扩展后应用，使平台默认值不会覆盖项目意图。
 
 Native 用于需要 Kubernetes Device Plugin 资源的开发环境。模板按扩展资源名和正整数数量声明设备，Manager 把同一数量写入 Runtime Pod 的 requests 与 limits，使 kubelet 先完成设备分配再启动 Pod。模板可以标记某项资源满足 Dev Container 的 `hostRequirements.gpu`；这个标记只解释标准 Dev Container 要求，不替代 Kubernetes 的设备申请。集群运维人员需要先验证默认 CRI 能在非特权 Runtime Pod 中启动 rootful dockerd 和子容器，因为 Native 直接使用节点内核，运行能力来自节点配置而不是单独的 RuntimeClass。
 
 CDI 是设备进入内部 Docker 的主要路径。Device Plugin 通过模板指定的环境变量向 Runtime Pod 提供本次分配的具体设备 ID，并通过 CRI CDI 把设备接入外层 Pod；节点上的 CDI 定义保存设备节点、挂载、Hook 和驱动环境。Agent 拒绝 `all`、`none` 和 `void` 等宽泛值，从 `/etc/cdi` 与 `/var/run/cdi` 中选出已分配设备，为它们生成只在当前 Codespace 内有效的稳定逻辑名称，再写入 `/run/codespace/cdi`。同一个 Codespace 停止后恢复时，kubelet 可以分配另一个物理 ID，Agent 会让原逻辑名称指向新设备，因此内部 Docker 已保存的容器配置仍能启动。Device Plugin 提供的附加环境也写成一个 CDI 设备，使已有容器在每次启动时获得当前分配值，而不是保存首次创建时的旧值。
 
+CDI 运行时只把环境修改应用到容器的初始进程，Docker 后续创建的 Exec 进程不会再次读取这些修改。Agent 因此同时解析已选 CDI 规格的公共环境、设备环境和模板声明的转发环境，并把结果加入当前 Dev Container 的远程环境。标准生命周期命令、模板生命周期、SSH、Web IDE 和端口进程都从这一份远程环境启动，从而与初始进程看到同一项设备分配。恢复已有容器时，Agent 先重新探测基础远程环境，再应用本次 Runtime Pod 的设备环境；这样新设备增加的变量会生效，上一次分配已经没有的变量也不会残留。
+
 内部 dockerd 仅加载过滤后的 CDI 目录，普通 Dockerfile 和 Compose 都只把设备加入主 Dev Container；Compose 的辅助服务继续遵循仓库配置。模板标记设备满足 GPU 要求时，平台设备申请成为唯一设备来源：`runArgs`、Compose `gpus` 和 Compose 设备预留中语义为“全部 GPU”的标准写法会被归一化，按数量或 ID 选择另一组 GPU 会明确失败。这样仓库仍可表达“需要 GPU”，同时不会绕过模板确定的 Kubernetes 分配。
 
-部分设备驱动还需要驱动目录、工具链挂载或 Device Plugin 分配环境。模板中的“高级主机访问”把这些管理员授权显式绑定到已经申请的扩展资源：设备路径只转发外层 Pod 已经由 Device Plugin 获得的设备，HostPath 挂载用于 CDI 未描述的驱动文件，环境变量通过 CDI 注入主 Dev Container。该配置补充设备运行条件，不参与设备调度，也不能用设备映射从节点重新挂载未分配的设备。平台保留自己的运行目录、二进制路径和环境变量名称，避免设备配置覆盖 Agent 通信或凭据。Runtime Pod 与主 Dev Container 可以分别追加符合 Linux capability 命名格式的能力，具体能力是否受节点内核和容器运行时支持由工作负载启动结果决定。Native Runtime Pod 以 root 运行，使用 dockerd 所需的基础 capability、`seccomp=Unconfined` 和 `AppArmor=Unconfined`，再追加模板能力，但不启用 privileged。
+部分设备驱动还需要驱动目录、工具链挂载或 Device Plugin 分配环境。模板中的“高级主机访问”把这些管理员授权显式绑定到已经申请的扩展资源：设备路径只转发外层 Pod 已经由 Device Plugin 获得的设备，HostPath 挂载用于 CDI 未描述的驱动文件，环境变量通过 CDI 注入主 Dev Container。该配置补充设备运行条件，不参与设备调度，也不能用设备映射从节点重新挂载未分配的设备。平台保留自己的运行目录、二进制路径和环境变量名称，避免设备配置覆盖 Agent 通信或凭据。Native Runtime Pod 以 root 运行，使用 dockerd 所需的固定 capability、`seccomp=Unconfined` 和 `AppArmor=Unconfined`，再追加模板能力，但不启用 privileged。管理页面从 Manager 读取固定 capability 并显示为不可取消的必需项，模板只保存管理员附加项，因此直接操作 API 或 CRD 也不会移除平台运行条件。主 Dev Container 使用 Docker 的标准基础 capability，仓库 `capAdd` 与模板附加项按声明顺序稳定去重；具体附加能力是否受节点内核和容器运行时支持由工作负载启动结果决定。
 
-环境模板还可以安装 Gitea CLI，并提供一份模板生命周期脚本。Agent 根据基础镜像的 OCI 平台下载对应 CLI 资产，在最终镜像层完成可执行文件校验和 Bash、Zsh、Fish 补全生成。该镜像层位于仓库镜像、Features 和远程用户 UID/GID 调整之后，再以 root 身份调用脚本的 `build` 分支并恢复容器用户；脚本随最终镜像保存，使构建缓存自然包含基础镜像和脚本内容。主容器每次进入运行状态后，Agent 在 CA、Git、标准 Dev Container 生命周期和访问入口之前以 root 身份调用 `start`。正常停止只在容器仍运行时调用 `stop`，再停止容器；已停止或已删除的容器可以直接进入资源收敛。Codespace 运行时通过通用镜像定制回调提供这些环境模板内容，Docker 引擎统一负责目标平台探测、缓存、代理、构建和临时目录清理，因此单容器和 Compose 使用同一套构建保障，标准 Dev Container 实现也能保持独立。采用单脚本和固定参数是为了让公共准备逻辑只维护一份，同时明确区分环境模板提供的扩展与 Dev Container 规范生命周期。
+环境模板还可以安装 Gitea CLI，并提供一份模板生命周期脚本。平台镜像预先包含与 Runtime 架构一致且已经校验的 CLI；Agent 在最终镜像层复制该可执行文件，并生成 Bash、Zsh、Fish 补全，不在 Codespace 创建期间访问外部下载地址。该镜像层位于仓库镜像、Features 和远程用户 UID/GID 调整之后，再以 root 身份调用脚本的 `build` 分支并恢复容器用户；脚本随最终镜像保存，使构建缓存自然包含基础镜像和脚本内容。主容器每次进入运行状态后，Agent 在 CA、Git、标准 Dev Container 生命周期和访问入口之前以 root 身份调用 `start`。正常停止只在容器仍运行时调用 `stop`，再停止容器；已停止或已删除的容器可以直接进入资源收敛。Codespace 运行时通过通用镜像定制回调提供这些环境模板内容，Docker 引擎统一负责目标平台探测、缓存、代理、构建和临时目录清理，因此单容器和 Compose 使用同一套构建保障，标准 Dev Container 实现也能保持独立。采用单脚本和固定参数是为了让公共准备逻辑只维护一份，同时明确区分环境模板提供的扩展与 Dev Container 规范生命周期。
 
 Dev Container Feature 接受规范定义的对象、布尔值和字符串输入。字符串表示 `version` 选项，对象中的字符串和布尔值会转换为 `install.sh` 的环境变量；`false` 表示不启用该 Feature。解析器递归读取 `dependsOn`，再应用已经存在的 `installsAfter` 关系，并以解析后的内容摘要和最终选项判断是否为同一安装节点。这样相同内容不会重复安装，而同一 Feature 的不同选项仍能得到各自的安装结果。锁文件使用小写 Feature 标识和依赖，确保配置大小写差异不会绕过已经锁定的摘要。平台注入且仓库没有声明的 Feature 不进入仓库锁文件；仓库与平台共同声明同一引用时，仓库继续拥有该锁记录，并锁定合并后的有效选项。这样管理员配置不会创建无关的仓库变更，同时仓库主动声明的依赖仍可复现。
 
@@ -73,7 +75,7 @@ Docker Compose 未声明 `workspaceFolder` 时使用规范默认目录 `/`。Age
 
 每个 Codespace 使用独立 PVC 保存工作区、内部 Docker、Git SSH 私钥和 IDE 数据。Token、用户 Secret、Unix socket 与进程状态写入易失目录。Agent 把当前 Token 和经过校验的 SSH 凭据副本放入 Pod 的内存卷，并以只读方式映射到主 Dev Container。初始克隆使用 Agent 可见的 `/run/codespace` 路径，容器内 Git 使用 `/var/lib/gitea-codespace` 路径；两边都通过 Git 的 credential helper 命令读取 Token，并通过 `core.sshCommand` 绑定私钥和 `known_hosts`。工作区准备是可重复的：未完成的克隆只使用临时目录，目标目录已存在时核对锁定提交并刷新 Git 凭据。`onCreateCommand`、`updateContentCommand` 和 `postCreateCommand` 只属于首次创建，`initializeCommand` 与 `postStartCommand` 属于每次创建或恢复，`postAttachCommand` 属于每次新连接；启用 Web IDE 时，每次创建或恢复后启动 code-server 计为一次平台连接，未启用时创建和恢复本身不产生连接。平台连接的 Web IDE 启动和 `postAttachCommand` 采用尽力执行，因为这项附加服务不能让已经可通过 SSH 使用的环境创建或恢复失败。Agent 在 PVC 中记录当前操作内的开始和结果，Manager 重连时只重复上报已经完成的结果；结果未知时停止该次操作并提供诊断。这样既保留规范要求的执行时机，也不会在控制流重连后重复运行同一次命令。
 
-启用 Web IDE 时，Agent 在首次创建中写入仓库的 VS Code 设置并安装仓库扩展，后续恢复和 code-server 重启保留用户已经修改的 IDE 数据。容器内现有的 Codespace 运行时二进制负责监督 Feature 提供的 code-server 入口，通过文件锁保证同一 Dev Container 只有一个监督进程；子进程正常或异常退出后按有上限的间隔重启，容器停止时终止整个子进程组。Workspace endpoint 在模板启用 Web IDE 时保持发布，Gateway 建立该端点连接时短暂等待本地监听端口恢复。这样浏览器可以跨越短时间的 IDE 重启，而 Codespace ready、SSH、SFTP 和其他端点不依赖 code-server 的进程健康。
+启用 Web IDE 时，Agent 在 PVC 中维护单一活动的自定义程序目录、用户数据和扩展目录。同一归档地址和架构直接复用已完成的程序；地址或架构变化时先安全解包到临时目录，校验 `bin/code-server` 后原子替换。不保留多份架构副本，因为 Runtime Pod 与内部 Dev Container 使用同一节点架构。首次创建只在用户设置文件不存在时写入合并设置，普通扩展安装到持久化目录而不删除用户自行安装的扩展。平台强制安装的 `gitea.codespace` 扩展调用容器内现有的端口 CLI，因此端口查询、发布、改名、可见性和删除与命令行共用同一条 Agent Unix socket 通信路径。容器内的 Codespace 运行时二进制通过文件锁保证只有一个 Web IDE 监督进程；code-server 退出后按有上限的间隔重启，容器停止时终止整个子进程组。Workspace endpoint 在模板启用 Web IDE 时保持发布，Gateway 建立该端点连接时短暂等待本地监听端口恢复，因此 Codespace ready、SSH、SFTP 和其他端点不依赖 code-server 的进程健康。
 
 主 Dev Container 的解析后 `workspaceFolder` 与访问目标一起保存在 Codespace 状态，并在 ready Runtime Metadata 中发送给 Gitea。Gitea 使用该容器路径生成 VS Code 和 Zed 的 SSH 打开地址，所以自定义工作目录、Compose 工作目录和变量替换后的结果都能准确进入编辑器。路径作为运行事实保存在 Kubernetes 状态而不是 Gitea 数据库中，使 Manager 接管后可以继续发布同一结果，也避免保存能够从 Dev Container 状态重新得到的业务副本。Web IDE 是否启用只决定 Workspace HTTP Endpoint 是否存在，不影响 SSH 编辑器链接和 Codespace 的 ready 状态。
 
@@ -100,21 +102,25 @@ Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前
 - Runtime 不挂载节点容器运行时套接字，也不持有 Kubernetes API 凭据。
 - Kata 与 Sysbox 分别在对应 RuntimeClass 上通过真实启动验证。
 - Native Runtime Pod 为每项 Device Plugin 资源生成相同数量的 requests 与 limits，并且不启用 privileged。
+- Native Runtime Pod 始终获得平台固定 capability；管理页面显示并锁定这些必需项，环境模板只持久化额外 capability。主 Dev Container 合并仓库与模板附加项时不会产生重复值。
 - Native 模板只从 Node 可分配扩展资源中选择设备；模板就绪检查确认至少一个节点能够同时满足全部设备请求，实际数量和当前可用性由 Kubernetes 调度器判断。
 - Device Plugin 通过 CRI CDI 把已分配设备接入 Runtime Pod；模板设备映射只转发 Pod 已有的设备，不产生额外节点设备挂载。
 - CDI 目录只包含当前 Pod 已分配的有效设备，并使用跨 Pod 替换保持不变的逻辑名称；物理设备 ID 改变后，同一 Dev Container 可以用新分配恢复。
-- Device Plugin 转发环境通过 CDI 在容器启动时注入，恢复后反映当前分配；平台环境和运行路径不能被设备配置覆盖。
+- CDI 公共环境、已分配设备环境和 Device Plugin 转发环境同时进入容器初始进程与 Codespace 创建的 Exec 进程；恢复后使用当前分配，并清理上一次分配不再提供的变量。
 - 普通 Dockerfile 与 Compose 主服务获得相同的设备、挂载、环境变量和 capability，Compose 辅助服务不会自动继承平台设备。
 - 标记为 GPU 的 Device Plugin 资源满足标准 `hostRequirements.gpu`，并归一化 `--gpus all`、Compose `gpus: all` 和等价的全部 GPU 设备预留；具体数量或 ID 选择会明确失败；未标记时继续按标准 Docker GPU 能力检查。
 - 启用站点配额时，Native 扩展资源进入 `ResourceQuota` 和 Manager 创建容量检查；达到配额后不再领取对应模板的新建操作。
-- Web IDE 使用平台维护的 code-server Feature；空 options 使用上游默认值，管理员填写的标准 Feature 选项会进入镜像构建。
-- 平台始终覆盖 Web IDE 的内部监听、认证、工作区、TLS、遥测和更新检查选项；仓库 `customizations.vscode` 的设置和扩展在首次创建时应用。
+- 平台镜像包含默认 code-server 和 Codespace 扩展，Dev Container 构建不下载或安装这两项制品。
+- 自定义归档只允许 `{arch}` 架构占位符，安全解包并验证入口后替换单一程序目录；同一来源与架构在 Pod 替换后可复用。
+- 默认或自定义 code-server 必须能在目标 Dev Container 系统中执行；程序不兼容或暂时不可用时只关闭本次 Web IDE，Codespace 仍可通过 SSH 使用并在后续恢复时重试。
+- 平台固定 Web IDE 的内部监听、认证、TLS、遥测和更新检查参数；模板设置与扩展先应用，仓库 `customizations.vscode` 的同名值后应用。
+- 强制 Codespace 扩展通过容器内 CLI 完成端口操作，Web IDE 不建立第二套 Agent 通信协议。
 - Web IDE 监督进程保持单实例，code-server 退出后按有上限的间隔重启，容器停止时不留下子进程。
 - 仓库 IDE 设置只在首次创建时初始化；恢复和进程重启保留用户修改。
 - 只有启用 Web IDE 的模板发布内置 Workspace endpoint；短暂重启期间连接等待有明确上限。
 - 附加 Features 使用标准 Dev Container `features` 输入形式，并按依赖、安装提示和稳定排序得到确定的安装顺序。
 - 模板生命周期脚本的 `build` 在最终镜像层以 root 身份执行；脚本或基础镜像变化会使对应构建缓存失效。
-- 启用 Gitea CLI 时下载资产与基础镜像的操作系统和架构一致，镜像中提供可执行文件及 Bash、Zsh、Fish 补全。
+- 启用 Gitea CLI 时从平台镜像复制与 Runtime 架构一致的已校验资产，最终镜像提供可执行文件及 Bash、Zsh、Fish 补全，创建期间不依赖外部下载。
 - 单容器和 Compose 主服务使用相同的最终镜像定制阶段，关联 Compose 服务保持仓库声明的镜像行为。
 - 首次创建和每次恢复都在标准容器生命周期前执行一次 `start`；正常停止在容器停止前执行一次 `stop`。
 - `build` 或 `start` 失败时环境不会发布 ready；`stop` 失败保留失败结果，同时实际资源仍收敛到 stopped。
