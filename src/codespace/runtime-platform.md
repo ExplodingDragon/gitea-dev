@@ -8,15 +8,15 @@ Manager 提供管理 API 和 Kubernetes 控制器。多个 Gitea 站点可以接
 
 管理 Service 默认只在集群内提供，管理员可以通过端口转发、反向代理或 Ingress 访问。页面使用当前来源访问 API，因此入口地址变化不会改变认证身份；管理 Token、服务端会话和 CSRF 负责保护写操作。浏览器经 HTTPS 访问时会话 Cookie 使用 `Secure`，经本机 HTTP 端口转发时仍能完成首次配置。
 
-`EnvironmentTemplate` 定义隔离方式、RuntimeClass、资源、StorageClass、Git SSH 密钥类型和 Dev Container 附加配置。它的 Kubernetes `metadata.name` 同时作为 Gitea 环境标签，使用 1 至 63 个小写字母、数字和中划线。一个对象只保留这一份稳定标识，可以避免资源名、站点引用和调度标签分别修改后指向不同环境；Kubernetes 保证名称在创建后不变，管理员需要调整的说明和运行配置仍可继续编辑。模板是集群级资源，因此多个 Gitea 站点可以通过名称和 UID 共同引用同一个模板。
+`EnvironmentTemplate` 定义隔离方式、计算和存储资源、Git SSH 密钥类型和 Dev Container 附加配置；Kata 与 Sysbox 模式还引用对应的 RuntimeClass。它的 Kubernetes `metadata.name` 同时作为 Gitea 环境标签，使用 1 至 63 个小写字母、数字和中划线。一个对象只保留这一份稳定标识，可以避免资源名、站点引用和调度标签分别修改后指向不同环境；Kubernetes 保证名称在创建后不变，管理员需要调整的说明和运行配置仍可继续编辑。模板是集群级资源，因此多个 Gitea 站点可以通过名称和 UID 共同引用同一个模板。
 
-RuntimeClass 使用 `codespace.gitea.dev/isolation=kata|sysbox` 标签声明其隔离语义，管理页面据此列出可选项，保存模板时再次核对标签和资源是否仍然存在。这样管理员选择的是经过集群声明的运行能力，而不是可能拼错或与隔离方式不符的自由文本。模板控制器持续检查 RuntimeClass 与 StorageClass；两项依赖可用时自动写入 `Ready=True`，依赖变化时更新为明确的不可用状态，使页面展示的结论始终与集群中的当前事实一致。
+Kata 与 Sysbox RuntimeClass 使用 `codespace.gitea.dev/isolation=kata|sysbox` 标签声明运行语义，管理页面据此列出可选项，保存模板时再次核对标签和资源是否仍然存在。Native 模式使用集群默认 CRI，因此模板不保存 RuntimeClass；这样设备插件、CDI 和节点默认运行时保持在同一条 Kubernetes 原生分配路径，也避免再维护一份等价的 Native RuntimeClass。模板控制器持续检查 RuntimeClass 与 StorageClass；Native 模板还会确认至少一个节点能够同时提供模板声明的全部扩展资源。这个检查用于在发布前发现节点配置缺口，当前占用和最终放置仍由创建 Runtime Pod 时的 Kubernetes 调度器判断。依赖可用时自动写入 `Ready=True`，依赖变化时更新为明确的不可用状态。
 
-管理页面同时发现 StorageClass、IngressClass、TLS Secret 和 cert-manager Issuer，并始终用下拉框表达这些 Kubernetes 引用。编辑对象引用的资源已经不存在时，页面保留原值并标记为不可用，管理员需要选择当前有效资源后才能保存；这个行为使配置失效可见，也避免静默改用另一个运行环境。资源数量和时长使用数值与单位分开的输入方式，Manager 保存并校验转换后的原生 quantity 和 duration。
+管理页面同时发现 StorageClass、Node 可分配的扩展资源、IngressClass、TLS Secret 和 cert-manager Issuer，并始终用下拉框表达这些 Kubernetes 引用。设备资源显示声明该资源的节点数和单节点最大容量，这些值用于识别集群能力，不表示扣除现有工作负载后的实时余量。编辑对象引用的资源已经不存在时，页面保留原值并标记为不可用，管理员需要选择当前有效资源后才能保存；这个行为使配置失效可见，也避免静默改用另一个运行环境。资源数量和时长使用数值与单位分开的输入方式，Manager 保存并校验转换后的原生 quantity 和 duration。
 
-站点配额用于限制一个 Gitea 站点能够占用的 Runtime 总量，管理员可以按集群的容量管理方式选择是否启用。启用时，Manager 维护站点命名空间中的 `ResourceQuota`，约束 Pod、PVC、CPU 请求、内存请求和存储请求；关闭时不创建配额，让 Kubernetes 调度器和集群已有的容量策略决定是否接纳工作负载。环境模板始终声明 CPU 和内存请求，使调度器能够规划容量；资源上限可选，适合由平台统一限制或允许开发工作负载临时使用空闲资源的集群。请求与上限分别表达调度保证和最大用量，因此上限启用时必须不低于请求。
+站点配额用于限制一个 Gitea 站点能够占用的 Runtime 总量，管理员可以按集群的容量管理方式选择是否启用。启用时，Manager 维护站点命名空间中的 `ResourceQuota`，约束 Pod、PVC、CPU、内存、存储以及所选模板使用的 Device Plugin 扩展资源请求；关闭时不创建配额，让 Kubernetes 调度器和集群已有的容量策略决定是否接纳工作负载。管理页面从站点选择的模板推导设备配额项，管理员填写的是该站点允许同时占用的设备总量。环境模板始终声明 CPU 和内存请求，使调度器能够规划容量；资源上限可选，适合由平台统一限制或允许开发工作负载临时使用空闲资源的集群。Manager 在领取创建操作前用 ResourceQuota 的已用量检查单次设备需求，Kubernetes 准入仍是并发情况下的最终权威。
 
-隔离方式同时决定 PVC 的接入形式：Kata 使用原始块设备，由来宾内 Agent 挂载 Docker 数据；Sysbox 使用 Kubernetes 文件系统挂载。卷模式属于隔离实现的一部分，因此由 Manager 统一推导，模板只保存隔离方式这个权威事实。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改；S3 密钥等独立业务 Secret 使用只写接口，出站代理作为完整运行配置由声明资源读取和编辑。
+运行方式同时决定 PVC 的接入形式：Kata 使用原始块设备，由来宾内 Agent 挂载 Docker 数据；Sysbox 和 Native 使用 Kubernetes 文件系统挂载。卷模式属于运行实现的一部分，因此由 Manager 统一推导，模板只保存运行方式这个权威事实。创建时，Manager 把模板内容和当前平台镜像引用写入 Codespace CR，使后续恢复继续采用创建时选择的运行配置。平台镜像可以是显式标签或摘要：标签用于持续更新的开发环境，摘要用于内容固定的部署。管理 API 使用 Kubernetes UID 与 `resourceVersion` 处理对象身份和并发修改；S3 密钥等独立业务 Secret 使用只写接口，出站代理作为完整运行配置由声明资源读取和编辑。
 
 管理页面提供英文、简体中文、日文和韩文，浏览器语言用于首次选择，管理员的手动选择保存在本地浏览器。四种语言使用同一组 JSON 词典，Vue 页面直接读取这些词典，Go 管理 API 也从同一目录读取词条并按 `Accept-Language` 返回本地化摘要。管理 API 同时返回稳定错误码和诊断详情：摘要面向管理员展示，诊断详情保留 Kubernetes 返回的具体原因。资源状态也按稳定的 Condition reason 显示本地化摘要，原始 Condition message 只作为可展开的技术详情。共用词典的原因是前后端面对的是同一位管理员，分别维护两套文字会产生词条遗漏和含义不一致。
 
@@ -34,13 +34,14 @@ Gateway 处理无状态入口和短期连接，可以配置 1 到 64 个主动�
 - Manager、Gateway、Cache 和 Runtime 使用同一份显式标签或摘要镜像引用。
 - 模板更新只影响新环境；摘要模式下平台升级也只影响新环境。
 - 管理 API 不返回长期 Secret 明文。
-- 管理页面只列出带有效隔离标签的 RuntimeClass 和集群中存在的 StorageClass。
-- 保存模板时 RuntimeClass 标签需要与隔离方式一致，StorageClass 需要仍然存在。
+- 管理页面为 Kata 与 Sysbox 只列出带有效隔离标签的 RuntimeClass；Native 显示集群默认运行时；三种模式都只列出集群中存在的 StorageClass。
+- 保存 Kata 或 Sysbox 模板时 RuntimeClass 标签需要与隔离方式一致；保存 Native 模板时 RuntimeClass 为空；StorageClass 始终需要仍然存在。
 - 模板保存后由控制器根据当前依赖自动进入就绪状态；依赖失效和恢复会分别更新状态。
 - 单个候选资源仍显示为下拉框；已经失效的引用保持可见并阻止保存。
-- 资源请求、可选上限、可选站点配额、缓存容量和时长以明确单位编辑；启用上限时 request 不超过 limit。
+- 资源请求、可选上限、可选站点配额、缓存容量和时长以明确单位编辑；站点配额包含所选 Native 模板需要的扩展资源请求。
 - 关闭站点配额后不保留 Manager 管理的 `ResourceQuota`，关闭环境资源上限后 Runtime Pod 只带请求值。
 - Kata 模板生成块模式 PVC，Sysbox 模板生成文件系统模式 PVC，模板中没有第二个卷模式配置来源。
+- Native 模板生成文件系统模式 PVC并使用默认 CRI；模板就绪状态会核对单一节点能够同时满足 Device Plugin 扩展资源，而实际放置仍由 Kubernetes 调度器决定。
 - 管理页面语言切换同时作用于导航、表单、确认框、资源状态和组件语言，并在刷新后保持。
 - 四种 JSON 词典具有相同键集合；前端请求携带当前语言，管理 API 的错误摘要来自同一组词典。
 - 管理 API 错误包含稳定代码和诊断详情，页面不依赖英文错误文字判断会话状态；动态集群诊断仍可在技术详情中查看。
@@ -52,9 +53,17 @@ Gateway 处理无状态入口和短期连接，可以配置 1 到 64 个主动�
 
 Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 即使来自同一个平台镜像，也运行在不同 Pod 中；同一镜像用于统一发布和审计，不会合并各自的进程与权限边界。用户镜像运行在该 Docker 中，不直接成为 Kubernetes Pod 容器。
 
-环境模板显式选择 Kata 或 Sysbox RuntimeClass。失败时继续保留原隔离选择，因为自动切换会改变安全边界。仓库配置和环境模板进入同一 Dev Container 解析路径；环境模板可以追加标准 Dev Container Features。Web IDE 使用平台维护的 `ghcr.io/coder/devcontainer-features/code-server:2`，管理员直接填写该 Feature 的 options 对象，因此新版本增加的标准选项不需要同步扩展管理 API。平台最后覆盖内部监听地址、端口、认证、工作区、TLS、遥测和更新检查，因为这些值需要与 Gateway 和 Codespace 生命周期保持一致。仓库 `customizations.vscode` 继续负责项目设置与扩展；Feature options 中的公共扩展在构建时安装，仓库扩展在首次创建时补充，两者使用各自的标准语义。
+环境模板显式选择 Kata、Sysbox 或 Native 隔离方式。Kata 与 Sysbox 绑定已标记的 RuntimeClass，Native 绑定集群默认 CRI；运行依赖失效时保留原选择，因为自动切换会改变隔离语义和设备可见范围。仓库配置和环境模板进入同一 Dev Container 解析路径；环境模板可以追加标准 Dev Container Features。Web IDE 使用平台维护的 `ghcr.io/coder/devcontainer-features/code-server:2`，管理员直接填写该 Feature 的 options 对象，因此新版本增加的标准选项不需要同步扩展管理 API。平台最后覆盖内部监听地址、端口、认证、工作区、TLS、遥测和更新检查，因为这些值需要与 Gateway 和 Codespace 生命周期保持一致。仓库 `customizations.vscode` 继续负责项目设置与扩展；Feature options 中的公共扩展在构建时安装，仓库扩展在首次创建时补充，两者使用各自的标准语义。
 
-环境模板还可以提供一份模板生命周期脚本。镜像构建在仓库镜像、Features 和远程用户 UID/GID 调整完成后生成最终派生层，以 root 身份调用脚本的 `build` 分支；脚本随最终镜像保存，使构建缓存自然包含基础镜像和脚本内容。主容器每次进入运行状态后，Agent 在 CA、Git、标准 Dev Container 生命周期和访问入口之前以 root 身份调用 `start`。正常停止则先调用 `stop`，再停止容器。采用单脚本和固定参数是为了让公共准备逻辑只维护一份，同时明确区分环境模板提供的扩展与 Dev Container 规范生命周期。
+Native 用于需要 Kubernetes Device Plugin 资源的开发环境。模板按扩展资源名和正整数数量声明设备，Manager 把同一数量写入 Runtime Pod 的 requests 与 limits，使 kubelet 先完成设备分配再启动 Pod。模板可以标记某项资源满足 Dev Container 的 `hostRequirements.gpu`；这个标记只解释标准 Dev Container 要求，不替代 Kubernetes 的设备申请。集群运维人员需要先验证默认 CRI 能在非特权 Runtime Pod 中启动 rootful dockerd 和子容器，因为 Native 直接使用节点内核，运行能力来自节点配置而不是单独的 RuntimeClass。
+
+CDI 是设备进入内部 Docker 的主要路径。Device Plugin 通过模板指定的环境变量向 Runtime Pod 提供本次分配的具体设备 ID，并通过 CRI CDI 把设备接入外层 Pod；节点上的 CDI 定义保存设备节点、挂载、Hook 和驱动环境。Agent 拒绝 `all`、`none` 和 `void` 等宽泛值，从 `/etc/cdi` 与 `/var/run/cdi` 中选出已分配设备，为它们生成只在当前 Codespace 内有效的稳定逻辑名称，再写入 `/run/codespace/cdi`。同一个 Codespace 停止后恢复时，kubelet 可以分配另一个物理 ID，Agent 会让原逻辑名称指向新设备，因此内部 Docker 已保存的容器配置仍能启动。Device Plugin 提供的附加环境也写成一个 CDI 设备，使已有容器在每次启动时获得当前分配值，而不是保存首次创建时的旧值。
+
+内部 dockerd 仅加载过滤后的 CDI 目录，普通 Dockerfile 和 Compose 都只把设备加入主 Dev Container；Compose 的辅助服务继续遵循仓库配置。模板标记设备满足 GPU 要求时，平台设备申请成为唯一设备来源：`runArgs`、Compose `gpus` 和 Compose 设备预留中语义为“全部 GPU”的标准写法会被归一化，按数量或 ID 选择另一组 GPU 会明确失败。这样仓库仍可表达“需要 GPU”，同时不会绕过模板确定的 Kubernetes 分配。
+
+部分设备驱动还需要驱动目录、工具链挂载或 Device Plugin 分配环境。模板中的“高级主机访问”把这些管理员授权显式绑定到已经申请的扩展资源：设备路径只转发外层 Pod 已经由 Device Plugin 获得的设备，HostPath 挂载用于 CDI 未描述的驱动文件，环境变量通过 CDI 注入主 Dev Container。该配置补充设备运行条件，不参与设备调度，也不能用设备映射从节点重新挂载未分配的设备。平台保留自己的运行目录、二进制路径和环境变量名称，避免设备配置覆盖 Agent 通信或凭据。Runtime Pod 与主 Dev Container 可以分别追加符合 Linux capability 命名格式的能力，具体能力是否受节点内核和容器运行时支持由工作负载启动结果决定。Native Runtime Pod 以 root 运行，使用 dockerd 所需的基础 capability、`seccomp=Unconfined` 和 `AppArmor=Unconfined`，再追加模板能力，但不启用 privileged。
+
+环境模板还可以安装 Gitea CLI，并提供一份模板生命周期脚本。Agent 根据基础镜像的 OCI 平台下载对应 CLI 资产，在最终镜像层完成可执行文件校验和 Bash、Zsh、Fish 补全生成。该镜像层位于仓库镜像、Features 和远程用户 UID/GID 调整之后，再以 root 身份调用脚本的 `build` 分支并恢复容器用户；脚本随最终镜像保存，使构建缓存自然包含基础镜像和脚本内容。主容器每次进入运行状态后，Agent 在 CA、Git、标准 Dev Container 生命周期和访问入口之前以 root 身份调用 `start`。正常停止只在容器仍运行时调用 `stop`，再停止容器；已停止或已删除的容器可以直接进入资源收敛。Codespace 运行时通过通用镜像定制回调提供这些环境模板内容，Docker 引擎统一负责目标平台探测、缓存、代理、构建和临时目录清理，因此单容器和 Compose 使用同一套构建保障，标准 Dev Container 实现也能保持独立。采用单脚本和固定参数是为了让公共准备逻辑只维护一份，同时明确区分环境模板提供的扩展与 Dev Container 规范生命周期。
 
 Dev Container Feature 接受规范定义的对象、布尔值和字符串输入。字符串表示 `version` 选项，对象中的字符串和布尔值会转换为 `install.sh` 的环境变量；`false` 表示不启用该 Feature。解析器递归读取 `dependsOn`，再应用已经存在的 `installsAfter` 关系，并以解析后的内容摘要和最终选项判断是否为同一安装节点。这样相同内容不会重复安装，而同一 Feature 的不同选项仍能得到各自的安装结果。锁文件使用小写 Feature 标识和依赖，确保配置大小写差异不会绕过已经锁定的摘要。平台注入且仓库没有声明的 Feature 不进入仓库锁文件；仓库与平台共同声明同一引用时，仓库继续拥有该锁记录，并锁定合并后的有效选项。这样管理员配置不会创建无关的仓库变更，同时仓库主动声明的依赖仍可复现。
 
@@ -90,6 +99,14 @@ Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前
 
 - Runtime 不挂载节点容器运行时套接字，也不持有 Kubernetes API 凭据。
 - Kata 与 Sysbox 分别在对应 RuntimeClass 上通过真实启动验证。
+- Native Runtime Pod 为每项 Device Plugin 资源生成相同数量的 requests 与 limits，并且不启用 privileged。
+- Native 模板只从 Node 可分配扩展资源中选择设备；模板就绪检查确认至少一个节点能够同时满足全部设备请求，实际数量和当前可用性由 Kubernetes 调度器判断。
+- Device Plugin 通过 CRI CDI 把已分配设备接入 Runtime Pod；模板设备映射只转发 Pod 已有的设备，不产生额外节点设备挂载。
+- CDI 目录只包含当前 Pod 已分配的有效设备，并使用跨 Pod 替换保持不变的逻辑名称；物理设备 ID 改变后，同一 Dev Container 可以用新分配恢复。
+- Device Plugin 转发环境通过 CDI 在容器启动时注入，恢复后反映当前分配；平台环境和运行路径不能被设备配置覆盖。
+- 普通 Dockerfile 与 Compose 主服务获得相同的设备、挂载、环境变量和 capability，Compose 辅助服务不会自动继承平台设备。
+- 标记为 GPU 的 Device Plugin 资源满足标准 `hostRequirements.gpu`，并归一化 `--gpus all`、Compose `gpus: all` 和等价的全部 GPU 设备预留；具体数量或 ID 选择会明确失败；未标记时继续按标准 Docker GPU 能力检查。
+- 启用站点配额时，Native 扩展资源进入 `ResourceQuota` 和 Manager 创建容量检查；达到配额后不再领取对应模板的新建操作。
 - Web IDE 使用平台维护的 code-server Feature；空 options 使用上游默认值，管理员填写的标准 Feature 选项会进入镜像构建。
 - 平台始终覆盖 Web IDE 的内部监听、认证、工作区、TLS、遥测和更新检查选项；仓库 `customizations.vscode` 的设置和扩展在首次创建时应用。
 - Web IDE 监督进程保持单实例，code-server 退出后按有上限的间隔重启，容器停止时不留下子进程。
@@ -97,6 +114,8 @@ Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前
 - 只有启用 Web IDE 的模板发布内置 Workspace endpoint；短暂重启期间连接等待有明确上限。
 - 附加 Features 使用标准 Dev Container `features` 输入形式，并按依赖、安装提示和稳定排序得到确定的安装顺序。
 - 模板生命周期脚本的 `build` 在最终镜像层以 root 身份执行；脚本或基础镜像变化会使对应构建缓存失效。
+- 启用 Gitea CLI 时下载资产与基础镜像的操作系统和架构一致，镜像中提供可执行文件及 Bash、Zsh、Fish 补全。
+- 单容器和 Compose 主服务使用相同的最终镜像定制阶段，关联 Compose 服务保持仓库声明的镜像行为。
 - 首次创建和每次恢复都在标准容器生命周期前执行一次 `start`；正常停止在容器停止前执行一次 `stop`。
 - `build` 或 `start` 失败时环境不会发布 ready；`stop` 失败保留失败结果，同时实际资源仍收敛到 stopped。
 - 所有 Dev Container 来源使用同一解析和执行路径。
