@@ -198,13 +198,14 @@
 <li>Manager 重启后能从 Gitea 与 Kubernetes 恢复协调状态。</li>
 </ul>
 <h2 id="运行原则"><a class="header" href="#运行原则">运行原则</a></h2>
-<p>每个 Gitea 站点使用独立命名空间。Runtime Pod 在明确选择的 Kata 或 Sysbox RuntimeClass 中运行专属 Docker，实际 Dev Container 由该 Docker 构建和启动。工作区、Docker 数据和 IDE 数据保存在独立 PVC；短期 Token、Secret 和 socket 保存在易失目录。</p>
-<p>RuntimeClass 在环境模板中显式选择。Kata 与 Sysbox 具有不同的隔离条件，恢复继续使用创建时确定的配置，从而保持安全边界稳定。环境恢复以 PVC 中的持久数据为准，Cache 只保存可以重新生成的加速数据。</p>
+<p>每个 Gitea 站点使用独立命名空间。Runtime Pod 在明确选择的 Kata、Sysbox 或 Native 方式中运行专属 Docker，实际 Dev Container 由该 Docker 构建和启动。Kata 与 Sysbox 使用对应 RuntimeClass，Native 使用集群默认 CRI 并通过 Device Plugin 与 CDI 接入设备。工作区、Docker 数据和 IDE 数据保存在独立 PVC；短期 Token、Secret 和 socket 保存在易失目录。</p>
+<p>环境模板显式选择运行方式。Kata 与 Sysbox 进一步选择带对应隔离标签的 RuntimeClass，Native 保持 RuntimeClass 为空并使用默认 CRI。恢复继续使用创建时确定的配置，从而保持隔离、设备和存储语义稳定。环境恢复以 PVC 中的持久数据为准，Cache 只保存可以重新生成的加速数据。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
 <li>不同站点的资源、凭据和网络策略位于各自命名空间。</li>
 <li>stop 保留 PVC，resume 使用同一工作区和内部 Docker 数据。</li>
 <li>Runtime Pod 不获得节点容器运行时套接字或 Kubernetes API 凭据。</li>
+<li>Native Runtime 只取得模板声明且由 Kubernetes 分配的扩展资源和 CDI 设备。</li>
 <li>清空 Cache 不影响已有 Codespace 从 PVC 恢复。</li>
 </ul>
 
