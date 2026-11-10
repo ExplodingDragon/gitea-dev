@@ -51,7 +51,7 @@ Runtime UUID 在 Manager 领取前为空，绑定后由数据库唯一索引保�
 
 `GiteaSite`、`EnvironmentTemplate` 和 `CodespaceComponent` 是集群级资源；Codespace CR 位于站点命名空间。集群级组件适合被多个站点按 UID 引用，组件工作负载仍位于管理命名空间，避免把平台入口和缓存复制到每个站点。环境模板使用 `metadata.name` 作为 Gitea 环境标签，站点用名称和 UID 引用它；这让管理页面、Manager 声明、Gitea 调度和 Runtime 快照比较同一个标识，也允许多个站点安全共享同一模板。CR Spec 保存平台执行所需的固定输入和当前操作，Status 保存控制器观察结果。用户 Secret 和 Gitea Token 通过短期投递进入 Runtime，不写入 CR、标签或注解。
 
-环境模板保存 Dev Container 平台附加配置、完整的出站代理 URL、直连目标和附加 CA，这些内容共同决定工作负载的构建和运行行为，适合由声明资源持续协调。平台附加配置包括 Web IDE、Features 和一份生命周期脚本。Web IDE 配置保存摘要固定的提供方镜像、从镜像元数据得到的提供方标识和该提供方解释的原始 `options` 对象；镜像为空表示关闭。管理员保存模板时，Manager 读取 OCI 镜像配置中的协议、名称和选项 Schema，验证输入后把标签解析为 sha256 摘要。采用保存时解析的原因是模板本身就成为经过验证的不可变输入，控制器和创建流程无需再次访问仓库，也不会因标签后续移动而改变已有模板。创建 Codespace 时，这份配置随完整运行配置进入 `Codespace.Spec.Runtime` 快照。脚本以 `build`、`start`、`stop` 参数区分最终镜像构建、每次启动和正常停止。代理需要认证时，用户名和密码使用标准 URL 用户信息表示；管理页面可以读取和编辑完整 URL，因为它本身就是管理员维护的运行配置，运行进程也必须取得同一值。Manager 还会从运行快照生成 Codespace 自有代理 Secret，Pod 只引用 Secret 键；Cache 的代理配置则从组件声明投影到组件已有的 Secret。采用实例快照的原因是模板修改只应影响后续创建，已有 Codespace 在停止、恢复和 Pod 重建后仍需要使用创建时已经确认的镜像、脚本和网络环境。
+环境模板保存 Dev Container 平台附加配置、完整的出站代理 URL、直连目标和附加 CA，这些内容共同决定工作负载的构建和运行行为，适合由声明资源持续协调。平台附加配置包括 Web IDE、Features 和一份生命周期脚本。Web IDE 配置保存摘要固定的提供方镜像、从镜像元数据得到的提供方标识和该提供方解释的原始 `options` 对象；镜像为空表示关闭。管理员保存模板时，Manager 读取 OCI 镜像配置中的协议、名称和选项 Schema，验证输入后把标签解析为 sha256 摘要。保存后的模板仍可由管理员编辑；保存时校验并固定摘要，是为了让每次创建都从已验证的镜像内容开始，同时避免标签后续移动改变新实例的解析结果。创建 Codespace 时，这份配置随完整运行配置进入 `Codespace.Spec.Runtime` 快照。脚本以 `build`、`start`、`stop` 参数区分最终镜像构建、每次启动和正常停止。代理需要认证时，用户名和密码使用标准 URL 用户信息表示；管理页面可以读取和编辑完整 URL，因为它本身就是管理员维护的运行配置，运行进程也必须取得同一值。Manager 还会从运行快照生成 Codespace 自有代理 Secret，Pod 只引用 Secret 键；Cache 的代理配置则从组件声明投影到组件已有的 Secret。采用实例快照的原因是模板修改只应影响后续创建，已有 Codespace 在停止、恢复和 Pod 重建后仍需要使用创建时已经确认的镜像、脚本和网络环境。
 
 提供方镜像通过 OCI 配置标签 `dev.gitea.codespace.web-ide.metadata` 声明元数据版本、运行协议版本、提供方标识、展示名称和 Draft 2020-12 选项 Schema，并通过 `org.opencontainers.image.version`、`org.opencontainers.image.source`、`org.opencontainers.image.revision` 声明版本、源码地址和修订。选项 Schema 的根是对象并把引用保留在标签内，使 Manager 不需要访问另一个网络地址就能完成验证。多架构索引中的 linux/amd64 与 linux/arm64 Manifest 使用同一份声明、版本和来源，确保同一环境模板在不同节点上具有相同配置语义，也能追溯选中程序的源码。镜像建议只用于帮助管理员填写地址，保存后的数据模型不区分内置建议与第三方提供方。
 
@@ -71,7 +71,7 @@ PVC 是环境数据的持久边界。stop 删除运行工作负载并保留 PVC�
 - Web IDE 的 sha256 镜像、镜像声明的提供方标识和原始 `options` 一起进入 Codespace 运行快照；关闭状态不携带镜像或配置，模板后续修改不会改变已有实例。
 - 保存启用 Web IDE 的模板时会验证镜像元数据、选项 Schema 和输入，并把标签替换为对应摘要；控制器处理模板和创建 Codespace 时不访问镜像仓库。
 - 内置建议和第三方 Web IDE 使用同一 OCI 标签、选项 Schema、摘要快照和运行协议；多架构镜像的受支持平台声明一致。
-- CR Spec 表达期望，Status 表达观察结果，两者均不保存业务 Secret。
+- CR Spec 表达期望，Status 表达观察结果；平台长期 Secret 和 Gitea Token 不写入 CR，管理员明确配置的代理 URL 则按运行配置保存在模板和实例快照中。
 - 删除 Pod 不会删除 PVC，完成 delete 后不遗留 Codespace 持久资源。
 - Cache 丢失后可以回源，不影响 PVC 中的环境数据。
 - 块卷初始化事实在首次设备写入前持久化，Pod 替换保留这一事实。

@@ -102,7 +102,7 @@ Agent、Gateway 和 Cache 对 Secret 投影的证书使用一分钟内存缓存�
 
 ### 实现验收点
 
-- 长期凭据只保存在对应 Kubernetes Secret 或 Gitea 加密字段中，CR、标签和普通日志只保存非敏感引用。
+- 平台身份密钥、对象存储凭据、镜像凭据和其他长期平台凭据只保存在对应 Kubernetes Secret 或 Gitea 加密字段中，CR、标签和普通日志只保存非敏感引用。代理认证信息按标准 URL 用户信息保存在模板和运行快照中，属于管理员可见的运行配置；普通日志仍不得输出其中的用户名或密码。
 - Manager 首次启动后生成唯一的安装级内部 CA，多副本不会产生不同信任根。
 - 平台证书包含证书、私钥和 CA 信任链，并绑定当前 Kubernetes UID 和正确的客户端或服务器用途。
 - Cache 服务证书只包含当前 Service DNS 名称，组件身份与 Registry HTTPS 使用独立 Secret。
@@ -123,14 +123,14 @@ Agent、Gateway 和 Cache 对 Secret 投影的证书使用一分钟内存缓存�
 
 CI 先在 GitHub 托管 runner 构建平台二进制与镜像归档，再为三种运行方式分别创建一台全新的 `ubuntu-24.04` runner。每项任务在本机安装固定版本的单节点 k3s：Kata 通过官方部署 Chart 安装并使用支持块模式的动态存储，Sysbox 通过校验摘要的发行包安装并注册到 k3s containerd，Native 使用默认 CRI 并注册测试用 FUSE Device Plugin 与 CDI 设备。随后三项任务导入同一份平台镜像归档。Kata 需要观察到独立来宾内核，Sysbox 需要观察到隔离的用户映射，Native 需要验证扩展资源申请、CDI 设备节点和分配环境；同一套用例继续验证嵌套 Docker、PVC 恢复、组件身份、Leader 切换、Cache 和完整生命周期。
 
-完整生命周期由测试进程内的协议服务提供 Gitea 对端，真实 Manager、Kubernetes 资源、Runtime Pod、Gateway、Cache、网络和存储仍在 k3s 中运行。这样可以验证 Codespace 平台边界，而不把另一个仓库的部署和凭据变成前置条件；Gitea 服务端的协议适配由 Gitea 仓库集成测试验证。所有拉取请求运行相同的端到端测试，主分支镜像和 Helm Chart 的发布依赖 Kata、Sysbox 与 Native 三项结果。失败任务上传节点、RuntimeClass、StorageClass、Helm 状态、受管资源、事件和 Pod 日志，便于区分基础设施故障与产品故障。
+完整生命周期由测试进程内的协议服务提供 Gitea 对端，真实 Manager、Kubernetes 资源、Runtime Pod、Gateway、Cache、网络和存储仍在 k3s 中运行。这样可以验证 Codespace 平台边界，而不把另一个仓库的部署和凭据变成前置条件；Gitea 服务端的协议适配由 Gitea 仓库集成测试验证。触发核心 CI 的拉取请求运行三种运行方式的端到端测试，Provider 修改由独立工作流验证；主分支镜像和 Helm Chart 的发布依赖 Kata、Sysbox 与 Native 三项结果。失败任务上传节点、RuntimeClass、StorageClass、Helm 状态、受管资源、事件和 Pod 日志，便于区分基础设施故障与产品故障。
 
 ### 实现验收点
 
 - `make test` 不读取 kubeconfig，也不创建 Kubernetes 资源。
 - `make test-e2e` 只在提供显式 kubeconfig、不可变平台镜像和运行时参数后执行。
 - Kata、Sysbox 与 Native CI 使用同一个测试入口；前两项选择对应 RuntimeClass，Native 使用默认 CRI 并注册测试用 Device Plugin 与 CDI 设备。
-- 仓库内和外部仓库提交的拉取请求均运行完整端到端测试，且不读取仓库 Secret。
+- 触发核心 CI 的仓库内和外部仓库拉取请求运行完整端到端测试；仅修改 Provider 的拉取请求由 Provider 工作流验证。测试工作流不读取仓库 Secret。
 - 主分支发布等待 Kata、Sysbox 与 Native 完整端到端测试成功。
 - 运行时名称存在但实际隔离语义不成立时，测试在完整生命周期结束前失败。
 - 失败产物包含定位节点、运行时、存储、控制面和工作负载所需的诊断信息。

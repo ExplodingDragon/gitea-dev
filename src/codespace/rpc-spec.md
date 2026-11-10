@@ -36,6 +36,8 @@ Runtime 信息还携带主 Dev Container 解析完成后的 `workspaceFolder`。
 
 没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。
 
+`RuntimeResourceUsage` 表达完整的 CPU、内存和磁盘观察，`observed_unix` 是参与计算的最早采样时间。Manager 组合完整快照并保持发布时间递增，使 Gitea 可以按同一时间判断整组统计是否仍有效。来源选择、换算和过期规则由[运行资源统计](runtime-platform.md#运行资源统计)定义，Gitea 只消费最终展示结果。
+
 ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公共协议包中的常量。传输限制与 Kubernetes 单个持久化对象的大小限制分别生效：前者容纳资源清单等批量消息，后者控制资源保存成本。
 
 ### 实现验收点
@@ -51,6 +53,7 @@ ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公�
 - 运行材料按请求时的用户和仓库权限生成。
 - create/resume 完成不依赖展示缓存命中，后续 Runtime 报告必须匹配持久化的运行实例版本。
 - ready Runtime Metadata 包含主 Dev Container 的解析后工作目录；Manager 重启或 Endpoint 更新后仍能从 Codespace 状态恢复同一路径。
+- 资源上报使用现有完整消息；同一次快照的时间反映最早参与观察，缺少必要指标时沿用有效快照或等待后续采集。
 - 两端接受相同大小范围的 RPC 消息，资源保存仍执行自己的对象大小校验。
 
 ## 组件与 Agent
@@ -59,11 +62,19 @@ Gateway 和 Cache 使用各自身份连接 Manager，并接收版本化配置；
 
 Agent 以当前 Codespace CR 和 Pod 身份建立控制流。生命周期命令绑定操作版本，日志使用独立流，避免大量输出阻塞控制命令。Agent 先把阶段和结果原子写入 PVC，再向 Manager 上报，重连时复用已经完成的结果。
 
+Agent 资源报告只包含当次采集成功的指标，缺失项由 Manager 保留仍有效的既有观察。Manager 按来源和指标缓存这些临时数据，组合后才对 Gitea 上报完整统计，因此单项采集失败不会被误解为零使用量。
+
 块卷挂载前使用 `PrepareVolume` 请求确认。Manager 根据 mTLS 身份读取当前 CR、Pod 和 PVC，并校验操作许可；首次请求持久记录格式化已开始后返回成功，挂载后确认请求把状态更新为就绪。这个独立请求发生在 PVC 日志可用之前，使卷初始化也能获得持久化保护，Agent 仍只访问 Manager 服务。
 
-Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。
+Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。Cache GC 的完整时序见[运行平台](runtime-platform.md#cache)；其关键协议语义是：凭据只有在最晚到期时间登记成功后才返回，维护许可携带持久化的 `ReadyAt`，已有凭据可以在该时间前完成一次跨多个 HTTP 请求的镜像推送。
+
+控制流重连或 Manager 重启时，未完成维护沿用原 `ReadyAt`，不重新延长凭据窗口；完成清理后才恢复新凭据发放。这个边界只扩展 Cache 内部控制确认的时间语义，不增加 Gitea RPC、公共 Proto 或 Kubernetes CRD。
 
 Gateway 使用按能力签发的短期票据访问 Shell、命令、SFTP、HTTP Endpoint 或回环端口。Shell 与命令是两种独立能力，因为 SSH Shell 请求可以在没有 PTY 时通过标准输入接收脚本，而命令请求携带需要由登录 Shell 求值的明确内容。PTY 是这两种请求都可以附带的终端属性。这样 Agent 可以按实际请求签发和校验票据，VS Code Remote-SSH 等客户端也能通过无 PTY Shell 执行初始化脚本。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。
+
+`Access` 的 `accepted` 表示 Shell、命令或 SFTP 的 Docker exec 已成功附着，或者 TCP 目标已实际连接。HTTP Endpoint 与 SSH 回环转发共用 TCP 消息语义：`stdin` 与 `stdout` 传输数据，`stdin_eof` 只结束向目标发送，`stdout_eof` 只表示目标停止发送，`exit_status` 表示执行结束。两个方向分别结束，因此 HTTP Transport 能及时发现上游空闲连接关闭，SSH 客户端也能在收到 EOF 后继续发送剩余输入。stderr 保持独立诊断通道，TCP 和 SFTP 适配器最多保留 4 KiB 诊断用于失败说明。
+
+Agent 与容器内 `runtime connect` 通过 Docker exec 的标准输入输出传递同一组内部 Proto 消息，使用 protobuf 官方 `protodelim` 长度分隔编码。单帧上限为 256 KiB，目标 TCP 输出按最多 32 KiB 分块。helper 的 stdout 按顺序发送连接确认、数据和发送结束通知，使 Docker 对 stdout/stderr 的独立转发不会改变协议顺序。逻辑 `stdin_eof` 后仍保持控制输入打开；控制输入真正断开时取消 Dial 或关闭现有目标连接，因而 Agent 退出后 helper 也能结束。helper 的退出状态由 Agent 检查后发送。
 
 内部 Proto 生成到 `codespace/internal/rpc`，从 Go 包边界上阻止其他仓库依赖运行实现。需要跨越 Gitea 与 Manager 的业务类型由公共协议定义，内部协议直接引用这些类型，避免维护重复消息。
 
@@ -74,11 +85,19 @@ Gateway 使用按能力签发的短期票据访问 Shell、命令、SFTP、HTTP 
 - 控制流建立失败和运行中断都进入现有重连流程，取消请求会释放连接。
 - Agent 票据只适用于一个 Runtime、Pod、目标版本和访问能力。
 - 无 PTY Shell 能持续读取标准输入直到 EOF；命令请求必须携带非空命令，二者不能共用同一能力票据。
+- TCP 目标连接成功前不会发送 `accepted`，Shell、命令与 SFTP 在 exec 附着后发送确认。
+- TCP 数据先于对应方向的 EOF 到达，单向 EOF 保留反向传输，stderr 不进入 HTTP、WebSocket 或 SFTP 数据。
+- 控制输入断开能够取消尚未完成的 Dial；已经连接时释放 helper 和目标连接。
+- RPC 异常结束或 helper 非零退出向调用方返回错误；正常结束保留独立的半关闭语义。
 - 日志背压不会阻止控制命令。
+- 单项资源采集成功即可更新对应缓存；发往 Gitea 的统计仍是完整快照。
 - Dev Container 可以通过本地 socket 增删和查询 Endpoint。
 - 公共业务类型在公共协议中只有一份定义。
 - `PrepareVolume` 只接受当前身份和操作许可；格式化请求重复调用明确失败，挂载成功确认可重复提交。
 - Cache 许可来自一次成功获取或续约租约的对应确认；发送、等待和服务运行均受许可到期控制。
+- Cache 凭据只有在其到期时间登记成功后才返回；维护冻结新凭据，已有凭据在 `ReadyAt` 前覆盖 blob、HEAD 和 manifest 的完整多请求写入。
+- `ReadyAt` 在控制流重连和 Manager 重启后保持，清理完成、失败或许可过期后才恢复凭据发放。
+- GC Lease 的最近完成时间在控制连接轮换后仍有效，最小间隔内不会重复触发清理。
 
 ## 错误、重试与关闭
 

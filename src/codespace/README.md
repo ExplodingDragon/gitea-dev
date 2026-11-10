@@ -46,7 +46,7 @@ flowchart LR
 
 - 同一操作版本贯穿 Gitea、Codespace 自定义资源和 Agent 任务。
 - Gateway 数据流不经过 Manager 转发。
-- Gateway 只接受与当前 Pod 身份、路由和目标版本匹配的票据。
+- Manager 签发绑定当前运行目标的短期票据，Gateway 根据 Manager 返回的目标建立连接并转交请求，Agent 最终校验票据签名、身份、路由目标和目标版本。
 - Manager 重启后能从 Gitea 与 Kubernetes 恢复协调状态。
 
 ## 运行原则
