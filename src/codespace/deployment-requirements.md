@@ -23,25 +23,26 @@ Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、
 
 ## 隔离、存储与设备
 
-每个环境模板绑定 RuntimeClass、StorageClass、资源限制和 Dev Container 附加配置。RuntimeClass 需要使用 `codespace.gitea.dev/isolation=kata` 或 `codespace.gitea.dev/isolation=sysbox` 标签声明隔离方式，Manager 才会把它作为环境模板选项。标签让集群安装结果与模板选择使用同一份可查询事实，也让保存接口能够在创建工作负载前发现隔离类型不匹配。保存成功后，模板控制器依据 RuntimeClass 和 StorageClass 的实际可用性自动维护就绪状态，使依赖变化能够直接反映到管理页面。
+每个环境模板绑定运行方式、StorageClass、资源限制和 Dev Container 附加配置。Kata 与 Sysbox 进一步选择 RuntimeClass，该资源需要使用 `codespace.gitea.dev/isolation=kata` 或 `codespace.gitea.dev/isolation=sysbox` 标签声明隔离方式，Manager 才会把它作为对应模板选项。Native 使用集群默认 CRI，不保存 RuntimeClass，并从 Node 可分配扩展资源中选择 Device Plugin 设备。这样集群安装结果与模板选择使用同一份可查询事实，保存接口也能在创建工作负载前发现运行时、存储或设备能力不匹配。保存成功后，模板控制器依据这些依赖的实际可用性自动维护就绪状态，使依赖变化能够直接反映到管理页面。
 
-Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。Kata 的工作区卷以块设备进入来宾，Sysbox 的工作区卷以文件系统挂载；Manager 根据隔离标签选择对应形式。设备通过 Kubernetes 扩展资源和设备插件分配。
+Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。Kata 的工作区卷以块设备进入来宾，Sysbox 与 Native 的工作区卷以文件系统挂载；Manager 根据运行方式选择对应形式。Native 设备通过 Kubernetes 扩展资源、Device Plugin 和 CDI 分配，Manager 把同一设备数量写入 Pod requests 与 limits，让 kubelet 保持唯一的设备分配权威。
 
-Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选 RuntimeClass、节点和扩容策略。
+Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。Native 节点需要验证默认 CRI 能够运行平台所需的嵌套 Docker，并为模板需要的设备安装 Device Plugin 与 CDI 配置。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选运行方式、节点和扩容策略。
 
 ### 实现验收点
 
-- 模板引用的 RuntimeClass 与 StorageClass 可用时自动就绪，任一依赖失效时状态会指出具体资源。
+- 模板引用的 RuntimeClass、StorageClass 与扩展资源可用时自动就绪，任一适用依赖失效时状态会指出具体资源。
 - 每个可选 RuntimeClass 都带有与实际运行方式一致的 `codespace.gitea.dev/isolation` 标签。
 - 管理页面中 RuntimeClass 与隔离方式联动，StorageClass 来源于当前集群；不存在的资源无法保存。
 - Kata 与 Sysbox 创建的 PVC 分别采用块模式与文件系统模式。
+- Native 使用默认 CRI 和文件系统 PVC，申请的扩展资源与 CDI 设备能够进入 Runtime Pod 和主 Dev Container。
 - Runtime 内 Docker 可用，并且无法访问节点容器运行时或 Kubernetes API 身份。
 - CPU、内存、磁盘和设备使用受模板限制。
 - Pod 替换后 PVC 数据可以由新的 Runtime 恢复。
 
 ## 镜像、缓存与网络
 
-Manager、Gateway、Cache 和 Runtime 使用同一个平台镜像引用，但作为独立工作负载运行。Codespace 仓库的 `main` 分支更新平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。开发环境可以用 `--devel` 跟随最新 Chart 和镜像；经过验证的部署应使用工作流摘要中的精确 Chart 版本或摘要，并把镜像摘要写入 Helm values。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret；Manager 只向需要拉取镜像的站点命名空间同步凭据。
+Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的多架构提供方镜像，由 Runtime Pod 的 init 容器按环境模板选择。Codespace 仓库的 `main` 分支更新核心镜像的 `main` 标签并发布 Helm 预发布版本；同一仓库中的 VS Code 与 DeepSeek Harness Provider 各自只监听自身目录并使用独立发布流程，因此编辑器更新不会重建或发布控制面。管理员保存环境模板时，Manager 只读取提供方镜像的 OCI 配置元数据并把引用固定到 sha256 摘要；Pod 启动时 Kubernetes 再拉取实际镜像层。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。
 
 生产环境的 Gateway 建议至少运行两个副本。控制器使用软反亲和性优先分散到不同节点，因此单节点测试集群仍可运行，多节点集群则能降低节点故障影响；PDB 保护计划内驱逐，实际容量仍需要集群为至少一个替代 Pod 保留资源。Cache 固定为一个 Recreate 副本，其 PVC 使用 ReadWriteOnce，升级窗口允许短暂缓存不可用；Runtime 可以在授权范围内回源，因此这不会改变 Codespace 的持久数据。
 
@@ -60,7 +61,9 @@ Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，�
 ### 实现验收点
 
 - Manager 与其创建的工作负载使用同一平台镜像引用。
-- Helm Chart 版本、Chart 摘要和平台镜像摘要可以在对应 GitHub Actions 运行摘要中找到。
+- Helm Chart 版本、Chart 摘要和核心平台镜像摘要可以在对应 GitHub Actions 运行摘要中找到；Web IDE 提供方按自身发布记录审计版本和摘要。
+- Runtime 节点可以拉取模板选择的提供方镜像；私有仓库凭据同时适用于核心 Runtime 和 Web IDE init 容器。
+- Manager 能使用同一私有仓库凭据解析 Web IDE 镜像元数据，模板保存后只保留 sha256 引用。
 - 标签模式的新建工作负载获取当前镜像，摘要模式的工作负载保持内容固定。
 - 私有仓库凭据只投递给需要它的工作负载。
 - Runtime 无法访问其他站点的 Runtime 网络。
@@ -116,19 +119,19 @@ Agent、Gateway 和 Cache 对 Secret 投影的证书使用一分钟内存缓存�
 
 ## 验证与发布
 
-日常开发测试不依赖 Kubernetes，只覆盖可在进程内或本机完成的逻辑。完整端到端测试通过显式 kubeconfig 连接专用的单节点 k3s 集群，并分别在 Kata 与 Sysbox 环境执行同一套测试入口。这样既能让本地反馈保持快速，也能保证两种隔离方式验证的是同一条产品生命周期，而不是两套逐渐产生差异的脚本。
+日常开发测试不依赖 Kubernetes，只覆盖可在进程内或本机完成的逻辑。完整端到端测试通过显式 kubeconfig 连接专用 Kubernetes 集群，并在 Kata、Sysbox 和 Native 环境执行同一套测试入口。这样本地反馈可以保持快速，三种运行方式也都通过同一条产品生命周期验证，而不是维护三套逐渐产生差异的脚本。
 
-CI 先在 GitHub 托管 runner 构建平台二进制与镜像归档，再为 Kata 与 Sysbox 分别创建一台全新的 `ubuntu-24.04` runner。每项任务在本机安装固定版本的单节点 k3s 和对应运行时：Kata 通过官方部署 Chart 安装并使用支持块模式的动态存储，Sysbox 通过校验摘要的发行包安装并注册到 k3s containerd。随后导入同一份平台镜像归档。Kata 需要观察到独立来宾内核，Sysbox 需要观察到隔离的用户映射；同一套用例继续验证嵌套 Docker、PVC 恢复、组件身份、Leader 切换、Cache 和完整生命周期。
+CI 先在 GitHub 托管 runner 构建平台二进制与镜像归档，再为三种运行方式分别创建一台全新的 `ubuntu-24.04` runner。每项任务在本机安装固定版本的单节点 k3s：Kata 通过官方部署 Chart 安装并使用支持块模式的动态存储，Sysbox 通过校验摘要的发行包安装并注册到 k3s containerd，Native 使用默认 CRI 并注册测试用 FUSE Device Plugin 与 CDI 设备。随后三项任务导入同一份平台镜像归档。Kata 需要观察到独立来宾内核，Sysbox 需要观察到隔离的用户映射，Native 需要验证扩展资源申请、CDI 设备节点和分配环境；同一套用例继续验证嵌套 Docker、PVC 恢复、组件身份、Leader 切换、Cache 和完整生命周期。
 
-完整生命周期由测试进程内的协议服务提供 Gitea 对端，真实 Manager、Kubernetes 资源、Runtime Pod、Gateway、Cache、网络和存储仍在 k3s 中运行。这样可以验证 Codespace 平台边界，而不把另一个仓库的部署和凭据变成前置条件；Gitea 服务端的协议适配由 Gitea 仓库集成测试验证。所有拉取请求运行相同的端到端测试，主分支镜像和 Helm Chart 的发布依赖 Kata 与 Sysbox 两项结果。失败任务上传节点、RuntimeClass、StorageClass、Helm 状态、受管资源、事件和 Pod 日志，便于区分基础设施故障与产品故障。
+完整生命周期由测试进程内的协议服务提供 Gitea 对端，真实 Manager、Kubernetes 资源、Runtime Pod、Gateway、Cache、网络和存储仍在 k3s 中运行。这样可以验证 Codespace 平台边界，而不把另一个仓库的部署和凭据变成前置条件；Gitea 服务端的协议适配由 Gitea 仓库集成测试验证。所有拉取请求运行相同的端到端测试，主分支镜像和 Helm Chart 的发布依赖 Kata、Sysbox 与 Native 三项结果。失败任务上传节点、RuntimeClass、StorageClass、Helm 状态、受管资源、事件和 Pod 日志，便于区分基础设施故障与产品故障。
 
 ### 实现验收点
 
 - `make test` 不读取 kubeconfig，也不创建 Kubernetes 资源。
 - `make test-e2e` 只在提供显式 kubeconfig、不可变平台镜像和运行时参数后执行。
-- Kata 与 Sysbox CI 使用同一个测试入口，只改变安装的运行时、RuntimeClass 和 StorageClass。
+- Kata、Sysbox 与 Native CI 使用同一个测试入口；前两项选择对应 RuntimeClass，Native 使用默认 CRI 并注册测试用 Device Plugin 与 CDI 设备。
 - 仓库内和外部仓库提交的拉取请求均运行完整端到端测试，且不读取仓库 Secret。
-- 主分支发布等待 Kata 与 Sysbox 完整端到端测试成功。
+- 主分支发布等待 Kata、Sysbox 与 Native 完整端到端测试成功。
 - 运行时名称存在但实际隔离语义不成立时，测试在完整生命周期结束前失败。
 - 失败产物包含定位节点、运行时、存储、控制面和工作负载所需的诊断信息。
 

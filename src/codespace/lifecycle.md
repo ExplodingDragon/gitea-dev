@@ -47,7 +47,7 @@ sequenceDiagram
     G-->>U: running
 ```
 
-Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 再提交 create 结果。Web IDE 是可以独立重启的附加服务，它的进程状态不会改变 ready，也不会阻断其他访问方式。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。
+Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 再提交 create 结果。Web IDE 是可以独立重启的附加服务，环境模板可以用空镜像关闭它，也可以保存已经解析为摘要的提供方镜像；所选进程的状态不会改变 ready，也不会阻断其他访问方式。提供方初始化成功且 Docker 接受其后台启动后，Agent 把统一的 Workspace endpoint 加入访问目标；编辑器监听和重启由提供方负责，不参与 Codespace 生命周期判断。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。
 
 输入和权限错误在持久化前返回。Manager 领取后若发现环境授权、运行设置或持久化操作身份存在确定性错误，会使用 Codespace ID 和当前操作版本提交失败；尚未绑定 Runtime UUID 的 create 也能因此直接进入 failed。已经产生的局部 CR 使用同一操作版本进入清理：create 删除局部资源，resume 停止已启动资源并保留工作区。采用同一最终提交接口的原因是 Gitea 仍是业务状态的唯一权威，Manager 无需维护另一套“拒绝”状态。
 
@@ -76,7 +76,7 @@ Runtime 信息是可重建的展示数据。暂时失联会让访问入口显示
 - 后台心跳不会延后自动停止。
 - Runtime 信息过期不改变主状态。
 - 生命周期操作版本变化不会让旧 Runtime 获得新实例身份。
-- Web IDE 启动失败或进程重启时 Codespace 保持 running，SSH 和 SFTP 继续可用。
+- Web IDE 初始化或启动提交失败时，访问目标保留 SSH 和 SFTP，Codespace 保持 running；Endpoint 发布后编辑器暂时退出时，原入口保持不变并在提供方重启成功后恢复连接。
 
 ## 停止、恢复与自动停止
 

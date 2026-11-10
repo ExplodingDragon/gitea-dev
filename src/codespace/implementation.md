@@ -29,9 +29,9 @@
 
 Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pnpm 12.16.1 和固定版本的 Helm。拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查和镜像冒烟验证。这样可以在合并前同时验证源代码、已提交的前端资源、CRD、Helm 模板和最终运行环境。
 
-平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入镜像，验证与发布使用的也是同一份产物。当前已完成真实验证的运行环境为 AMD64；增加其他架构前，需要先完成对应 RuntimeClass 和端到端验证。
+平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入核心镜像，验证与发布使用的也是同一份产物。仓库在 `providers/vscode` 和 `providers/dsh` 中提供两个官方 Web IDE 工程，每个工程按自身依赖的架构与工具链独立构建和发布；核心代码维护通用 OCI 元数据协议，并使用一个伪提供方完成平台端到端测试。采用仓库内独立发布单元的原因是官方实现可以与平台一起审计，同时编辑器依赖和更新频率不会扩大控制面镜像、核心构建链或核心发布范围。
 
-`main` 分支更新时发布平台镜像 `ghcr.io/explodingdragon/gitea-codespace:main`。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 `0.1.0-main.<run-number>` 形式的预发布版本。镜像标签提供连续开发通道，Chart 预发布版本保留每次部署配置，两者都产生不可变摘要和来源证明，平台镜像还包含软件物料清单。
+`main` 分支更新时发布核心平台镜像的 `main` 标签。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 `0.1.0-main.<run-number>` 形式的预发布版本。镜像标签提供连续开发通道，Chart 预发布版本保留每次部署配置。核心镜像与 Chart 产生不可变摘要和来源证明，核心镜像还包含软件物料清单。两个官方 Web IDE 工程分别监听自身目录并发布各自的 `main` 多架构镜像，第三方提供方沿用同一协议自行发布；环境模板保存时把所选版本解析为摘要，因此 Chart 无需绑定编辑器发布周期。
 
 开发部署使用 Helm 的 `--devel` 选择最新预发布 Chart，并默认使用平台镜像的 `main` 标签。可复现部署使用工作流摘要中的精确 Chart 版本或 Chart 摘要，同时设置平台镜像摘要。正式发布 `0.1.0` 后，源码中的开发版本进入下一版本的预发布序列，保证 `--devel` 仍能选择到比正式版更新的开发 Chart。
 
@@ -41,8 +41,10 @@ Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使
 
 - 拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容。
 - 镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。
-- `main` 分支更新平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。
-- 工作流摘要给出平台镜像摘要、Chart 版本和 Chart 摘要。
+- `main` 分支更新核心平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。
+- 工作流摘要给出核心镜像摘要、Chart 版本和 Chart 摘要；核心发布任务不构建或发布真实 Web IDE。
+- 仓库内 VS Code 与 DeepSeek Harness 工程分别验证自身改动，并在 `main` 上独立发布 linux/amd64、linux/arm64 的官方 Provider 镜像。
+- 端到端测试使用独立构建且不会发布的伪 Web IDE 镜像，覆盖 OCI 元数据、选项、HTTP、WebSocket、重启和恢复。
 - 默认 Chart 渲染标签镜像与 `Always`，设置镜像摘要后渲染摘要引用与 `IfNotPresent`。
 - 新平台构建触发 Manager、Gateway 和 Cache 更新，不主动重启正在运行的用户 Runtime。
 - 发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。
@@ -51,7 +53,7 @@ Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使
 
 管理 API 为站点、环境模板和组件使用各自的请求结构。每类端点只接收自身需要的 Secret 或角色特有字段，因此新增字段时可以在对应资源边界内审阅，不会被一个通用 JSON 包装层静默吞掉。并发更新继续携带 Kubernetes UID 与 `resourceVersion`，写入前核对同名对象仍是用户看到的实例。
 
-管理页面始终使用当前浏览器来源的相对 API 地址，不保存单独的“管理公开地址”。这是因为页面可能通过端口转发、集群内代理或 Ingress 访问，访问地址属于部署入口而不是管理员身份。管理 Token、服务端会话、同站 Cookie 和 CSRF 继续承担鉴权；Cookie 是否带 `Secure` 根据实际 TLS 请求或 HTTPS Origin 决定。站点、环境模板和组件的新资源名由服务端生成，管理员只填写有业务含义的显示名称、Tag 和说明，避免把 Kubernetes 标识误当作可修改配置。
+管理页面始终使用当前浏览器来源的相对 API 地址，不保存单独的“管理公开地址”。这是因为页面可能通过端口转发、集群内代理或 Ingress 访问，访问地址属于部署入口而不是管理员身份。管理 Token、服务端会话、同站 Cookie 和 CSRF 继续承担鉴权；Cookie 是否带 `Secure` 根据实际 TLS 请求或 HTTPS Origin 决定。站点和组件的新资源名由服务端生成，管理员只填写显示名称和说明。环境模板由管理员填写 Tag，服务端把经过 DNS 标签校验的 Tag 原样作为 `metadata.name` 和 Gitea 环境标签；创建后 Tag 不可修改。采用这一例外是因为环境标签本身就是跨 Gitea、Manager 和 Runtime 快照使用的稳定业务标识，另行生成 Kubernetes 名称反而会产生两套需要同步的身份。
 
 管理 API 从当前集群读取带隔离标签的 RuntimeClass、StorageClass、IngressClass、TLS Secret 和 cert-manager Issuer，管理页面据此提供下拉选择。保存模板或组件时，服务端重新读取被引用资源并核对隔离标签、资源类型和当前身份，因为页面加载后集群资源仍可能被删除或修改。CPU、内存、存储、缓存容量和时长在页面中按“数值 + 单位”编辑，提交后转换为 Kubernetes quantity、字节大小或 duration 字符串；这样既保留 Kubernetes 原生语义，也减少手写单位造成的配置错误。
 
@@ -89,9 +91,9 @@ Dev Container 引擎把代理环境作为单次平台输入处理。Dockerfile�
 
 标准 Dev Container 包负责解析配置、安装 Feature、调整远程用户以及创建和控制 Docker 资源。Codespace 的 Gitea CLI 由平台镜像预先校验并提供，模板脚本和这些平台制品由 `internal/devcontainerruntime` 通过一个最终镜像定制回调写入临时构建上下文。Docker 引擎继续统一负责目标平台探测、缓存、代理、构建标签和临时目录清理，因此单容器和 Compose 使用相同的构建保障；运行时层掌握平台配置及执行顺序，因此平台能力不会与标准 Dev Container 语义混在一起。镜像定制发生在 Feature 和远程用户镜像之后，使管理员的 `build` 脚本仍是最终可配置构建动作。
 
-平台镜像在 Docker 构建前准备默认 code-server 独立发行包和 `gitea.codespace` VSIX，镜像构建只复制已生成制品。Agent 在创建或恢复时选择内置程序，或使用 Pod 代理与 CA 环境下载并安全替换模板指定的归档。程序目录与 VSIX 只读挂载，用户数据和扩展目录从 Codespace PVC 读写挂载。这种边界让编辑器更新不进入仓库镜像构建，同时使 Pod 替换与 Web IDE 重启都能保留用户数据。程序准备失败时，新建流程不加入 Web IDE 挂载，恢复流程不启动 Web IDE，两条路径都保留 SSH 等基础访问；后续恢复会重新准备，因此附加编辑器不会改变 Codespace 生命周期结果。
+Web IDE 的公共镜像和运行协议位于 `internal/webide`，OCI 解析与选项 Schema 校验位于 `internal/cluster/web_ide.go` 和环境模板管理 API。模板保存路径只读取镜像索引、Manifest 与配置并写入摘要；Runtime 工作负载控制器根据这份快照生成 init 容器、临时程序卷和私有仓库凭据。把元数据校验与工作负载投影分开，是为了让管理写入可以在创建用户资源前返回确定错误，同时让控制器只消费已经确认的声明。
 
-容器内的运行时子命令负责初始化和监督 Web IDE。它只在设置文件不存在时写入模板与仓库合并结果，并在普通扩展之前安装或更新平台 VSIX。VSIX 只执行 `/usr/local/bin/gitea-codespace-endpoint` 的版本化 JSON 列表和现有 set/delete 命令，所有端口操作因此仍由 CLI 通过 Agent Unix socket 校验和执行。监督命令以远程用户和工作区环境脱离生命周期请求运行，通过文件锁阻止重复实例，并在 code-server 退出后按有上限的间隔重启。初始化、VSIX 安装、code-server 启动或平台连接阶段的 `postAttachCommand` 失败只写入操作日志，因为 Web IDE 属于附加服务，不改变 Dev Container 已可用的事实。Workspace endpoint 是否发布只由环境模板的 Web IDE 开关决定，连接命令仅为这个内置端点提供短时间等待，使重启过程不扩散到其他端口转发。
+`internal/devcontainerruntime` 是核心与提供方适配器的唯一容器内边界：它把模板 `options` 与仓库 `customizations.<provider>` 交给 `prepare`，再以远程用户提交脱离当前操作的 `serve` 执行。`providers/vscode`、`providers/dsh` 和第三方镜像分别负责配置语义、程序参数和持续运行；核心代码不包含编辑器专用分支。`internal/agent` 在启动提交成功后把 Workspace endpoint 合入访问目标，`internal/gateway` 复用普通 Endpoint 的认证、来源校验和代理路径。该调用链不执行端口健康检查，具体生命周期语义由 [运行平台](runtime-platform.md#runtime-与持久数据) 定义。
 
 Cache 控制连接身份、Registry HTTPS 证书和 Registry 签名密钥分别保存。组件控制器根据同名 Service 推导 DNS 地址，签发只含该名称的短期服务证书，并把 `443/https` Service 投影到容器 `8443`。文件型证书源在启动时校验证书、私钥和信任根，随后复用内存中的完整快照；新 TLS 握手每分钟最多检查一次 Secret 投影文件，成功后原子替换快照。这样既能在不重建 Pod 的情况下使用续期证书，也不会把文件读取放入每次握手。Runtime Agent 在启动 Docker 前把内部根证书安装到对应主机的 `certs.d` 目录，证书续期、组件 API 身份和 Registry 数据访问因此保持各自明确的边界，管理 API 也无需保存可推导的缓存地址。
 
@@ -120,7 +122,7 @@ Gateway 控制流按实例汇报活动并获得限时许可。Manager 从同一�
 - 站点、模板和组件端点拒绝属于其他资源类型的请求字段。
 - 端口转发、HTTP 代理和 HTTPS Ingress 使用同一管理页面，不需要修改 Manager 中的公开地址；未认证或 CSRF 无效的写请求仍被拒绝。
 - 新建站点在远程注册前完成所有可本地验证的 Kubernetes 引用检查，资源名和 Manager 身份由服务端生成。
-- 新建站点、环境模板和组件的请求不携带 Kubernetes 资源名，服务端响应包含生成后的名称、UID 和资源版本。
+- 新建站点和组件的请求不携带 Kubernetes 资源名，服务端响应包含生成后的名称、UID 和资源版本；环境模板请求携带用户填写的 Tag，并以该值作为不可修改的资源名和环境标签。
 - 注册令牌不写入 Kubernetes；运行密钥只写入当前站点拥有的 Secret，管理读取接口不返回明文。
 - 站点连接地址与 Gitea 返回的规范 Web 地址可以不同；Manager 使用连接地址，控制器把验证后的规范地址写入 Status。
 - 站点 CA 留空时使用系统信任库；填写多个有效证书时注册、身份检查和运行协调均能连接，错误证书不会覆盖已有站点配置。
@@ -151,12 +153,15 @@ Gateway 控制流按实例汇报活动并获得限时许可。Manager 从同一�
 - 标准 Dev Container 包只提供通用镜像定制回调和容器状态操作，Codespace 平台镜像内容由运行时层生成。
 - 单容器和 Compose 的主服务在 Feature 与远程用户处理后执行同一最终镜像定制流程，并共用缓存、代理与目标平台信息。
 - Gitea CLI 安装和模板 `build`、`start`、`stop` 行为由运行时层按环境模板配置执行，通用 Docker 引擎不解释这些平台字段。
-- Web IDE 程序和强制 VSIX 由平台镜像提供并只读挂载；自定义归档使用当前 Pod 架构安全替换单一持久化程序目录。
-- Web IDE 程序缺失、归档下载失败或程序不兼容时只记录附加服务错误，Dev Container 创建和 SSH 访问继续完成，后续恢复重新尝试准备。
-- 初始设置只在目标文件不存在时写入，模板与仓库扩展安装后不删除用户扩展，Pod 替换与恢复保留用户数据。
-- Codespace VSIX 调用端口 CLI 的版本化 JSON 输出和现有写命令，端口业务规则仍只有一份。
-- Web IDE 使用容器内运行时子命令保持单实例并自动重启；初始化和连接错误进入操作日志，但不会删除环境或让 create、resume 失败。
-- Workspace endpoint 只随模板开关发布，连接等待只作用于该端点并有固定上限。
+- 核心平台镜像不包含编辑器程序、提供方适配器或编辑器扩展；仓库内的两个官方 Provider 与第三方 Provider 都由独立多架构镜像交付，并按所选提供方只读挂载。
+- 提供方镜像拉取或导出失败时 Runtime Pod 的 init 状态给出原因；适配器配置或程序启动失败时只记录附加服务错误，Dev Container 与 SSH 访问继续完成，后续恢复重新尝试启动。
+- 管理端解析显式标签或摘要，只读取 OCI 元数据，并把通过校验的 sha256 镜像、提供方标识和 options 保存到模板；未修改 Web IDE 的普通模板编辑不会重复访问仓库。
+- OCI 元数据声明 linux/amd64 与 linux/arm64 时，两端的协议、提供方、版本和选项 Schema 一致；私有仓库使用 Helm 配置的拉取 Secret。
+- 提供方收到模板 options 和仓库 `customizations.<provider>` 两份输入，具体合并与持久化语义由镜像内适配器负责。
+- 提供方只监听指定的回环地址，并在自己的 `serve` 进程中保持编辑器单实例和退出后重启；核心平台不承担提供方进程监督。
+- 模板启用 Web IDE、`prepare` 成功且 Docker 接受脱离执行的 `serve` 后发布 Workspace endpoint；操作重放和端口声明变化沿用已经发布的入口。
+- Web IDE 初始化或启动提交失败时，访问目标只包含可用入口，Codespace 继续提供 SSH 等基础访问，后续恢复重新尝试 Web IDE。
+- Workspace endpoint 不执行端口级健康检查；提供方尚未监听或正在重启时 Gateway 返回临时不可用，后续请求通过同一入口恢复。
 - Gateway 快照不会列出绑定其他 Gateway 的站点或其他站点命名空间中的 Runtime。
 - Manager 默认依赖 API Priority and Fairness 处理集群请求；kubeconfig 显式配置的客户端限流保持生效。
 - 同一站点的一分钟运行请求复用 Gitea 客户端和 HTTP Transport；每次创建连接都核对凭据所有权，缓存不保留完整 Secret，站点身份、凭据引用或 CA 配置变化后创建新连接。
@@ -186,13 +191,15 @@ Gateway 控制流按实例汇报活动并获得限时许可。Manager 从同一�
 | 单元测试              | 解析、权限交集、状态转换、幂等键和纯函数                |
 | 数据库测试            | 事务、条件更新、唯一约束和迁移                          |
 | 组件集成测试          | RPC 身份、操作领取、Agent 流、Gateway 授权和 Cache 维护 |
-| Kubernetes 端到端测试 | CR、PVC、Pod、Leader 切换、RuntimeClass、网络和恢复     |
+| Kubernetes 端到端测试 | CR、PVC、Pod、Leader 切换、隔离运行时、设备、网络和恢复 |
 | 浏览器测试            | 创建确认、列表、详情、日志增量加载和管理界面            |
 | Helm 测试             | RBAC、身份、服务、网络策略以及标签和摘要镜像            |
 
 测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 使用 `make lint` 检查格式、生成文件、Helm、`go vet` 和 `staticcheck`，`make test` 运行后端的非端到端测试，`make test-frontend` 运行管理界面浏览器测试，`make test-e2e` 编排真实 Kubernetes 全链路。静态检查集中在同一入口并固定工具版本，使本地与持续集成得到一致结果；统一测试入口也避免各子系统各自维护一套环境变量、资源和清理脚本。
 
 Dev Container 兼容测试使用官方配置表示验证 Feature 字符串简写和字符串布尔选项，并分别覆盖生命周期来源顺序、依赖循环、锁文件所有权与标准化、Compose 默认工作区、内部代理直连目标与跨服务端点。Compose 代理测试使用真实加载模型验证隐式默认网络和显式别名，使标准的省略网络配置不会只在端到端环境中暴露错误。恢复测试验证宿主初始化可以再次执行、同一操作的替换 Pod 不会重放未知结果，并验证恢复状态只有一个容器生命周期命令来源。选择这些语义测试的原因是它们决定最终运行行为，单纯检查字段或函数是否存在无法发现命令顺序、目标容器或恢复重复执行错误。
+
+Web IDE 端到端验证使用只为测试构建的伪提供方镜像。镜像声明字符串、布尔值、整数、数值、枚举、数组和嵌套对象选项，并记录 `prepare` 输入与初始化次数；运行程序提供 HTTP、WebSocket、状态查询和受控退出。这样同一场景可以验证 OCI 标签解析、摘要固定、init 导出、模板与仓库两份配置、Endpoint 发布、提供方自行重启、停止拒绝和恢复持久化，同时不会让核心测试依赖 VS Code、DeepSeek Harness 或其外部下载服务。
 
 ### 实现验收点
 
@@ -206,19 +213,20 @@ Dev Container 兼容测试使用官方配置表示验证 Feature 字符串简写
 - 本地和自动化使用相同的公开测试入口。
 - 普通测试不会因为本机存在 kubeconfig 或 Docker 而隐式进入真实环境测试。
 - 完整端到端测试由单个入口启动，阶段失败会直接终止并保留诊断。
+- Web IDE 端到端测试只使用伪提供方镜像，并覆盖所有受支持选项类型、HTTP、WebSocket、子进程重启以及恢复时 `initialize=false`。
 - 块卷授权、跨站点缓存、无 UUID 记录维护、执行取消和缓存许可到期由行为测试覆盖。
 
 ## 真实环境验证
 
-Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata 与 Sysbox 通过同一入口分别执行，使结果明确对应实际 RuntimeClass 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。
+Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata、Sysbox 与 Native 通过同一入口分别执行，使结果明确对应实际 RuntimeClass、默认 CRI、Device Plugin、CDI 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。
 
-测试开始前检查集群能力、镜像和测试协议服务监听地址，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。测试进程提供 Gitea 协议对端，使 Kubernetes 平台测试不依赖另一套产品部署；Gitea 对 Manager 的适配由 Gitea 仓库测试验证。Runtime 内执行的测试及时输出场景开始、结果和失败信息，便于区分外部下载缓慢与执行阻塞。成功后清理测试资源；失败时先收集资源状态、事件和组件日志，再执行清理，诊断文件保留用于定位。
+测试开始前检查集群能力、核心镜像、伪 Web IDE OCI 布局和测试协议服务监听地址，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。测试进程提供 Gitea 协议对端，使 Kubernetes 平台测试不依赖另一套产品部署；Gitea 对 Manager 的适配由 Gitea 仓库测试验证。Runtime 内执行的测试及时输出场景开始、结果和失败信息，便于区分外部下载缓慢与执行阻塞。成功后清理测试资源；失败时先收集资源状态、事件和组件日志，再执行清理，诊断文件保留用于定位。
 
 官方 Feature 会从外部下载软件包和二进制。真实环境测试为此保留有界的下载时间，并让外层测试期限大于内层执行期限，使慢速网络下仍能完成安装和失败清理；普通测试仍使用原有的快速入口。
 
 ### 实现验收点
 
-- 测试开始前检查集群 API、RuntimeClass、StorageClass、镜像和凭据。
+- 测试开始前检查集群 API、所选 RuntimeClass 或默认 CRI、StorageClass、镜像和凭据；Native 还检查测试设备资源与 CDI 定义。
 - 测试集群在执行期间由本轮测试安装的 Manager 控制面协调。
 - 每种支持的隔离模式完成 create、stop、resume、delete 和访问验证。
 - Leader 切换、Pod 删除与 Cache 丢失具有恢复验证。
@@ -228,6 +236,7 @@ Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜
 - 测试协议服务只实现端到端场景需要的 Gitea 行为，Manager 仍通过公开协议和真实网络连接访问它。
 - 测试结束后自动确认没有孤立资源。
 - Kata 验证首次块卷初始化，以及替换 Pod 后检查并挂载原文件系统的数据恢复行为。
+- Sysbox 验证隔离用户映射和文件系统 PVC；Native 验证 FUSE Device Plugin 分配、CDI 设备节点与分配环境能够进入 Dev Container。
 
 ## 完成标准
 
