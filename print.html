@@ -2036,7 +2036,7 @@ make check
 <p>每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS 与 TLS 由 Ingress、cert-manager 或集群运维维护，SSH 可以通过 Manager 创建的独立 LoadBalancer Service 发布。外部入口证书与 Cache 内部 HTTPS 证书服务于不同网络边界，分别由入口设施和 Manager 内部 CA 维护。</p>
 <p>站点配置中的运行出站网络使用 CIDR 和 TCP 端口放行 Runtime 必需的目标。这里需要包含 Gitea 实际返回的 HTTP 与 SSH 克隆地址，以及 Dev Container 生命周期命令依赖的服务；Manager 控制面能够访问 Gitea 并不代表站点命名空间中的 Runtime 也能访问。使用显式地址段的原因是标准 NetworkPolicy 没有可移植的域名规则，管理员可以先在 Runtime Pod 中解析和验证目标地址，再把稳定的网络范围写入站点配置。</p>
 <p>内网部署可以分别为环境模板和 Cache 组件设置 HTTP、HTTPS 或 SOCKS5 出站代理。环境模板适用于该模板创建的 Runtime、Docker 构建和 Dev Container；Cache 代理只用于镜像与对象存储回源。代理使用字面 IP 时，引用模板的每个站点都需要在运行出站网络中放行该 CIDR 和端口，管理 API 会在保存时核对；代理使用域名时，管理员需要按集群 DNS 的实际解析范围放行对应地址段。代理执行 TLS 检查时填写其 CA 证书，Manager 通过固定的只读文件挂载向工作负载提供该证书，避免额外的文件路径环境配置。</p>
-<p>Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，管理员把 PEM 证书链保存到对应站点；Manager 在系统信任库上追加它，并在保存前验证实际 Manager RPC。Agent 在每次 Runtime 操作开始时把系统 CA、Manager 内部根证书、站点 CA 和代理 CA 合并为唯一完整信任包，Docker、Git、OCI Feature 和主 Dev Container 使用相同内容。双向 TLS 的组件身份证书、私钥和根集合仍从独立身份 Secret 加载，出站信任包只包含公开证书；浏览器入口证书继续由外部入口维护。</p>
+<p>Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，管理员把 PEM 证书链保存到对应站点；Manager 在系统信任库上追加它，并在保存前验证实际 Manager RPC。Agent 在每次 Runtime 操作开始时把系统 CA、Manager 内部根证书、站点 CA 和代理 CA 合并为唯一完整信任包，供 Docker 拉取镜像、Git、OCI Feature 包下载和主 Dev Container 运行时使用。Dockerfile 的 <code>RUN</code> 和 Feature 安装脚本在构建镜像内执行，使用该镜像自身的证书配置，具体见<a href="codespace/runtime-platform.html#%E5%87%BA%E7%AB%99%E7%BD%91%E7%BB%9C%E4%B8%8E%E8%AF%81%E4%B9%A6">出站网络与证书</a>。双向 TLS 的组件身份证书、私钥和根集合仍从独立身份 Secret 加载，出站信任包只包含公开证书；浏览器入口证书继续由外部入口维护。</p>
 <h3 id="实现验收点-93"><a class="header" href="#实现验收点-93">实现验收点</a></h3>
 <ul>
 <li>Manager 与其创建的工作负载使用同一平台镜像引用。</li>
@@ -2129,8 +2129,7 @@ make check
 <p>Codespace 仓库的工具版本由模块文件、Makefile 和<a href="https://github.com/ExplodingDragon/gitea-codespace/tree/main/.github/workflows">持续集成配置</a>统一声明。触发核心 CI 的拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查、镜像冒烟验证和真实 Kubernetes 测试。Provider 代码及其构建输入由对应独立工作流验证，共享输入触发相关工作流，使编辑器更新与平台发布保持各自的验证范围。</p>
 <p>平台二进制在 GitHub Runner 上交叉编译为 <code>linux/amd64</code>，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入核心镜像，验证与发布使用的也是同一份产物。仓库在 <code>providers/vscode</code> 和 <code>providers/dsh</code> 中提供两个官方 Web IDE 工程，每个工程按自身依赖的架构与工具链独立构建和发布；核心代码维护通用 OCI 元数据协议，并使用一个伪提供方完成平台端到端测试。采用仓库内独立发布单元的原因是官方实现可以与平台一起审计，同时编辑器依赖和更新频率不会扩大控制面镜像、核心构建链或核心发布范围。</p>
 <p>核心 CI 在 <code>main</code> 分支验证成功后发布平台镜像的 <code>main</code> 标签。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 <code>0.1.0-main.&lt;run-number&gt;</code> 形式的预发布版本，<code>appVersion</code> 记录 <code>main-&lt;commit-sha&gt;</code>。打包时 CI 把本次平台镜像摘要写入 Chart 的 <code>image.digest</code>，使每个 Chart 都对应经过验证的镜像内容。核心镜像与 Chart 产生不可变摘要和来源证明，核心镜像还包含软件物料清单。两个官方 Web IDE 工程分别监听自身目录并发布各自的 <code>main</code> 多架构镜像，第三方提供方沿用同一协议自行发布；环境模板保存时把所选版本解析为摘要，因此 Chart 无需绑定编辑器发布周期。</p>
-<p>部署已发布的 OCI Chart 时，<code>--devel</code> 选择最新预发布版本，<code>--version &lt;chart-version&gt;</code> 固定某次发布；两种方式都使用 Chart 内置的平台镜像摘要。源码目录中的 Chart 默认保留 <code>main</code> 标签和空摘要，适合本地开发，这与 CI 打包后的内容不同。安装和升级命令以 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md">Helm 指南</a>为准。</p>
-<p>Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes <code>Always</code> 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 <code>IfNotPresent</code>，复用节点上完全相同的内容。部署新版本时，Chart 的 <code>appVersion</code> 和组件 Pod 模板中的平台版本注解触发组件按各自策略更新：Manager、Gateway 滚动更新，Cache 使用 Recreate；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。</p>
+<p>镜像选择和组件更新行为由<a href="codespace/deployment-requirements.html#%E9%95%9C%E5%83%8F%E7%BC%93%E5%AD%98%E4%B8%8E%E7%BD%91%E7%BB%9C">部署设计</a>定义，安装和升级步骤以 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md">Helm 指南</a>为准。本节维护构建产物与发布记录的对应关系，使发布验证与部署操作各有明确入口。</p>
 <h3 id="实现验收点-97"><a class="header" href="#实现验收点-97">实现验收点</a></h3>
 <ul>
 <li>触发核心 CI 的拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容；仅涉及 Provider 的修改进入对应的独立验证流程。</li>
@@ -2141,7 +2140,6 @@ make check
 <li>仓库内 VS Code 与 DeepSeek Harness 工程分别验证自身改动，并在 <code>main</code> 上独立发布 linux/amd64、linux/arm64 的官方 Provider 镜像。</li>
 <li>端到端测试使用独立构建且不会发布的伪 Web IDE 镜像，覆盖 OCI 元数据、选项、HTTP、WebSocket、重启和恢复。</li>
 <li>源码 Chart 默认渲染 <code>main</code> 标签与 <code>Always</code>；发布的 OCI Chart 渲染本次镜像摘要与 <code>IfNotPresent</code>，固定 Chart 版本即可同时固定默认平台镜像。</li>
-<li>新平台构建触发 Manager、Gateway 和 Cache 更新，不主动重启正在运行的用户 Runtime。</li>
 <li>发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。</li>
 </ul>
 <h2 id="实现职责与设计入口"><a class="header" href="#实现职责与设计入口">实现职责与设计入口</a></h2>
@@ -2158,18 +2156,13 @@ make check
 <tr><td><code>internal/logbuffer</code>、Agent 输出与 Manager 诊断</td><td>共用脱敏与有界日志缓冲、按操作上传</td><td><a href="codespace/rpc-spec.html#%E6%93%8D%E4%BD%9C%E6%97%A5%E5%BF%97">操作日志</a></td></tr>
 </tbody></table>
 </div>
-<p>管理 API 为站点、环境模板和组件定义各自的请求结构；前端从当前草稿创建请求快照，再使用写接口返回的资源更新列表。资源专有字段和状态归属保持在对应模块内，使新增配置时能够在同一处审阅解析、校验与提交行为。</p>
-<p>标准 Dev Container 引擎提供通用镜像定制回调和容器操作，<code>internal/devcontainerruntime</code> 负责平台附加输入。Web IDE 的配置合并、参数和持续运行由镜像内的 <code>prepare</code>、<code>serve</code> 适配器负责；核心只依赖公共运行协议。这样单容器与 Compose 共用构建保障，编辑器更新也不会扩大核心实现范围。</p>
-<p>Manager 默认由 Kubernetes API Priority and Fairness 调度 API 请求；当 kubeconfig 明确提供 QPS 或限流器时采用运维配置。控制器工作队列负责单对象重试和退避，因此 API Server 负责集群级公平，控制器负责业务级收敛。</p>
 <h3 id="实现验收点-98"><a class="header" href="#实现验收点-98">实现验收点</a></h3>
 <ul>
-<li>站点、模板和组件写接口使用各自的请求类型，校验与错误处理位于对应管理 API。</li>
+<li>每个代码范围能从上表定位对应的行为设计和验收点。</li>
+<li>站点、模板和组件的专有字段、校验与错误处理位于对应管理 API。</li>
 <li>控制器、Agent 和站点协调器分别更新自己负责的运行事实，身份与并发规则按<a href="codespace/data-model.html#%E6%A0%87%E8%AF%86%E5%B9%B6%E5%8F%91%E4%B8%8E%E6%B8%85%E7%90%86">数据模型</a>验证。</li>
-<li>单容器与 Compose 使用同一个平台镜像定制入口，标准解析器完整保留 Dev Container 字段。</li>
+<li>标准 Dev Container 解析和执行留在通用引擎，平台附加输入由 <code>internal/devcontainerruntime</code> 提供。</li>
 <li>Provider 专有配置和进程参数由提供方镜像解释，新增提供方通过公共协议接入。</li>
-<li>HTTP、WebSocket 和 SSH 复用同一 Agent 访问实现，按内部 RPC 的确认、EOF 和取消语义测试。</li>
-<li>资源统计从 Agent 与 Kubernetes 采样合成完整快照，上报路径只读取缓存。</li>
-<li>Manager 采用集群 API 调度或显式限流配置，单对象失败由控制器工作队列退避。</li>
 </ul>
 <h2 id="测试层次"><a class="header" href="#测试层次">测试层次</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>层次</th><th>覆盖重点</th></tr></thead><tbody>
