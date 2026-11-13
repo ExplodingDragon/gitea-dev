@@ -195,7 +195,11 @@
     M-&gt;&gt;G: 上报日志、Runtime 信息和结果
     G--&gt;&gt;U: running
 </pre>
-<p>Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 再提交 create 结果。Web IDE 是可以独立重启的附加服务，环境模板可以用空镜像关闭它，也可以保存已经解析为摘要的提供方镜像；所选进程的状态不会改变 ready，也不会阻断其他访问方式。提供方初始化成功且 Docker 接受其后台启动后，Agent 把统一的 Workspace endpoint 加入访问目标；编辑器监听和重启由提供方负责，不参与 Codespace 生命周期判断。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。</p>
+<p>Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 再提交 create 结果。Web IDE 是附加服务，它的启动或重启不参与 Codespace 主状态判断；Endpoint 的发布条件见<a href="runtime-platform.html#web-ide-%E4%BA%A4%E4%BB%98%E4%B8%8E%E5%90%AF%E5%8A%A8">Web IDE 交付与启动</a>。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。</p>
+<p>Manager 在绑定 Runtime 后立即把操作已接收的日志入队，并随着 PVC、Pod 的状态变化记录简短进度；调度失败或容器等待时使用 Kubernetes 的原因代码说明等待位置。这样页面从基础设施创建阶段就有可读日志，而不必等到 Agent 开始编译环境。Agent 收到操作后先记录证书和容器引擎准备，再记录工作区准备等执行阶段和命令输出。两种来源统一由 Manager 异步上传，日志接收和网络发送都与资源创建分离。</p>
+<p>日志使用有界内存，少量缺失属于诊断信息的可接受代价；实际执行结果仍由持久化的生命周期事实确定。Agent 执行结束后最多用 5 秒提交尾部输出，Manager 最终提交结果前也最多给已有队列 5 秒排空时间。具体批次、丢失与重试语义见<a href="rpc-spec.html#%E6%93%8D%E4%BD%9C%E6%97%A5%E5%BF%97">操作日志协议</a>。</p>
+<p>环境模板的调试开关保存到新建 Codespace 的运行快照，后续恢复沿用该快照。开启时，Manager 在状态变化及资源删除前先采集 Pod、PVC、节点状态和相关事件，再读取普通容器与 init 容器的当前及上一次运行日志；同阶段状态未变化时通过进程内记录跳过重复采集，Manager 重启后可以重新采集，整次采集共用两秒预算。先记录资源状态是为了在节点日志接口缓慢或不可用时，仍能留下调度和终止原因。每个日志请求最多读取最后 200 行、64 KiB，事件保留最近 20 条。</p>
+<p>Agent 在内部容器回滚前采集退出状态及标准输出、错误输出尾部，使 systemd 等容器内初始化错误进入同一操作日志。每个容器请求最后 200 行，整次日志正文最多 64 KiB，与状态查询共用两秒预算。Manager 的 Pod 日志反映外层运行情况，Agent 的 Docker 日志反映内部容器运行情况，两者共用凭据脱敏规则；字节截断或读取中断时仅输出已确认完整的边界行，避免泄露无法匹配脱敏规则的凭据片段。采集失败只记录说明，资源清理继续执行。</p>
 <p>输入和权限错误在持久化前返回。Manager 领取后若发现环境授权、运行设置或持久化操作身份存在确定性错误，会使用 Codespace ID 和当前操作版本提交失败；尚未绑定 Runtime UUID 的 create 也能因此直接进入 failed。已经产生的局部 CR 使用同一操作版本进入清理：create 删除局部资源，resume 停止已启动资源并保留工作区。采用同一最终提交接口的原因是 Gitea 仍是业务状态的唯一权威，Manager 无需维护另一套“拒绝”状态。</p>
 <p>块卷首次初始化由 Manager 先持久化格式化开始状态，再授权当前 Pod；Agent 完成 ext4 检查和挂载后确认就绪。初始化结果未知时保留数据，避免重复 create 或 Pod 重建把旧数据当成空卷。</p>
 <h3 id="实现验收点-1"><a class="header" href="#实现验收点-1">实现验收点</a></h3>
@@ -204,12 +208,17 @@
 <li>同一 create 只对应一个 Runtime UUID、一组 CR/PVC 和一个有效操作版本。</li>
 <li>Runtime UUID 绑定前不创建对外可用的 Runtime。</li>
 <li>页面在 create 完成前可以按偏移读取日志，成功后状态为 running。</li>
+<li>页面在 Agent 启动前可看到 Manager 的操作接收、PVC 和 Pod 进度；Agent 启动后可看到容器引擎、工作区准备及命令输出。</li>
+<li>调试开启时，回滚前的内部容器日志包含可用的原始错误；TTY 与非 TTY 输出均可读取，采集超时或失败不阻断清理。</li>
+<li>模板调试设置只影响之后创建的 Codespace；Manager 优先记录资源状态与事件，日志读取中断时保留完整行和失败原因。</li>
+<li>Gitea 日志上传短暂失败时，Manager 发送层重试同一批次，Agent 继续执行；队列满或日志排空期限到达也能完成生命周期结果提交。</li>
 <li>create 完成不依赖展示缓存是否命中，running 后只展示与运行实例版本匹配的 Runtime 信息。</li>
 <li>格式化授权先于设备写入持久化，同一卷不会因初始化响应丢失获得第二次格式化许可。</li>
 <li>create 在 Runtime UUID 绑定前被确定拒绝时，Gitea 进入 failed 并解除 Manager 占用；已经创建的局部 CR 最终被删除。</li>
 </ul>
 <h2 id="运行与访问"><a class="header" href="#运行与访问">运行与访问</a></h2>
 <p>running 状态下，Agent 向 Manager 发布当前 Pod 身份、访问目标和 Endpoint；Gateway 在每次连接前复核 Gitea 权限并取得短期票据。用户活动更新最后活动时间，用于自动停止；组件心跳和后台状态检查不计为用户活动。</p>
+<p>Kata Runtime 检测到活动 VHCI 后，用户可以通过已认证的 SSH 会话注册多个 <code>usbip.&lt;来源名&gt;:3240</code> 入口，并按来源和总线 ID 显式附加设备。来源名在当前 Codespace 内唯一，使不同服务端的相同总线 ID 可以分别选择。关闭一个来源只结束该来源等待中和活动中的 USB/IP 连接；关闭 SSH 会话释放该会话的所有转发，停止 Runtime 则统一回收其监听和连接。一个 Codespace 内的进程共享已接入设备。设备服务暂时不可用、设备移除或 SSH 断线只结束对应访问，不会把 <code>running</code> 改为 <code>failed</code>。重新连接后按当前来源和总线 ID 再次附加，避免自动恢复时意外接入另一台物理设备。</p>
 <p>Runtime 信息是可重建的展示数据。暂时失联会让访问入口显示不可用，但不会把 running 推测为 stopped 或 failed。当前操作可能已经是 stop，而 Runtime 信息仍通过运行实例版本指向 stop 前的 create 或 resume；只有 stop 完成后才清除该身份。</p>
 <h3 id="实现验收点-2"><a class="header" href="#实现验收点-2">实现验收点</a></h3>
 <ul>
@@ -219,21 +228,28 @@
 <li>Runtime 信息过期不改变主状态。</li>
 <li>生命周期操作版本变化不会让旧 Runtime 获得新实例身份。</li>
 <li>Web IDE 初始化或启动提交失败时，访问目标保留 SSH 和 SFTP，Codespace 保持 running；Endpoint 发布后编辑器暂时退出时，原入口保持不变并在提供方重启成功后恢复连接。</li>
+<li>USB/IP 连接失败或设备移除只影响当前转发；Runtime 和其他访问方式保持 <code>running</code>。</li>
+<li>不同 USB/IP 来源可以使用相同总线 ID；关闭一个来源保留其他来源的设备连接，停止 Runtime 后全部监听和连接释放。</li>
+<li>关闭 USB/IP 来源只清理该来源的监听和连接；SSH 断线清理该会话持有的转发，Runtime 停止清理整个工作区的转发。来源取消确认后可重新注册，旧监听的清理不会影响新来源。</li>
 </ul>
 <h2 id="停止恢复与自动停止"><a class="header" href="#停止恢复与自动停止">停止、恢复与自动停止</a></h2>
 <p>stop 定向到已绑定 Manager。Manager 撤销路由和运行期凭据、停止 Runtime Pod 并保留 CR/PVC，确认完成后 Gitea 进入 stopped。resume 复用 Runtime UUID、CR、PVC 和已确定的环境配置，创建具有新 Pod UID、Agent 身份和访问目标版本的 Pod。</p>
+<p>Agent 在停止主 Dev Container 前关闭 USB/IP 监听器和设备连接。Manager 撤销路由可能更早结束 SSH 会话，因此 <code>stop</code> 脚本按设备可能已经离线的情况完成收尾；这与其他用户访问采用同一撤销时序。恢复重新发现当前来宾的 VHCI 能力并准备标准设备挂载，用户随后建立新的 SSH 转发和显式附加。远端总线 ID 只对应当前 SSH 转发入口，设备连接不会被带入下一次恢复；关闭监听器的确认完成后才会释放重新建立入口所需的资源。</p>
 <p>集群维护时，Manager 管理员可以直接停止单个 Runtime。该操作使用当前 Runtime UID 和 Pod UID 核对目标，随后复用同一停止流程并保留 PVC；Gitea 通过已有资源清单观察到 stopped，不会产生一条与用户 stop 并行的生命周期操作。采用本地维护入口的原因是它服务于集群维护，而用户可见状态仍由 Gitea 的单一状态机维护。</p>
 <p>首次创建由 init 后进入 start。恢复时，Agent 先在宿主工作区重新执行 <code>initializeCommand</code>，成功后再启动原有容器并执行 <code>postStartCommand</code>；<code>onCreateCommand</code>、<code>updateContentCommand</code> 和 <code>postCreateCommand</code> 只在首次创建执行。宿主初始化先于容器启动，是因为它可能准备 Compose 文件、凭据或本地挂载，失败时保持环境停止可以避免启动一套缺少前置条件的容器。环境标签用于首次调度，后续改名或删除不会迁移已有 Codespace。自动停止通过普通 stop 操作实现，因此具有相同版本、清理和恢复行为。</p>
-<p>环境模板生命周期脚本在每次受控启动和停止中使用同一份快照。首次创建和恢复都在主容器进入运行状态后首先执行 <code>start</code>，成功后才继续平台准备、标准 Dev Container 生命周期和访问发布；失败时直接清理未完成创建或停止刚恢复的容器。普通 stop 在停止容器前执行 <code>stop</code>。脚本失败作为本次操作错误保留，控制器仍停止 Pod 并写入 <code>Stopped=True</code>，因此 Gitea 能得到失败结果，同时实际运行状态不会滞留在 stopping。容器已经停止或不存在时直接采用已观察到的停止事实，因为此时没有可以执行容器内脚本的进程。</p>
+<p>环境模板生命周期脚本在每次受控启动和停止中使用同一份快照。首次创建和恢复都在容器启动前生成本次授权环境文件及 systemd 公共服务配置，使系统服务第一次启动时即可取得授权；文件格式与作用范围见<a href="runtime-platform.html#%E6%8E%88%E6%9D%83%E7%8E%AF%E5%A2%83%E4%B8%8E%E5%B9%B3%E5%8F%B0%E5%91%BD%E4%BB%A4">授权环境与平台命令</a>。容器启动后共用主容器准备流程，设置远程用户的授权文件权限、设备环境与平台命令，使 <code>start</code> 脚本能够使用本次授权和已分配设备；脚本成功后配置 CA、Git，再执行标准 Dev Container 生命周期并发布访问入口。首次创建失败时，容器引擎统一清理本次创建的容器和 Compose 资源；清理使用独立的有限时间，即使创建请求已取消也能完成，并保留原始错误与清理错误。恢复失败则停止刚启动的容器并保留工作区，供后续恢复使用。</p>
+<p>普通 stop 在停止容器前执行 <code>stop</code>，随后与 delete 共用访问连接关闭和容器停止流程。停止容器使用独立的一分钟清理期限，使已经开始的资源清理能够在操作取消后继续完成。脚本和 Agent 执行错误保留在日志中，控制器继续停止并删除 Pod。Stop/Delete 的最终结果由实际资源状态决定：确认 Pod 停止并删除后完成 Stop，确认 PVC 也已删除后完成 Delete，使 Gitea 的操作结果与资源状态一致。容器已经停止或不存在时直接采用已观察到的停止事实，因为此时没有可以执行容器内脚本的进程。</p>
 <p>Manager 通过活动代数判断自动停止设置的新旧，设置同步与自动停止响应采用同一更新规则。较新的用户活动会重新开始空闲观察；重复收到相同设置保留已有空闲计时，延迟到达的旧设置也不会覆盖较新的活动，保证网络重试不改变用户的空闲期限。</p>
 <p>Manager 的 <code>InfrastructureReady</code> 条件只描述 PVC、Pod 和运行时身份等 Kubernetes 基础设施是否准备完成，Agent 是否能够接受访问则由独立的访问目标状态表示。停止过程中，Pod 仍存在且 kubelet 尚未确认进程退出时使用 <code>WriterUnconfirmed</code> 保留诊断；Pod 已终止或确认不存在后，控制器清除该过渡条件、清空 Pod 和访问目标，并写入当前代的 <code>Stopped=True</code>。这样进程重启、Pod 被外部删除或状态上报延迟都会自动收敛到同一个停止事实，管理页面不需要人工确认历史状态。</p>
 <h3 id="实现验收点-3"><a class="header" href="#实现验收点-3">实现验收点</a></h3>
 <ul>
 <li>stop 后持久数据保留，Runtime Pod、路由和运行期 Token 消失。</li>
+<li>stop 脚本可以处理设备已离线的情况；监听器和连接在容器停止前关闭，resume 后通过新 SSH 会话显式附加设备。</li>
 <li>resume 不重新克隆仓库；它重新执行宿主 <code>initializeCommand</code> 和容器 <code>postStartCommand</code>，不重放一次性创建命令。</li>
 <li><code>initializeCommand</code> 失败时容器保持停止，恢复操作返回明确错误。</li>
-<li>生命周期 <code>start</code> 失败时不会发布访问目标，首次创建清理不完整资源，恢复回到 stopped。</li>
-<li>生命周期 <code>stop</code> 失败时停止操作保留失败结果，Runtime Pod 和内部容器仍完成停止。</li>
+<li>生命周期 <code>start</code> 或恢复后的设备、CA 等准备步骤失败时不会发布访问目标，首次创建清理不完整资源，恢复停止本次已启动的容器。</li>
+<li>创建请求取消后，单容器、<code>runArgs</code> 和 Compose 路径仍执行有界清理；返回错误保留执行与清理的失败原因，已有持久卷保留。</li>
+<li>生命周期 <code>stop</code> 失败时日志保留错误，Runtime Pod 仍完成停止和删除；确认资源清理完成后，上报停止操作成功。</li>
 <li>resume 发布新的 Pod 身份、访问目标版本和短期凭据。</li>
 <li>手动停止与自动停止使用同一状态转换，并发扫描不会创建重复操作。</li>
 <li>Manager 维护停止保留工作区并通过资源清单收敛 Gitea 状态；重复请求不会创建新的停止流程。</li>
