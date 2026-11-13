@@ -26,7 +26,7 @@ Kata 与 Sysbox RuntimeClass 使用 `codespace.gitea.dev/isolation=kata|sysbox` 
 
 `CodespaceComponent` 定义一个 Gateway 或 Cache。组件是集群级资源，因为多个站点可以引用同一个平台入口或缓存；它生成的 Pod、Service、NetworkPolicy、身份 Secret 和缓存卷集中在管理命名空间。站点保存组件名称和 UID，Manager 在建立控制流和投影路由时再次核对角色与 UID，因此删除后创建的同名组件不会接管旧站点关系。
 
-Gateway 处理无状态入口和短期连接，可以配置 1 到 64 个主动副本，默认运行两个。Service 把请求分发到任意就绪副本，软反亲和性优先把副本分散到不同节点。多副本时，滚动更新允许增加一个副本且保持零不可用，PodDisruptionBudget 允许最多一个副本因计划内维护不可用；至少一个副本就绪时入口可用，少于期望副本数时管理状态显示降级。Cache 持有镜像缓存的单写租约并可能挂载 ReadWriteOnce 卷，因此固定运行一个副本，并用 Recreate 更新策略先停止旧进程再启动新进程；管理状态同时核对 Deployment 就绪与租约。两类组件采用不同副本策略，是为了让入口获得故障切换能力，同时保持缓存写入边界简单明确。
+Gateway 提供 HTTP、WebSocket 和 SSH 入口，活动连接由接收它的副本持有，可以配置 1 到 64 个主动副本，默认运行两个。Service 把新连接分发到任意就绪副本，软反亲和性优先把副本分散到不同节点。多副本时，滚动更新允许增加一个副本且保持零不可用，PodDisruptionBudget 允许最多一个副本因计划内维护不可用；至少一个副本就绪时入口可用，少于期望副本数时管理状态显示降级。副本退出会结束其持有的连接，客户端通过可用副本重新连接。Cache 持有镜像缓存的单写租约并可能挂载 ReadWriteOnce 卷，因此固定运行一个副本，并用 Recreate 更新策略先停止旧进程再启动新进程；管理状态同时核对 Deployment 就绪与租约。两类组件采用不同副本策略，是为了让入口获得故障切换能力，同时保持缓存写入边界简单明确。
 
 ### 实现验收点
 
@@ -48,8 +48,6 @@ Gateway 处理无状态入口和短期连接，可以配置 1 到 64 个主动�
 - Cache 保存时拒绝已有同名 PVC 的所有权冲突；直接修改 CR 导致的 StorageClass 漂移由控制器报告，原有卷保持不变。
 - Kata 模板生成块模式 PVC，Sysbox 模板生成文件系统模式 PVC，模板中没有第二个卷模式配置来源。
 - Native 模板生成文件系统模式 PVC 并使用默认 CRI；模板就绪状态会核对单一节点能够同时满足 Device Plugin 扩展资源，而实际放置仍由 Kubernetes 调度器决定。
-- Web IDE 的 `prepare` 成功且 Docker 接受 `serve` 后发布 Workspace Endpoint；端口尚未监听时只影响该 Endpoint 的当前请求。
-- 提供方负责保持编辑器进程运行；编辑器退出和恢复不会改变 Codespace 主状态，也不需要 Agent 重新发布 Endpoint。
 - 管理页面语言切换同时作用于导航、表单、确认框、资源状态和组件语言，并在刷新后保持。
 - 四种 JSON 词典具有相同键集合；前端请求携带当前语言，管理 API 的错误摘要来自同一组词典。
 - 管理 API 错误包含稳定代码和诊断详情，页面不依赖英文错误文字判断会话状态；动态集群诊断仍可在技术详情中查看。
@@ -83,119 +81,168 @@ Manager 按站点复用 Gitea 客户端和 HTTP Transport。构造时核对凭�
 
 ## Runtime 与持久数据
 
-Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 即使来自同一个平台镜像，也运行在不同 Pod 中；同一镜像用于统一发布和审计，不会合并各自的进程与权限边界。用户镜像运行在该 Docker 中，不直接成为 Kubernetes Pod 容器。
+### 进程与隔离
 
-环境模板显式选择 Kata、Sysbox 或 Native 隔离方式。Kata 与 Sysbox 绑定已标记的 RuntimeClass，Native 绑定集群默认 CRI；运行依赖失效时保留原选择，因为自动切换会改变隔离语义和设备可见范围。仓库配置和环境模板进入同一 Dev Container 解析路径；环境模板可以追加标准 Dev Container Features。Web IDE 由环境模板中的镜像决定，空镜像表示关闭。管理页面提供 VS Code 与 DeepSeek Harness 的镜像建议，也允许填写遵循同一协议的第三方镜像；建议只是输入便利，不形成运行时专用分支。Manager 在保存模板时读取 OCI 配置元数据、校验选项并把引用固定到 sha256 摘要，因此创建和恢复只消费已经确认的快照。
+Runtime Pod 使用平台镜像，Agent 作为 PID 1 启动专属 Docker、准备工作区、创建 Dev Container、执行生命周期命令并提供访问 RPC。Manager 与 Agent 使用同一镜像统一发布和审计，但分别运行于独立 Pod；用户镜像运行在 Runtime 内的 Docker 中。Agent 通过内部 RPC 取得操作与授权，Kubernetes 资源由 Manager 管理。
 
-每个 Web IDE 由独立的多架构 BusyBox 镜像交付。Runtime Pod 的 init 容器先把 `manifest.json`、程序和 `prepare`、`serve` 适配器写入磁盘临时卷，经暂存目录完整写入后切换为 `current`；主容器随后只读挂载该目录，并再只读映射到 Dev Container。init 容器不挂载工作区、身份 Secret、代理 Secret 或 Kubernetes 令牌，因为它只负责复制公开程序。程序属于 Pod 临时数据，Pod 替换时重新从所选镜像取得；设置、扩展、插件和会话属于用户数据，继续保存在 Codespace PVC。这样 VS Code 或 DeepSeek Harness 可以独立更新，核心平台镜像和仓库 Dev Container 构建缓存都不需要随之变化。
+环境模板显式选择 Kata、Sysbox 或 Native 隔离方式。Kata 与 Sysbox 绑定已标记的 RuntimeClass，Native 使用集群默认 CRI。运行依赖失效时保留原选择并报告错误，因为自动切换会改变隔离语义和设备可见范围。
 
-核心运行时只读取标准 Dev Container 配置，并把模板 `options` 与仓库 `customizations.<provider>` 作为通用请求交给提供方的 `prepare` 适配器。提供方负责校验、合并和初始化自身配置，`serve` 适配器负责构造启动参数并维持编辑器进程。`prepare` 成功且 Docker 接受脱离当前操作运行的 `serve` 后，Agent 就发布 Workspace Endpoint；它不探测编辑器端口，因为编辑器是否已经监听不影响 Dev Container、SSH 或其他 Endpoint 的可用性。提供方尚未监听或正在自行重启时，Gateway 返回临时的 `502 Workspace is unavailable`，后续请求会在编辑器恢复后自然成功。这个边界使新增提供方只需发布带标准 OCI 元数据和程序包结构的镜像，不需要在 Agent 中加入新的命令行、目录、进程监督或配置分支。
+Kata 与 Native 在 dockerd 启动前准备 Runtime 私有 cgroup v2 层级：把根组进程移入 `init` 子组，再启用已委托的控制器，使内部容器能够建立有效的 domain 子组并继续受 Runtime 上限约束。Native 先将已有私有挂载设为可写；Sysbox 使用自身提供的进程分组。准备与 Docker 就绪共用有限启动时间，权限或层级错误进入操作失败清理。该流程同时适用于 systemd 与普通 Dev Container 镜像。
 
-Native 用于需要 Kubernetes Device Plugin 资源的开发环境。模板按扩展资源名和正整数数量声明设备，Manager 把同一数量写入 Runtime Pod 的 requests 与 limits，使 kubelet 先完成设备分配再启动 Pod。模板可以标记某项资源满足 Dev Container 的 `hostRequirements.gpu`；这个标记只解释标准 Dev Container 要求，不替代 Kubernetes 的设备申请。集群运维人员需要先验证默认 CRI 能在非特权 Runtime Pod 中启动 rootful dockerd 和子容器，因为 Native 直接使用节点内核，运行能力来自节点配置而不是单独的 RuntimeClass。
+#### 实现验收点
 
-CDI 是设备进入内部 Docker 的主要路径。Device Plugin 通过模板指定的环境变量向 Runtime Pod 提供本次分配的具体设备 ID，并通过 CRI CDI 把设备接入外层 Pod；节点上的 CDI 定义保存设备节点、挂载、Hook 和驱动环境。Agent 拒绝 `all`、`none` 和 `void` 等宽泛值，从 `/etc/cdi` 与 `/var/run/cdi` 中选出已分配设备，为它们生成只在当前 Codespace 内有效的稳定逻辑名称，再写入 `/run/codespace/cdi`。同一个 Codespace 停止后恢复时，kubelet 可以分配另一个物理 ID，Agent 会让原逻辑名称指向新设备，因此内部 Docker 已保存的容器配置仍能启动。Device Plugin 提供的附加环境也写成一个 CDI 设备，使已有容器在每次启动时获得当前分配值，而不是保存首次创建时的旧值。
+- Runtime 使用专属 Docker，并通过内部 RPC 接收操作和发布运行事实；节点容器引擎与 Kubernetes API 的凭据留在各自管理边界。
+- Kata、Sysbox 与 Native 分别通过对应 RuntimeClass 或默认 CRI 的真实启动验证，依赖失效时保留已选择的隔离方式。
+- Kata 与 Native 在 dockerd 启动前完成 cgroup 嵌套准备，内部 systemd 能创建 domain 子组；Sysbox 使用运行时提供的分组。
 
-CDI 运行时只把环境修改应用到容器的初始进程，Docker 后续创建的 Exec 进程不会再次读取这些修改。Agent 因此同时解析已选 CDI 规格的公共环境、设备环境和模板声明的转发环境，并把结果加入当前 Dev Container 的远程环境。标准生命周期命令、模板生命周期、SSH、Web IDE 和端口进程都从这一份远程环境启动，从而与初始进程看到同一项设备分配。恢复已有容器时，Agent 先重新探测基础远程环境，再应用本次 Runtime Pod 的设备环境；这样新设备增加的变量会生效，上一次分配已经没有的变量也不会残留。
+### Web IDE 交付与启动
 
-内部 dockerd 仅加载过滤后的 CDI 目录，普通 Dockerfile 和 Compose 都只把设备加入主 Dev Container；Compose 的辅助服务继续遵循仓库配置。模板标记设备满足 GPU 要求时，平台设备申请成为唯一设备来源：`runArgs`、Compose `gpus` 和 Compose 设备预留中语义为“全部 GPU”的标准写法会被归一化，按数量或 ID 选择另一组 GPU 会明确失败。这样仓库仍可表达“需要 GPU”，同时不会绕过模板确定的 Kubernetes 分配。
+Web IDE 由环境模板中的镜像决定，空镜像表示关闭。管理页面提供 VS Code 与 DeepSeek Harness 镜像建议，也允许填写遵循同一协议的第三方镜像。Manager 读取 OCI 元数据、校验默认选项和管理员输入，并在保存模板时把引用固定到 sha256 摘要；创建和恢复使用该 Codespace 已确认的快照。
 
-部分设备驱动还需要驱动目录、工具链挂载或 Device Plugin 分配环境。模板中的“高级主机访问”把这些管理员授权显式绑定到已经申请的扩展资源：设备路径只转发外层 Pod 已经由 Device Plugin 获得的设备，HostPath 挂载用于 CDI 未描述的驱动文件，环境变量通过 CDI 注入主 Dev Container。该配置补充设备运行条件，不参与设备调度，也不能用设备映射从节点重新挂载未分配的设备。平台保留自己的运行目录、二进制路径和环境变量名称，避免设备配置覆盖 Agent 通信或凭据。Native Runtime Pod 以 root 运行，使用 dockerd 所需的固定 capability、`seccomp=Unconfined` 和 `AppArmor=Unconfined`，再追加模板能力，但不启用 privileged。管理页面从 Manager 读取固定 capability 并显示为不可取消的必需项，模板只保存管理员附加项，因此直接操作 API 或 CRD 也不会移除平台运行条件。主 Dev Container 使用 Docker 的标准基础 capability，仓库 `capAdd` 与模板附加项按声明顺序稳定去重；具体附加能力是否受节点内核和容器运行时支持由工作负载启动结果决定。
+官方 Provider 使用独立的多架构 BusyBox 镜像交付，第三方可以选择满足导出协议的载体镜像和支持的架构。Runtime Pod 的 init 容器把程序清单、编辑器及适配器完整导出到磁盘临时卷，主容器再将其只读映射到 Dev Container。init 容器只负责导出程序；其运行权限、可写路径和 Bundle 格式由 [Provider 开发指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/providers/DEVELOPMENT.md)定义。
 
-环境模板还可以安装 Gitea CLI，并提供一份模板生命周期脚本。平台镜像预先包含与 Runtime 架构一致且已经校验的 CLI；Agent 在最终镜像层复制该可执行文件，并生成 Bash、Zsh、Fish 补全，不在 Codespace 创建期间访问外部下载地址。该镜像层位于仓库镜像、Features 和远程用户 UID/GID 调整之后，再以 root 身份调用脚本的 `build` 分支并恢复容器用户；脚本随最终镜像保存，使构建缓存自然包含基础镜像和脚本内容。主容器每次进入运行状态后，Agent 在 CA、Git、标准 Dev Container 生命周期和访问入口之前以 root 身份调用 `start`。正常停止只在容器仍运行时调用 `stop`，再停止容器；已停止或已删除的容器可以直接进入资源收敛。Codespace 运行时通过通用镜像定制回调提供这些环境模板内容，Docker 引擎统一负责目标平台探测、缓存、代理、构建和临时目录清理，因此单容器和 Compose 使用同一套构建保障，标准 Dev Container 实现也能保持独立。采用单脚本和固定参数是为了让公共准备逻辑只维护一份，同时明确区分环境模板提供的扩展与 Dev Container 规范生命周期。
+程序属于 Pod 临时数据，Pod 替换时从固定镜像重新取得；设置、扩展、插件和会话保存在 Codespace PVC。编辑器和适配器随 Provider 独立发布，使编辑器更新与核心平台镜像、仓库 Dev Container 构建缓存分离。
 
-Dev Container Feature 接受规范定义的对象、布尔值和字符串输入。字符串表示 `version` 选项，对象中的字符串和布尔值会转换为 `install.sh` 的环境变量；`false` 表示不启用该 Feature。解析器递归读取 `dependsOn`，再应用已经存在的 `installsAfter` 关系，并以解析后的内容摘要和最终选项判断是否为同一安装节点。这样相同内容不会重复安装，而同一 Feature 的不同选项仍能得到各自的安装结果。锁文件使用小写 Feature 标识和依赖，确保配置大小写差异不会绕过已经锁定的摘要。平台注入且仓库没有声明的 Feature 不进入仓库锁文件；仓库与平台共同声明同一引用时，仓库继续拥有该锁记录，并锁定合并后的有效选项。这样管理员配置不会创建无关的仓库变更，同时仓库主动声明的依赖仍可复现。
+Agent 校验程序清单后，把模板 `options` 与标准 Dev Container 的 `customizations.<provider>` 交给适配器，由它负责合并配置、初始化和管理编辑器进程。镜像拉取或 init 导出失败会阻止 Runtime 主容器启动；此后的清单校验、`prepare` 或启动提交失败只影响 Web IDE，并记录操作日志。清单和 `prepare` 成功且 Docker 接受后台 `serve` 执行后发布 Workspace Endpoint。编辑器尚未监听或正在重启时，当前请求返回暂时不可用，随后可以自然恢复。
 
-镜像元数据、按依赖顺序安装的每个 Feature 和仓库配置分别贡献生命周期命令组。命令组之间顺序执行，因为后一个来源可能依赖前一个来源生成的文件；同一来源使用对象语法时，对象中的命令并行执行，保留规范提供的并发能力。Agent 把命令组直接保存到 Dev Container 状态，并从持久化配置中清理已经分组的容器生命周期字段，使恢复始终读取同一个命令来源；宿主侧 `initializeCommand` 继续保存在配置中，用于每次明确的恢复操作。`${devcontainerId}` 由 Codespace 的稳定身份计算为小写十六进制摘要，同一环境重建时保持不变。
+#### 实现验收点
 
-Docker Compose 未声明 `workspaceFolder` 时使用规范默认目录 `/`。Agent 同时保存 Compose 服务与容器的一对一对应关系，使 `forwardPorts` 中的 `db:5432` 能转发到 `db` 服务；普通数字和 localhost 地址仍指向主 Dev Container。跨服务端点需要唯一目标，所以同一服务产生多个容器时在生命周期命令执行前返回明确错误。端点公开信息继续只包含标签、端口和可见性，服务到容器的选择属于 Runtime 内部状态，因此不会把 Compose 实现细节带入 Gitea 协议。
+- 模板解析展示提供方、版本、平台与摘要，默认选项和保存的选项均通过镜像 Schema 校验；已有 Codespace 沿用自己的镜像摘要和配置。
+- 启用 Web IDE 时，init 容器在主容器启动前完成程序导出；Pod 替换后重新导出，PVC 中用户数据保留。
+- 清单校验或适配器启动失败只影响本次 Web IDE，SSH 等基础访问按自身启动结果提供服务。
+- `prepare` 成功且 Docker 接受后台 `serve` 后发布 Endpoint；请求在编辑器开始监听后成功，Codespace 状态保持独立。
+- 官方 Provider 只在首次创建初始化仓库设置，此后保留用户修改；编辑器退出后由 Provider 重启，终止信号结束其进程循环。
+- 浏览器访问通过 Gateway 完成身份与来源校验；通用输入、导出和启动行为符合 Provider 开发指南。
 
-每个 Codespace 使用独立 PVC 保存工作区、内部 Docker、Git SSH 私钥和 IDE 数据。Token、用户 Secret、Unix socket 与进程状态写入易失目录。Agent 把当前 Token 和经过校验的 SSH 凭据副本放入 Pod 的内存卷，并以只读方式映射到主 Dev Container。初始克隆使用 Agent 可见的 `/run/codespace` 路径，容器内 Git 使用 `/var/lib/gitea-codespace` 路径；两边都通过 Git 的 credential helper 命令读取 Token，并通过 `core.sshCommand` 绑定私钥和 `known_hosts`。工作区准备是可重复的：未完成的克隆只使用临时目录，目标目录已存在时核对锁定提交并刷新 Git 凭据。`onCreateCommand`、`updateContentCommand` 和 `postCreateCommand` 只属于首次创建，`initializeCommand` 与 `postStartCommand` 属于每次创建或恢复，`postAttachCommand` 属于每次新连接；启用 Web IDE 时，每次创建或恢复后启动所选提供方计为一次平台连接，未启用时创建和恢复本身不产生连接。平台连接的 Web IDE 启动和 `postAttachCommand` 采用尽力执行，因为这项附加服务不能让已经可通过 SSH 使用的环境创建或恢复失败。Agent 在 PVC 中记录当前操作内的开始和结果，Manager 重连时只重复上报已经完成的结果；结果未知时停止该次操作并提供诊断。这样既保留规范要求的执行时机，也不会在控制流重连后重复运行同一次命令。
-每次克隆都按 Gitea 提供的 `owner/repository` 两段式名称生成工作区目录。名称校验只拒绝路径分隔符、NUL、空段和错误的段数，普通仓库名称中的字母和数字都保留原义；这样工作区路径仍然稳定，同时不会因为校验表达式的转义方式把合法仓库误判为非法。克隆失败发生在临时目录，不会留下半成品目录或覆盖已有工作区。
+### Native 设备与 CDI
 
-启用 Web IDE 时，Agent 在 PVC 中按提供方标识维护持久数据。首次创建和恢复时，提供方适配器分别取得模板配置与仓库对应的 `customizations`，可以按自身规则初始化设置、扩展、插件和会话。提供方监听 `127.0.0.1:13337`，只有 Gateway 能通过 Agent 的私有转发访问；提供方自己的 `serve` 进程负责保持编辑器单实例，并在编辑器退出后重启。适配器准备成功且 Docker 接受后台 `serve` 执行后，Agent 就把 Workspace endpoint 加入访问目标；适配器准备或启动提交失败时，访问目标仍保留 Codespace ready、SSH、SFTP 和其他可用端点，后续恢复重新尝试 Web IDE。
+Native 用于需要 Kubernetes Device Plugin 资源的开发环境。模板按扩展资源名和正整数数量声明设备，Manager 将相同数量写入 Runtime Pod 的 requests 与 limits，由 kubelet 分配设备。模板还可以标记某项资源满足标准 Dev Container 的 `hostRequirements.gpu`。运维人员需要验证节点默认 CRI 能在非特权 Runtime Pod 中启动 rootful dockerd 和子容器，因为 Native 的运行能力直接来自节点配置。
 
-主 Dev Container 的解析后 `workspaceFolder` 与访问目标一起保存在 Codespace 状态，并在 ready Runtime Metadata 中发送给 Gitea。Gitea 使用该容器路径生成 VS Code 和 Zed 的 SSH 打开地址，所以自定义工作目录、Compose 工作目录和变量替换后的结果都能准确进入编辑器。路径作为运行事实保存在 Kubernetes 状态而不是 Gitea 数据库中，使 Manager 接管后可以继续发布同一结果，也避免保存能够从 Dev Container 状态重新得到的业务副本。Web IDE 的模板提供方决定是否尝试启动以及启动哪个程序，`prepare` 与后台执行提交的结果决定 Workspace HTTP Endpoint 是否存在；编辑器之后是否已经监听不影响 SSH 编辑器链接、Endpoint 声明和 Codespace 的 ready 状态。
+CDI 是设备进入内部 Docker 的主要路径。Device Plugin 通过模板指定的环境变量提供本次分配的具体设备 ID，并通过 CRI CDI 把设备接入外层 Pod。Agent 从节点 CDI 定义中选取已分配设备，将它们映射为当前 Codespace 内稳定的逻辑名称，再写入专属 CDI 目录。停止恢复后物理设备 ID 可以变化，稳定逻辑名称让已有 Dev Container 能使用新分配继续启动。含 `all`、`none` 或 `void` 等宽泛值的分配不能确定具体设备，因而明确失败。
 
-Agent 建立用户访问时先校验票据、访问类型、命令、终端和目标，再运行 `postAttachCommand` 并创建 Docker Exec。这个顺序使每个有效连接继续获得规范定义的连接阶段环境，同时无效或不完整的请求不会触发仓库命令。输入控制、输出回传和退出状态在同一个 Exec 生命周期内处理，断连关闭对应连接而不改变 Codespace 生命周期状态。
+CDI 环境修改作用于容器初始进程。Agent 另将已选 CDI 规格和模板声明的设备环境加入远程环境，使标准生命周期、模板脚本、SSH 与 Web IDE 的 Docker Exec 取得相同分配。恢复时先重新探测基础环境，再应用当前设备环境，清除旧分配不再提供的变量。平台设备只注入主 Dev Container，Compose 辅助服务按仓库配置运行。
 
-`${localEnv:VAR}` 和 `${env:VAR}` 从 Agent 明确提供的宿主环境解析。Codespace 提供运行用户的 `HOME`、`USER`、`LOGNAME`、进程执行所需的 `PATH`、`SHELL`，以及模板声明的标准代理变量；`initializeCommand` 使用同一组值。采用明确列表是因为 Kubernetes Pod 环境还包含 Manager 地址和资源身份，这些控制面信息与开发命令无关。代理变量属于管理员确认的运行网络入口，需要同时提供给 Git、初始化命令和 Dev Container 构建。
+标记为 GPU 的设备资源成为平台设备申请来源：`runArgs`、Compose `gpus` 和设备预留中语义为“全部 GPU”的写法统一指向已分配设备；另选数量或 ID 的请求明确失败。模板的“高级主机访问”用于补充 CDI 未描述的驱动文件、工具和分配环境，设备映射只转发外层 Pod 已获得的设备，并保护平台路径与环境变量。
 
-恢复状态使用单一的当前格式，并在读取时完整校验身份、路径、容器和 Compose 服务映射。状态格式变化的版本发布前先排空并删除旧 Codespace，使新 Agent 从创建流程写入完整状态；这样恢复代码不需要猜测旧字段含义，也不会用不完整状态启动容器。该发布步骤只影响 Runtime PVC 中的 `environment.json`，Gitea 业务数据和公共协议不随内部状态格式变化。
+Native Runtime Pod 以 root 运行，使用 dockerd 所需的固定 capability、`seccomp=Unconfined` 和 `AppArmor=Unconfined`，再追加模板能力。管理页面展示固定能力并锁定为必需项，模板仅保存附加项。主 Dev Container 的 Docker 基础 capability、仓库 `capAdd` 和模板附加项按声明顺序合并去重，具体运行支持由节点内核及容器运行时决定。
 
-站点的运行网络配置声明 Runtime Pod 能够访问的 CIDR 与 TCP 端口，其中包括 Gitea 的 HTTP 或 SSH 克隆地址，以及生命周期命令需要访问的其他服务。Kubernetes 标准 NetworkPolicy 以地址段和端口表达出站规则，不能用可移植方式跟随域名解析，因此 Manager 保留显式配置并在页面中说明用途。克隆失败时 Agent 记录尝试的协议和目标主机，管理员可以据此补全网络规则，同时日志不会包含 Token、私钥或带凭据的 URL。
+#### 实现验收点
 
-环境模板可以声明 HTTP、HTTPS、SOCKS5 代理和直连目标。需要认证时，代理 URL 使用标准用户信息并在管理页面完整回显，使管理员编辑的值与 Git、Docker 和语言工具实际使用的值一致。Manager 生成大小写两套标准环境变量，Agent、构建和容器运行共用变量名称清单，使不同阶段的工具取得一致配置；只配置 SOCKS5 时，它作为没有专用地址的 HTTP 与 HTTPS 出站后备。回环地址和 Kubernetes Service 域名始终直连，仓库或 Compose 服务声明的 `NO_PROXY` 与平台规则合并。启用平台代理时，Compose 服务名和显式网络别名也加入直连列表，使服务间通信留在内部网络；隐式默认网络与短格式网络同样保留服务名。Dockerfile、Feature 和 Compose 构建使用 Docker 的预定义代理构建参数，主容器和关联服务在运行时继承同一代理。代理输入由 Codespace 快照投影到当前 Pod 和容器环境，不写入 Dev Container 持久状态。
+- 模板就绪检查确认至少一个节点同时满足全部扩展资源；Runtime Pod 的设备 requests 与 limits 一致，实际分配由 Kubernetes 调度器和 kubelet 完成。
+- Native Runtime Pod 使用固定与附加能力并保持非 privileged；设备配额同时参与站点 ResourceQuota 和 Manager 创建容量检查。
+- CDI 只包含本次已分配设备，物理 ID 变化后保留稳定逻辑名称，已有 Dev Container 可恢复。
+- 当前设备环境同时进入容器初始进程和平台 Docker Exec，恢复后已撤销的分配变量消失。
+- Dockerfile 与 Compose 主服务获得相同平台设备配置，辅助服务保留仓库声明。
+- GPU 标记满足标准要求并统一“全部 GPU”写法；其他数量或 ID 选择明确失败，未标记时沿用标准 Docker 能力检查。
+- 高级主机访问只补充已分配设备的运行条件，平台通信路径与凭据保持有效。
 
-Agent 使用运行时身份 Secret 中的公开根证书建立平台信任包，使 Runtime 内的 Docker 和主 Dev Container 能够验证 Manager 管理的内部 HTTPS 服务。Gitea 站点使用内部或自签名证书时，`GiteaSite` 保存 PEM CA Bundle；代理执行 TLS 检查时，环境模板保存代理 CA。Agent 把站点证书和代理证书追加到平台信任包并按证书内容去重。内部根证书、站点证书和代理证书按固定来源顺序写入，使证书来源和轮换结果可以稳定检查。
+### Kata USB 设备
 
-Manager 通过内部 Agent 协议下发已验证的站点地址和当前 Bundle。Agent 克隆仓库时只为该地址设置 Git `sslCAInfo`，并把平台信任包只读挂载到主 Dev Container。容器启动和恢复时，Agent 根据 `/etc/os-release` 更新 Debian、Ubuntu、Alpine、RHEL、Fedora、CentOS、Arch 和 SUSE 系列的系统信任库；缺少标准证书工具时使用对应包管理器安装 `ca-certificates`。`CODESPACE_CA_BUNDLE` 与 `NODE_EXTRA_CA_CERTS` 始终指向平台信任包，`GITEA_CA_BUNDLE` 只在站点配置自定义 CA 时设置。这样内部 Cache、Git、curl、Node.js 和 Web IDE 使用同一份当前信任材料，同时站点证书不会获得组件身份认证能力。
+Agent 在 Kata Runtime 中发现活动的 `vhci_hcd` 控制器时启用 USB/IP，并使用平台镜像中的标准客户端。用户通过已有 SSH 身份建立 `-R usbip.<来源名>:3240:<服务端>:<端口>`，SSH 客户端访问实际服务端。Agent 将每个逻辑来源绑定到独立回环随机端口，使 USB/IP 与 Dev Container 的普通端口分离。来源命名、CLI 和转发协议见 [组件与 Agent](rpc-spec.md#组件与-agent)，用户操作见 [USB 连接指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/docs/usbip.md)。
 
-Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前 CR、Pod、PVC 和操作许可；首次格式化许可先以 `started` 写入 CR Status，再返回 Agent。文件系统检查和挂载成功后记录 `ready`。已有 ext4 卷经过检查后直接挂载；格式化已开始但无法识别文件系统时，保留卷并报告恢复错误。文件系统探测失败本身不能证明卷为空，这个持久化确认使进程崩溃或响应丢失也不会导致旧卷被重新格式化。
+创建和恢复按当前能力准备平台 USB CLI。VS Code 与 DSH 插件使用同一能力判断显示 USB 视图、命令和对话工具，通过 CLI JSON 查询和修改设备。能力查询失败只影响 USB 界面；转发断开后仍可查询和解绑已导入设备。操作错误保留已有列表，超时后查询实际状态，由用户决定是否重试，避免重复执行结果未知的设备操作。
 
-生命周期输出直接流式写入操作日志；需要返回正文的元数据查询分别限制标准输出、错误输出为 1 MiB，超限明确失败。取消生命周期执行时，Agent 关闭 Docker 连接并停止专属 Docker 进程，再退出当前 Pod 的执行循环；后续操作由 Manager 在确认旧 Pod 停止后推进。这样关闭客户端连接不会被误认为容器内命令已经停止。
+Agent 显式挂载来宾 devtmpfs，再将其非递归映射到主 Dev Container 的标准 `/dev`，让设备节点随内核热插拔直接出现。外层 Pod 的 `/dev` 通常是独立 tmpfs，不能替代来宾设备树。主容器分别保留 `/dev/pts`、`/dev/shm` 和 `/dev/mqueue`，共享 IPC 与共享内存设置继续采用 Docker 语义。最终创建请求追加原始 USB、USB 串口、CDC ACM 的设备规则和处理 eudev netlink 事件所需的 `NET_ADMIN`；其余仓库运行设置保持原义。`/dev` 或 `/dev/pts` 存在冲突挂载时明确失败，因为两个来源无法同时定义设备树。
 
-### 实现验收点
+`/dev/mqueue` 在容器 PID 1 启动后、生命周期脚本之前完成挂载。设备准备失败时停止本次已恢复的容器；设备树挂载随 Agent 进程存在，单次操作取消后仍可供后续操作使用。Dev Container 自己启动 udev/eudev 并维护规则、组和非 root 权限，来宾内核提供设备类驱动，平台负责标准设备路径和事件可达性。
 
-- Runtime 不挂载节点容器运行时套接字，也不持有 Kubernetes API 凭据。
-- Kata、Sysbox 与 Native 分别通过对应 RuntimeClass 或默认 CRI 的真实启动验证。
-- Native Runtime Pod 为每项 Device Plugin 资源生成相同数量的 requests 与 limits，并且不启用 privileged。
-- Native Runtime Pod 始终获得平台固定 capability；管理页面显示并锁定这些必需项，环境模板只持久化额外 capability。主 Dev Container 合并仓库与模板附加项时不会产生重复值。
-- Native 模板只从 Node 可分配扩展资源中选择设备；模板就绪检查确认至少一个节点能够同时满足全部设备请求，实际数量和当前可用性由 Kubernetes 调度器判断。
-- Device Plugin 通过 CRI CDI 把已分配设备接入 Runtime Pod；模板设备映射只转发 Pod 已有的设备，不产生额外节点设备挂载。
-- CDI 目录只包含当前 Pod 已分配的有效设备，并使用跨 Pod 替换保持不变的逻辑名称；物理设备 ID 改变后，同一 Dev Container 可以用新分配恢复。
-- CDI 公共环境、已分配设备环境和 Device Plugin 转发环境同时进入容器初始进程与 Codespace 创建的 Exec 进程；恢复后使用当前分配，并清理上一次分配不再提供的变量。
-- 普通 Dockerfile 与 Compose 主服务获得相同的设备、挂载、环境变量和 capability，Compose 辅助服务不会自动继承平台设备。
-- 标记为 GPU 的 Device Plugin 资源满足标准 `hostRequirements.gpu`，并归一化 `--gpus all`、Compose `gpus: all` 和等价的全部 GPU 设备预留；具体数量或 ID 选择会明确失败；未标记时继续按标准 Docker GPU 能力检查。
-- 启用站点配额时，Native 扩展资源进入 `ResourceQuota` 和 Manager 创建容量检查；达到配额后不再领取对应模板的新建操作。
-- 核心平台镜像不包含 Web IDE 程序、提供方适配器或 Codespace VSIX；每个提供方镜像可以独立构建和发布。
-- 启用 Web IDE 的环境模板和运行快照包含 sha256 镜像、提供方标识和 options；模板后续变化不会改变已有 Codespace 的恢复来源。
-- Runtime Pod 只在启用 Web IDE 时创建磁盘临时卷和 init 容器；主容器启动前可以看到完整的 `current` 程序目录，Pod 替换后重新导出且 PVC 用户数据仍然存在。
-- 管理页面显示两个常用镜像建议，也接受第三方镜像；解析结果展示提供方、版本、平台和摘要，并按镜像 Schema 编辑原始 options。
-- 任一提供方适配器暂时不可用时只关闭本次 Web IDE，Codespace 仍可通过 SSH 使用并在后续恢复时重试。
-- 提供方按模板和仓库两份输入初始化自己的设置与插件，Pod 替换与恢复保留用户后续修改的数据。
-- Web IDE 监听指定回环地址，`prepare` 成功且 Docker 接受后台 `serve` 后发布统一 Workspace endpoint；Gateway 继续承担浏览器身份和来源校验。
-- 所选提供方在自己的 `serve` 进程中保持编辑器单实例并在退出后重启，容器终止信号能够结束该进程而不再启动替代进程。
-- 仓库 IDE 设置只在首次创建时初始化；恢复和进程重启保留用户修改。
-- 启用 Web IDE 的模板会尝试启动所选提供方；启动提交成功后 Endpoint 保持发布，编辑器尚未监听或正在重启时 Gateway 返回临时不可用。
-- 附加 Features 使用标准 Dev Container `features` 输入形式，并按依赖、安装提示和稳定排序得到确定的安装顺序。
-- 模板生命周期脚本的 `build` 在最终镜像层以 root 身份执行；脚本或基础镜像变化会使对应构建缓存失效。
-- 启用 Gitea CLI 时从平台镜像复制与 Runtime 架构一致的已校验资产，最终镜像提供可执行文件及 Bash、Zsh、Fish 补全，创建期间不依赖外部下载。
-- 单容器和 Compose 主服务使用相同的最终镜像定制阶段，关联 Compose 服务保持仓库声明的镜像行为。
-- 首次创建和每次恢复都在标准容器生命周期前执行一次 `start`；正常停止在容器停止前执行一次 `stop`。
-- `build` 或 `start` 失败时环境不会发布 ready；`stop` 失败保留失败结果，同时实际资源仍收敛到 stopped。
-- 所有 Dev Container 来源使用同一解析和执行路径。
-- Feature 字符串简写、字符串布尔选项、依赖去重和锁文件大小写均与规范一致；硬依赖或安装提示形成循环时创建明确失败。
-- 仓库与平台共同声明一个 Feature 时，仓库锁文件保留合并后依赖；仅由平台注入的 Feature 不产生仓库锁记录。
-- 镜像、Feature 与仓库生命周期命令按来源顺序执行，同一对象中的命令可以并行执行。
-- 恢复状态只保存分组生命周期命令，宿主 `initializeCommand` 保持可用，扁平容器命令不会成为第二个执行来源。
-- `${devcontainerId}` 在同一 Codespace 重建后保持不变，并且只包含字母和数字。
-- Compose 缺省工作目录为 `/`；跨服务端口指向声明的服务容器，缺少对应运行服务时创建明确失败。
-- Compose 服务与容器映射不完整或目标不唯一时，在用户生命周期命令执行前创建失败并清理资源。
-- Pod 替换后工作区、内部 Docker 和 IDE 数据保持一致。
-- 克隆中断不会留下被当作完成工作区的目标目录，已有工作区只在提交匹配时复用。
-- Agent 初始克隆和 Dev Container 内的 Git 分别使用自身可见的只读凭据路径；HTTP helper 只为当前已验证的 Gitea 基础地址下的仓库读取 Token，SSH 命令固定使用对应私钥和 `known_hosts`。
-- 站点运行网络放行实际的 Gitea 克隆地址后 HTTP 或 SSH 克隆可以完成；拒绝时日志能够指出协议和目标主机而不泄露凭据。
-- 代理配置同时作用于 Agent 下载、内层 Docker 拉取、Dockerfile 与 Feature 构建、Compose 服务和主 Dev Container；恢复后从实例 Secret 重新取得相同配置。
-- 用户配置的直连目标与回环、Kubernetes Service 及仓库配置合并去重，主容器和关联 Compose 服务得到一致结果。
-- 启用代理时，Compose 服务名与显式网络别名加入直连列表；未启用时保留仓库声明的网络环境。
-- 字面 IP 代理只有在站点出站规则包含对应 CIDR 和端口时才能保存；域名代理由管理员根据实际解析范围配置站点出站规则。
-- 完整代理 URL 保存在模板和 Codespace 运行配置快照中，但不进入 Dev Container 状态、缓存键或普通日志。
-- Runtime 内的 Docker 和主 Dev Container 始终信任当前 Manager 内部根证书。
-- 配置代理 CA 后，Agent 下载、Docker/BuildKit 和 Dev Container 系统信任同时包含该证书及原有系统与平台根证书。
-- 自定义 CA 只作用于对应站点地址；Pod 重建或 Resume 后平台信任包使用当前证书，旧证书文件被清理。
-- 站点 CA 只进入平台信任包，不进入 Manager 的组件身份验证根集合。
-- 合法的 `owner/repository` 名称（包括含有 `x` 或 `0` 的仓库）能够生成工作区；反斜杠、NUL、空段和错误段数在克隆前明确报错。
-- 创建、恢复和连接分别执行各自阶段的生命周期命令；Manager 重连不会重复运行同一操作已经开始的命令。
-- 无效的访问类型、命令、终端或目标在执行 `postAttachCommand` 前失败；有效连接只执行一次对应的连接阶段命令。
-- Web IDE 关闭时创建和恢复不执行 `postAttachCommand`；启用时平台连接的 Web IDE 启动或 `postAttachCommand` 失败只写入日志，不改变 Codespace 状态；启动失败时访问目标保留终端、命令和 SFTP，后续恢复成功启动 Web IDE 时再加入 Workspace endpoint。
-- 宿主变量替换与 `initializeCommand` 使用同一组非敏感环境值，Agent 的其他进程环境不会进入仓库命令。
-- ready 只在 Dev Container 与基础访问能力可用后发布；Web IDE 进程健康不参与 ready 判断。
-- ready 访问目标保存解析后的绝对 `workspaceFolder`；Endpoint 动态更新保留该路径，Manager 接管后继续发布相同值。
-- Web IDE 关闭时 Codespace 仍保持 running，并可通过 SSH、VS Code 或 Zed 打开已上报的工作目录。
-- Agent 只能通过内部 RPC 接收操作和发布运行事实。
-- 块卷格式化前已有持久化许可；恢复挂载已有 ext4，未知文件系统保留数据并提供恢复诊断。
-- 大量生命周期日志不积累在内存中；元数据输出超限和执行取消都有确定结果。
-- 生命周期取消完成后，旧 Docker 执行环境已停止；普通用户访问断连只关闭对应连接。
+同一 Codespace 的进程共享附加设备。每个来源有独立监听身份，取消来源只关闭其待接受连接和设备流；SSH 会话结束回收该会话的全部转发，Runtime 停止或主容器更换回收全部连接。重新连接后按当前来源和 bus ID 再次附加，逐设备解绑使用 VHCI 端口。
+
+Kata 虚拟机是宿主机与工作区之间的隔离边界；Agent、主 Dev Container 和嵌套 Docker 共享来宾设备视图。所选 handler 的 `privileged_without_host_devices=true` 将来宾能力与 Kubernetes 节点设备分开。默认设备规则只限定默认访问，仓库显式扩大的权限按来宾内同一信任范围处理。SSH、Manager 票据和 Agent mTLS 承担跨组件授权，本地 Agent socket 属于工作区信任接口。设备服务端和来宾驱动仍需独立的安全审查，因为 SSH 认证不能消除恶意设备或驱动漏洞。
+
+#### 实现验收点
+
+- 活动 VHCI 自动启用 USB/IP；创建、恢复和插件初始化均按当前能力准备命令与界面，USB 查询失败时端口管理仍可用。
+- USB 命令和插件共用真实状态；隧道断开后仍可查询和解绑，操作超时后的刷新只查询状态。
+- 主 Dev Container 使用来宾 devtmpfs，附加、移除事件可被 udev/eudev 处理，非 root 设备权限符合开发镜像规则。
+- Dockerfile 与 Compose 主服务得到相同挂载和设备规则；PTY、共享内存、消息队列和仓库其他运行设置正常，辅助服务保留原配置。
+- 操作取消保留 Agent 设备挂载，恢复准备失败停止刚启动的容器，Agent 退出释放挂载。
+- 多来源、同名 bus ID、取消与重连都有明确归属；关闭一个来源保留其他来源，主容器更换回收全部监听。
+- 实际 Kata handler 采用来宾隔离并启用 `privileged_without_host_devices=true`，工作区得到来宾设备而非隐式注入的节点设备。
+
+### 授权环境与平台命令
+
+启用 Gitea CLI 时，Agent 把平台镜像中与 Runtime 架构一致、已校验的程序只读挂载到主 Dev Container，在创建和恢复的运行时准备阶段安装命令入口和 Bash、Zsh、Fish 补全。入口读取当前授权文件后执行 CLI。站点地址和更新提示设置在容器创建时注入，Token 与用户 Secret 由本次授权文件和命令环境提供，使授权变化、CLI 更新与项目镜像构建缓存分离。
+
+Agent 在首次创建和每次恢复的容器启动前，从同一份授权变量生成 `/var/lib/gitea-codespace/environment/env.sh` 和 `systemd.env`，分别供 shell/CLI 与 systemd `EnvironmentFile` 读取。环境目录只读挂载，文件原子替换后新进程读取本次授权。shell 文件最终由实际远程用户持有，systemd 文件由 root 持有，权限均为 `0600`；只包含文件引用的公共服务配置以 `0644` 单文件挂载到 `/etc/systemd/system/service.d/60-gitea-codespace-environment.conf`，保留镜像其他配置。
+
+systemd 文件使用其原生引号与转义规则，保留多行、末尾换行、空白、特殊字符及空值。非法 UTF-8、NUL、Unicode 非字符和 BOM 在写入前返回只含变量名及原因的错误。系统管理器在切换服务身份前读取文件，因此所有系统级服务，包括设置 `User=` 的服务，都处于工作区授权范围内；服务自身配置的覆盖关系继续遵循 systemd 语义。该文件服务于系统级服务进程，PID 1 自身及独立用户管理器的环境具有不同语义。
+
+SSH、Web IDE 和生命周期命令由 Agent 显式传入授权变量，登录 shell 通过 profile 读取文件。Kata、Sysbox、Native 共用此挂载，Compose 只应用于主服务。更新 Gitea Secret 后停止并恢复环境，会在下一次容器启动前生成当前授权，使系统服务首次启动即可取得相同变量。
+
+#### 实现验收点
+
+- CLI 入口、授权文件和补全在模板 `start` 前可用，平台程序更新保持项目镜像与 Feature 构建输入稳定。
+- 首次创建和恢复均在容器启动前准备环境文件及 systemd 公共配置，系统服务首次启动可取得本次授权。
+- shell 与 systemd 两种格式保留合法多行值及特殊字符，格式错误只报告变量名和原因；原子刷新移除已撤销变量。
+- systemd 文件保持 root 所有且为 `0600`，shell 文件可由实际远程用户读取；系统级服务的授权范围明确，Compose 辅助服务采用仓库环境。
+- 独立 CLI、SSH、Web IDE 和生命周期命令使用当前授权，普通镜像保留自己的启动方式。
+
+### Dev Container 配置与生命周期
+
+仓库配置与环境模板使用同一 Dev Container 解析和执行路径，模板可追加标准 Features。Feature 输入、依赖关系及安装提示按规范解析，以内容摘要和最终选项区分安装节点。仓库声明的 Feature 继续由仓库锁文件管理；模板独有的注入由模板快照确定。两者声明同一引用时锁定合并后的有效选项，使管理员扩展和仓库复现各有明确来源。
+
+镜像元数据、依赖排序后的 Features 和仓库配置分别贡献生命周期命令组。组之间按来源顺序执行，同组对象语法中的命令并行执行；恢复状态保存这一组执行顺序。模板生命周期脚本则在最终镜像定制阶段以 root 执行 `build` 并恢复容器用户，基础镜像或脚本内容变化会影响对应构建缓存。单容器与 Compose 主服务共用该流程，辅助服务保留仓库镜像行为。模板 `start`、`stop` 时序和失败清理见 [停止、恢复与自动停止](lifecycle.md#停止恢复与自动停止)。
+
+`onCreateCommand`、`updateContentCommand` 和 `postCreateCommand` 属于首次创建，`initializeCommand` 与 `postStartCommand` 在创建和恢复执行。`postAttachCommand` 用于通过身份、请求和目标检查的有效连接；启用 Web IDE 后，每次创建或恢复启动提供方也计为一次平台连接。Web IDE 和其 `postAttachCommand` 的失败记录日志，基础访问能力独立决定环境是否 ready。Agent 持久化当前操作的开始及结果，使 Manager 重连只重复上报而不重放同一次命令；执行结果未知时报告错误并进入生命周期清理。
+
+`${localEnv:VAR}` 和 `${env:VAR}` 与 `initializeCommand` 共用 Agent 明确提供的宿主环境：`HOME`、`USER`、`LOGNAME`、`PATH`、`SHELL` 和模板标准代理变量。显式选择避免把 Pod 中的控制面身份带入仓库命令。`${devcontainerId}` 从 Codespace 稳定身份生成，重建后保持不变。
+
+Compose 未声明 `workspaceFolder` 时使用 `/`。服务与容器保持一对一映射，使 `db:5432` 指向对应服务，而普通端口和 localhost 指向主容器。映射缺失或目标不唯一时在用户生命周期命令前报错，因为端口转发需要确定目标；该映射属于 Runtime 内部状态。
+
+生命周期输出使用 [操作日志协议](rpc-spec.md#操作日志)规定的脱敏及队列预算。需要返回正文的元数据查询分别限制 stdout、stderr 为 1 MiB。取消生命周期操作会关闭 Docker 连接、停止专属 Docker 并结束当前执行循环，由 Manager 确认旧 Pod 停止后推进后续操作；普通访问断连只结束相应会话。
+
+#### 实现验收点
+
+- 标准配置、Feature 输入、依赖排序和锁定结果保持一致，无法满足的依赖在构建前明确失败。
+- 仓库锁文件包含其声明的有效 Feature 依赖，模板独有的注入保持在模板配置范围。
+- 生命周期命令按来源分组执行并支持对象内并行，恢复使用同一执行顺序，Manager 重连保留已执行结果。
+- 单容器与 Compose 主服务共用最终镜像定制和平台准备；模板脚本的启动、停止及失败行为符合生命周期设计。
+- 宿主替换与初始化命令使用同一环境集合，`${devcontainerId}` 在重建后稳定。
+- Compose 默认目录为 `/`，跨服务端口定位正确，缺失或歧义目标在生命周期执行前失败并清理。
+- 有效连接执行一次 `postAttachCommand`；Web IDE 关闭时创建和恢复只执行对应容器生命周期，启用后的编辑器或连接钩子失败保留基础访问。
+- 日志与元数据输出受预算限制；生命周期取消后旧执行环境停止，用户访问断连只关闭自身连接。
+
+### 工作区与持久存储
+
+每个 Codespace 使用独立 PVC 保存工作区、内部 Docker、Git SSH 私钥和 IDE 数据。Token、用户 Secret、Unix socket 与进程状态位于易失目录；当前 Token 和已校验的 SSH 凭据副本通过 Pod 内存卷只读映射给主 Dev Container。Agent 初始克隆使用 `/run/codespace`，容器内 Git 使用 `/var/lib/gitea-codespace`；HTTP credential helper 仅为已验证的 Gitea 地址读取 Token，SSH 命令绑定相应私钥和 `known_hosts`。
+
+克隆按 Gitea 的 `owner/repository` 生成稳定目录，先校验路径，再在临时目录完成克隆后发布工作区。已有目录须匹配锁定提交，并刷新当前 Git 凭据。该流程保证中断后可重试，同时保护已有工作区。
+
+解析后的绝对 `workspaceFolder` 随访问目标保存，并通过 ready Runtime Metadata 发送给 Gitea，用于 VS Code 和 Zed 的 SSH 打开地址。目录是可以从 Dev Container 重建的运行事实，因此保留在 Kubernetes 状态中；Manager 接管和 Endpoint 更新继续使用相同值，SSH 编辑器入口与 Web IDE 开关分别处理。
+
+恢复状态读取时校验身份、路径、容器及 Compose 映射。状态无效时明确报错并保留持久数据；需要重建状态的版本应在升级说明中提供备份和重建步骤。删除 Codespace 会回收整个 PVC，这与修复容器状态是不同操作。
+
+Kata 原始块卷在挂载前通过 mTLS 核对 CR、Pod、PVC 和操作许可。首次格式化许可先以 `started` 写入 CR Status，再交给 Agent；文件系统检查和挂载成功后记录 `ready`。已有 ext4 经检查后直接挂载，格式化已开始但文件系统无法识别时保留数据并报错。这使进程崩溃或响应丢失后仍能区分首次初始化与已有数据。
+
+#### 实现验收点
+
+- 正常停止、恢复和 Pod 替换保留工作区、Docker 及 IDE 数据，短期凭据随当前授权更新。
+- 合法仓库名称生成稳定路径；克隆中断可重试，已有工作区只在锁定提交匹配时复用。
+- Agent 与容器内 Git 各自通过可见的只读凭据路径完成授权，HTTP Token 范围和 SSH 主机校验保持有效。
+- ready Metadata 包含解析后的工作目录，Endpoint 更新及 Manager 接管保持该值，Web IDE 关闭时仍能通过 SSH 编辑器打开项目。
+- 无效恢复状态保留数据并报告明确错误；块卷格式化先取得持久化许可，已有 ext4 可恢复，未知文件系统保留数据等待处理。
+
+### 出站网络与证书
+
+站点运行网络显式声明 Runtime 可访问的 CIDR 与 TCP 端口，包括 Gitea 克隆地址和开发所需服务。标准 NetworkPolicy 以地址及端口表达规则，因此域名服务由管理员按实际解析范围配置。访问失败日志给出协议和目标主机，并通过脱敏保护凭据。
+
+环境模板支持 HTTP、HTTPS、SOCKS5 代理及直连目标。代理使用标准 URL，管理页面回显实际配置；大小写标准环境变量覆盖 Agent、Docker 拉取、构建和容器运行。SOCKS5 为未单独配置的 HTTP/HTTPS 提供后备。直连列表合并回环、Kubernetes Service、用户配置及 Compose 服务名和网络别名，使集群与服务间流量保持直连。代理构建使用 Docker 预定义参数，运行配置从 Codespace 快照取得，Dev Container 持久状态只保存非代理执行信息。
+
+Agent 在启动 dockerd 前把 Runtime 系统 CA、公开内部根证书、站点 CA 和代理 CA 合并为 `/run/codespace/ca/bundle.pem`，去重后原子写入。Docker 通过 `SSL_CERT_FILE` 使用该文件，已配置 Registry 取得 `certs.d` 投影；Git 配置 `sslCAInfo`，OCI Feature 客户端从同一文件构造信任池，使首次下载即使用完整信任链。
+
+同一文件只读映射为 `/var/lib/gitea-codespace/ca/bundle.pem`。容器启动和恢复时按发行版更新系统信任库，必要时安装标准证书工具，并提供 `SSL_CERT_FILE`、`NODE_EXTRA_CA_CERTS` 和 Git 固定文件配置。Feature 安装发生在构建阶段，使用构建镜像自身证书；容器运行时再引用已挂载的平台文件。CA 脚本在平台目录创建临时文件并在退出时清理，以避开 systemd 启动期间重新挂载 `/tmp` 的时序。
+
+Manager、Gateway、Cache 和 Agent 的 mTLS 始终从各自身份目录加载证书、私钥与根池。Dev Container 取得的是公开出站信任包，这两类信任材料服务于不同边界，站点或代理 CA 不因此取得内部组件身份授权。
+
+#### 实现验收点
+
+- 放行实际 Gitea 克隆目标后 HTTP/SSH 克隆可完成，失败日志给出目标而不泄露凭据。
+- 代理作用于下载、镜像拉取、构建及相关容器；恢复使用实例快照，直连列表包含用户目标、集群服务和有效 Compose 别名。
+- 字面 IP 代理保存时核对站点出站 CIDR 和端口；域名代理按实际解析范围放行。代理凭据保留在授权配置中，Dev Container 状态和普通日志采用各自脱敏规则。
+- 首次网络请求前生成统一 CA Bundle，Docker、Git 和 OCI Feature 下载使用同一信任；恢复取得当前证书。
+- 主容器系统信任与固定证书环境变量采用同一 Bundle，Feature 构建使用构建镜像自身信任，临时文件准备不受 systemd 挂载 `/tmp` 影响。
+- 组件身份验证继续使用独立证书、私钥和根池，公开出站 CA 仅服务于相应 TLS 访问。
 
 ## 运行资源统计
 
@@ -203,9 +250,9 @@ Kata 使用原始块卷。Agent 挂载前通过 mTLS 请求 Manager 确认当前
 
 CPU 和内存使用量优先采用 Metrics API 中当前 Pod 的 `runtime` 容器统计，包括 Agent、内部 Docker 和 Dev Container 的运行开销；初始化容器不参与这一口径。CPU 使用量以 millicores 表示，内存使用量采用 working set。上限优先读取该 Pod 实际的 `resources.limits`，成功读取且未设置上限时报告零，表示未限制。资源请求是调度依据，Node 容量是共享能力，两者都不能代表实例上限。
 
-Agent 为 Kubernetes 指标缺失提供回退。它在启动时根据当前进程的 cgroup v2 路径和挂载信息确定读取目录；CPU 使用量来自相邻两次 `usage_usec` 的差值，首个样本仅建立基线；内存使用量为 `max(memory.current - inactive_file, 0)`，使口径接近 Kubernetes working set。CPU、内存和磁盘分别采样，单项失败保留其他有效结果。上限读取失败表示该项缺失，只有明确的 `max` 才表示未限制。失败与恢复按状态变化记录日志，便于诊断而不重复输出相同错误。
+Agent 为 Kubernetes 指标缺失提供回退。它在启动时根据 cgroup v2 路径和私有挂载信息确定 Runtime 层级根目录；采样与失败诊断复用该范围，使进程迁入 `init` 或 Sysbox 的 `init.scope` 后仍包含内部 Docker 和 Dev Container。CPU 使用量来自相邻两次 `usage_usec` 的差值，首个样本仅建立基线；内存使用量为 `max(memory.current - inactive_file, 0)`，使口径接近 Kubernetes working set。CPU、内存和磁盘分别采样，单项失败保留其他有效结果。上限读取失败表示该项缺失，只有明确的 `max` 才表示未限制。失败与恢复按状态变化记录日志，便于诊断而不重复输出相同错误。
 
-Dev Container 的 `hostRequirements` 复用同一 cgroup 读取方式。声明 CPU 要求时，同时检查进程可用 CPU 数与 cgroup 配额；声明内存要求时，比较 cgroup 上限和可见系统内存中的较小值，明确未限制时使用可见系统内存。声明了要求但无法读取对应能力时给出明确错误，避免把无法确认的能力当成满足条件。
+Dev Container 的 `hostRequirements` 接收同一个 Runtime 资源范围，仓库配置检查与 Feature 合并后的检查保持一致。声明 CPU 要求时，同时检查进程可用 CPU 数与 cgroup 配额；声明内存要求时，比较 cgroup 上限和可见系统内存中的较小值，明确未限制时使用可见系统内存。声明了要求但无法读取对应能力时给出明确错误，避免把无法确认的能力当成满足条件。
 
 磁盘统计面向工作区所在的数据文件系统。Agent 用 `statfs` 读取容量 `Blocks * Bsize` 与可用空间 `Bavail * Bsize`；Manager 从 kubelet Summary 读取匹配当前 Pod UID、`data` 卷和当前 PVC 身份的文件系统容量与可用空间。Kata 的原始块卷由来宾内 Agent 挂载，因此该模式使用 Agent 的文件系统观察。
 
@@ -220,7 +267,7 @@ Manager 每 30 秒批量请求一次 PodMetrics，每 60 秒按相关节点去�
 - Kubernetes 可用时使用当前 `runtime` 容器的 CPU 和内存统计；缺失时分别回退到有效 Agent 样本。
 - 上限来自成功读取的当前 Pod 配置或有效 Agent cgroup 观察；明确未限制与读取失败具有不同结果。
 - Agent 首次 CPU 采样只建立基线，内存剔除 inactive file cache，单项读取失败不阻断其他指标。
-- `hostRequirements` 按当前运行范围核对所声明的能力；必要观察缺失时返回明确错误。
+- Agent 迁入子组后仍统计整个 Runtime；仓库与 Feature 的 `hostRequirements` 按同一范围核对能力，必要观察缺失时返回明确错误。
 - 两方磁盘可用空间取最小值，零余量保持为已满；Kata 块卷使用来宾内文件系统观察。
 - 多个 Runtime 位于同一节点时，每轮只请求一次该节点 Summary；上报不发起指标采集请求。
 - 乱序观察保留较新的同源样本；采样满 120 秒时统一过期，Pod 或 PVC 替换后重新建立统计，不同站点的缓存清理互不影响。
@@ -230,7 +277,11 @@ Manager 每 30 秒批量请求一次 PodMetrics，每 60 秒按相关节点去�
 
 Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。它从 Manager 获取当前路由，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。Manager 不转发用户数据。
 
-HTTP 与 SSH 服务启动前初始化同一份路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接均核对当前路由的站点 UID。成功授权缓存 30 秒，并合并同一授权的并发查询；拒绝与错误即时返回。允许结果、并发查询、用户身份与连接限制都包含站点 UID，因为不同 Gitea 实例可能分配相同数字用户或仓库 ID。站点变化会替换路由并结束旧连接，运行中会话继续通过定期授权复核收敛权限变化。
+HTTP 与 SSH 服务启动前初始化同一份路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接均核对当前路由的站点 UID。HTTP 成功授权缓存 30 秒，并合并同一授权的并发查询。共享查询具有独立的 10 秒预算，每个请求可以取消自己的等待；因此浏览器取消一个资源请求时，其他正在等待同一次授权的请求仍能取得结果。拒绝与查询错误返回给等待者，后续请求重新查询。允许结果、并发查询、用户身份与连接限制都包含站点 UID，因为不同 Gitea 实例可能分配相同数字用户或仓库 ID。
+
+运行中的 HTTP 与 SSH 连接通过定期授权复核收敛权限变化。明确拒绝会结束对应访问；查询暂时失败则记录诊断并在下一周期重试，避免控制面短暂故障中断 Shell、WebSocket 或 USB/IP 连接。新的访问仍需成功授权。站点或 Pod 身份失效、运行许可到期和用户主动关闭分别按各自生命周期结束连接，因此保留已有连接不等于延长 Gateway 的运行许可。
+
+HTTP 按端点子域名选择当前路由，Gateway 的登录兑换入口为 `/.gitea-codespace/open`。其余路径属于应用，原样保留路径编码、重复斜杠和末尾斜杠；这些字符可能参与应用的资源标识和路由匹配。找不到当前端点时返回 `404`，登录兑换成功后回到同源应用路径或根路径。
 
 浏览器打开入口后取得由 Gateway 组件独立的 32 字节会话密钥认证加密的 Cookie。所有副本挂载同一组件密钥，因此任意副本都能校验会话的站点、用户、Codespace、端点和有效期，并在本进程建立连接计数。成功请求只续期空闲期限，绝对有效期保持不变；并发与连接上限继续按副本计算，用于保护单个进程资源，而不作为站点配额。
 
@@ -246,9 +297,15 @@ SSH Shell 请求启动远程用户在容器账户数据库中配置的登录 She
 
 SSH 命令正常退出时先有界排空输出再发送退出状态；断连时同时关闭 RPC 与本地管道，释放被慢客户端阻塞的读取和写入，重复关闭保持幂等。TCP 两个方向分别关闭：客户端 EOF 只关闭目标的写入方向，目标 EOF 只关闭 SSH channel 的发送方向。两个方向均结束后释放连接；错误或取消则结束当前 channel。一个 channel 的结束不影响同一 SSH 连接上的其他 channel，因此端口转发与 Shell 可以独立使用。
 
+Agent 使用 CNI `pkg/ns` 在授权容器的实际网络命名空间创建 TCP socket：SSH 本地转发连接主 Dev Container，HTTP Endpoint 连接端点所属容器，普通 SSH 远程转发在主容器内监听。每次查询当前 Docker PID 并打开命名空间句柄，避免容器重建后继续使用旧进程。拨号和监听完成后立即离开命名空间，后续数据读写共用同一 TCP 转发实现。这样每条 TCP 连接只需要 socket 和 Access 流，连接复用继续由 Gateway 的标准 HTTP Transport 负责。
+
+网络命名空间只改变 socket 的网络归属。socket 由 Agent 的进程凭据与 cgroup 创建，并不以 Dev Container 的 `remoteUser` 运行；这是平台代理行为，Runtime Pod 仍是整体资源计量与限制边界。Shell、命令和 SFTP 则通过 Docker exec 使用容器的用户、工作目录和远程环境，因为这些操作依赖容器文件系统与账户权限。IPv4 与 IPv6 回环拨号在同一个命名空间锁定线程中依次尝试字面量地址，防止并行拨号的 goroutine 离开目标网络。
+
+SSH 远程转发使用 OpenSSH 标准请求与 channel。普通 `-R` 默认 localhost，支持 IPv4、IPv6、通配地址和端口零；绑定失败直接返回错误，容器共享网络时按其实际网络命名空间执行。`usbip.<来源名>:3240` 则创建 Agent 回环随机端口上的 USB/IP 来源。这一区分让普通转发具有用户预期的容器内行为，同时把内核 USB/IP 客户端的入口留在 Agent。
+
 HTTP 继续由 Go `httputil.ReverseProxy` 转发，每个有效 Endpoint 复用长期存在的 `http.Transport`，由标准库管理 HTTP keep-alive 和符合条件的重试。Gateway 到同一 Agent 的 HTTP、WebSocket 与 SSH 数据流共享 mTLS HTTP/2 客户端，每个目标连接占用独立 Access 流。上游 TCP 的 EOF 通过内部协议及时传回，让 HTTP Transport 淘汰失效连接；下一次请求可以创建新的目标连接，而其他正在传输的流保持不变。
 
-建立预算覆盖票据、RPC、exec 和实际 TCP Dial，最多等待 15 秒。连接成功后移除建立计时器，HTTP 响应头等待最多 30 秒；HTTP 请求取消、连接关闭和运行身份失效分别结束自己负责的访问，响应体、SSE、WebSocket 和 SSH 可以持续传输。Provider 尚未监听时，本次实际连接失败并由 Gateway 返回临时错误，之后的访问独立尝试连接。这使 Provider 的启动速度与 Codespace 的运行状态保持明确分工。
+建立预算覆盖票据、RPC 和对应能力的建立操作，包括网络命名空间查询与 TCP Dial，或 Shell/SFTP 的 exec，最多等待 15 秒。连接成功后移除建立计时器，HTTP 响应头和响应体按应用的处理时长等待，由请求取消、连接关闭或运行身份失效结束相应访问；这样长轮询、SSE、WebSocket 和 SSH 都能保留自身的通信周期。Runtime 停止或执行目标替换时，同时取消尚未完成的拨号和现有 TCP 数据流。Provider 尚未监听时，本次实际连接失败并由 Gateway 返回临时错误，之后的访问独立尝试连接。这使 Provider 的启动速度与 Codespace 的运行状态保持明确分工。
 
 每个 Gateway 组件都有同名 ClusterIP Service：`80/http` 转发到 Gateway 的 HTTP 进程，`22/ssh` 转发到 SSH 进程。这个 Service 是应用访问与 Kubernetes 网络的稳定边界，多个 Gitea 站点可以共享一个 Gateway，而站点身份、授权和连接限制仍在 Gateway 内分别处理。
 
@@ -260,6 +317,9 @@ Gateway 默认只把 TCP 对端作为客户端地址。只有直接对端属于�
 
 - 每个数据流都需要当前有效的用户授权和 Agent 票据。
 - 授权缓存、并发查询与连接限制使用站点 UID 区分身份；成功授权在 30 秒内复用，拒绝和错误由后续请求重新核对。
+- 共享授权查询在独立的 10 秒预算内完成并释放容量；取消任一等待请求后，其他请求仍可取得查询结果。
+- HTTP 与 SSH 已有连接在授权查询暂时失败后继续运行，明确拒绝时结束访问；运行许可和运行身份变化仍正常关闭连接。
+- 应用收到的路径编码、重复斜杠和末尾斜杠与原始请求一致；登录兑换入口继续校验域名和站点绑定，其他路径交给当前端点。
 - SSH 主机私钥只存在于对应 Secret。
 - 单个实例不可用不影响其他实例的路由，Pod 被替换或目标失效后不能获得访问票据。
 - Gateway 快照只读取绑定到自身的站点和实例，站点数量增长不会扩大为全量 Runtime 扫描。
@@ -268,7 +328,10 @@ Gateway 默认只把 TCP 对端作为客户端地址。只有直接对端属于�
 - 建立失败在预算内释放连接资源；请求取消和 Pod 移除会解除被阻塞的本地管道与 RPC。
 - SSH Shell 在有无 PTY 时都使用远程用户的登录 Shell；无 PTY Shell 能从标准输入执行脚本，命令请求只执行明确的非空命令。
 - 每张票据只绑定一种访问能力。
-- 本地端口转发只访问当前 Dev Container 的回环地址。
+- 本地端口转发只访问当前主 Dev Container 的回环地址；HTTP Endpoint 使用各自容器的网络命名空间，支持 IPv4-only 和 IPv6-only 服务。
+- Agent 与目标容器的同名回环端口相互独立，拨号只命中授权目标；Runtime 停止或执行目标替换会取消拨号并结束 TCP 连接。
+- 普通远程转发在主 Dev Container 内监听，端口零返回实际端口；`forwarded-tcpip` 使用原请求的绑定地址和实际端口，OpenSSH 能匹配对应转发。USB/IP 特殊绑定在 Agent 回环随机端口监听，并保留来源名及逻辑端口 3240 作为 SSH channel 的地址。
+- 每个反向 TCP 连接使用独立 Access 流和 SSH channel，复用 Gateway 到 Agent 的 mTLS HTTP/2 连接。取消普通监听后已建立的 channel 继续传输；取消 USB/IP 来源会结束其设备流。取消成功回复前完成新连接接受和 channel 打开的交接；监听控制流失败结束所属 SSH 连接，单个数据 channel 的失败不关闭其他转发。
 - Pod、Agent 身份或地址变化后释放旧客户端和活动流；端点移除或可见性变化结束对应 HTTP 访问。展示信息与端点列表更新保留未改变目标的连接，新的票据仍绑定当前目标版本。
 - 同名 Service 始终只提供 `80/http` 与 `22/ssh`，切换发布方式不会重建 Gateway Deployment。
 - 一个副本签发的浏览器会话可以由同组件的其他副本验证，篡改、过期或资源身份不匹配的会话会被拒绝。
@@ -286,7 +349,7 @@ Cache 是独立组件，支持本地文件系统或 S3。它为允许的上游�
 
 每个 Cache 组件都有同名 ClusterIP Service。Service 固定提供 `443/https`，转发到 Cache 容器的 `8443` 端口，集群内地址为 `https://<component>.<management-namespace>.svc`。NetworkPolicy 使用 Cache Pod 声明的 `https` 命名端口，因此 Service 端口、Pod 端口和网络放行规则始终指向同一条 TLS 链路。地址由 Service 身份推导，因此管理页面只展示实际服务地址。Manager 内部 CA 为该 DNS 名称签发独立的服务端证书，并保存到 `<component>-registry-tls` Secret。Cache 启动时加载并校验证书，此后新 TLS 握手从内存快照取证书，每分钟最多检查一次 Secret 投影文件；续期成功后整组快照同时替换，因此短期证书续期无需重建 Pod，也不会让高频连接反复访问文件系统。
 
-Cache 使用 `<component>-identity` 中的组件证书与 Manager 建立双向 TLS 控制连接。Registry 服务证书只包含 Service DNS 名称和服务端用途，不能代表 Cache 调用 Manager。Runtime Agent 在启动内部 Docker 前把内部根证书写入该缓存主机对应的 Docker `certs.d` 目录，BuildKit 使用相同的 HTTPS 地址和标准信任链，因此不需要不安全仓库配置。
+Cache 使用 `<component>-identity` 中的组件证书与 Manager 建立双向 TLS 控制连接。Registry 服务证书只包含 Service DNS 名称和服务端用途，不能代表 Cache 调用 Manager。Runtime Agent 在启动内部 Docker 前把完整出站信任包投影到该缓存主机对应的 Docker `certs.d` 目录，Docker 和 BuildKit 使用其中的内部 CA 验证 Cache 的 HTTPS 证书。
 
 Cache 可以单独声明回源代理，因为共享 Cache 所在管理命名空间与站点 Runtime 可能具有不同出口。代理环境同时作用于 OCI 回源、S3 和 Manager 客户端；Kubernetes Service 域名自动直连，因此控制连接和集群内 Registry 请求不会绕到外部代理。代理 CA 在系统根证书池上追加，并在 Cache 启动时完成校验。代理 URL、直连目标或 CA 变化会改变组件 Secret 的资源版本，Cache 使用 Recreate 策略重启后取得一组一致的新配置。
 
@@ -312,7 +375,7 @@ Cache 执行许可在 Manager 首次获取 Kubernetes Lease 后生效，后续�
 
 控制流结束后，Manager 保留已有 Lease 直到自然到期。断连无法证明远端进程已经停止，等待现有的 15 秒租期可以让旧进程先按本地许可退出，再允许新进程接管存储。停用后的 Cache 停止获取和续期租约；客户端遇到到期许可时重建连接，以便重新启用后正常恢复。管理面删除 Cache 组件时也检查这段租期：先停用 Cache 并等待租期结束，再删除组件，避免级联回收 Lease 使旧写入者提前失去保护。
 
-Cache Deployment 使用 Recreate 更新策略。新 Pod 只有在旧 Pod 停止并且租约到期后才能取得执行许可，Service 也只会选择通过 Registry 就绪检查的实例。这与 Cache 的单写租约共同覆盖滚动更新、节点故障和控制流中断，无需为可重新生成的数据引入多副本一致性协议。
+Cache Deployment 使用 Recreate 更新策略。新 Pod 只有在旧 Pod 停止并且租约到期后才能取得执行许可，Service 也只会选择通过 Registry 就绪检查的实例。这与 Cache 的单写租约共同覆盖组件更新、节点故障和控制流中断，保持同一存储的单进程写入。
 
 ### 实现验收点
 
@@ -322,7 +385,7 @@ Cache Deployment 使用 Recreate 更新策略。新 Pod 只有在旧 Pod 停止�
 - Cache NetworkPolicy 使用 Pod 的 `https` 命名端口，Service 的 `443` 到容器 `8443` 的映射与网络放行保持一致。
 - Cache Registry 证书只绑定当前 Service DNS 名称；文件证书源一分钟内复用有效快照，续期后的新连接在下一次检查后使用新证书。
 - Cache 控制连接身份与 Registry 服务证书使用独立 Secret 和证书用途。
-- Runtime Docker 与 BuildKit 通过内部 CA 验证 Cache，配置中不存在不安全仓库选项。
+- Runtime Docker 与 BuildKit 使用完整信任包中的内部 CA 验证 Cache 的服务端证书与主机名。
 - Cache 的 OCI 与 S3 回源遵循组件代理，Manager 和集群内部地址保持直连；代理 CA 在保留系统根证书的基础上生效。
 - Cache 代理 URL、直连目标或 CA 变化后由 Recreate 更新到单一配置版本，不会同时运行使用不同网络配置的两个写入进程。
 - Docker CLI 与外部 Buildx 从同一份内存卷配置读取短期 Registry 凭据，构建成功或失败后认证文件均被删除。
@@ -345,7 +408,7 @@ Cache Deployment 使用 Recreate 更新策略。新 Pod 只有在旧 Pod 停止�
 
 Manager 多副本通过 Kubernetes Lease 选举。只有 Leader 连接 Gitea、领取操作、协调 Runtime 和签发访问票据；备用副本保持可接替状态。新 Leader 先核对 Gitea 当前操作与 CR、PVC、Pod 和 Agent，再领取新任务。
 
-Manager、Gateway 和 Cache 在各自 Pod 的 `8081` 端口提供独立明文 HTTP 健康服务，`/healthz` 表示进程存活，`/readyz` 表示组件按自身职责就绪。Kubelet 直接访问该端口，Service、Ingress 与业务 NetworkPolicy 不发布它，使健康检查独立于内部证书和业务流量。Gateway 在 HTTP 与 SSH 监听成功且运行许可有效时就绪，控制流短暂中断时使用剩余许可；Cache 在取得单写许可、完成存储初始化并启动 mTLS Registry 后就绪。外部控制面暂时不可用只影响相关就绪状态，进程保持存活，避免无效重启扩大故障。
+Manager、Gateway 和 Cache 在各自 Pod 的 `8081` 端口提供独立明文 HTTP 健康服务，`/healthz` 表示进程存活，`/readyz` 表示组件按自身职责就绪。Kubelet 直接访问该端口，Service、Ingress 与业务 NetworkPolicy 不发布它，使健康检查独立于内部证书和业务流量。Gateway 在 HTTP 与 SSH 监听成功且运行许可有效时就绪，控制流短暂中断时使用剩余许可；Cache 在取得单写许可、完成存储初始化并启动 HTTPS Registry 后就绪。Registry 使用服务端 TLS 和短期令牌验证镜像请求，Cache 到 Manager 的控制连接使用 mTLS。外部控制面暂时不可用只影响相关就绪状态，进程保持存活，避免无效重启扩大故障。
 
 恢复不依赖节点本地文件。正常停止时，Runtime Pod 的 writer finalizer 会一直保留到 kubelet 报告容器已经终止；Manager 先把对应 Pod UID 记录为已停止，再释放 finalizer。这样控制器主动发起的停止具有明确的先后顺序。Pod 对象已经不存在时，Manager 立即撤销旧执行权和路由，把未完成的 create 或 resume 记为失败，并将环境自动收敛到 stopped。缺失 Pod 被视为集群管理员或节点控制面已经完成的删除事实，这一选择避免环境永久等待人工确认；集群存储仍需为 Runtime 卷提供与声明访问模式一致的挂载隔离。
 

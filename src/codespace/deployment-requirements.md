@@ -27,7 +27,15 @@ Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、
 
 Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。Kata 的工作区卷以块设备进入来宾，Sysbox 与 Native 的工作区卷以文件系统挂载；Manager 根据运行方式选择对应形式。Native 设备通过 Kubernetes 扩展资源、Device Plugin 和 CDI 分配，Manager 把同一设备数量写入 Pod requests 与 limits，让 kubelet 保持唯一的设备分配权威。
 
+需要远程 USB 的 Kata 节点池使用包含 `DEVTMPFS`、`USB`、`USBIP_CORE`、`USBIP_VHCI_HCD` 和目标设备类驱动的来宾内核，并在 Runtime Agent 启动前使 VHCI 控制器处于活动状态。平台从 `/sys/devices/platform/vhci_hcd.*` 发现能力，因此同一控制面可管理普通及支持 USB/IP 的 Kata 节点池。用户通过 Gateway SSH 注册 `usbip.<来源名>:3240`，SSH 客户端连接实际 USB/IP 服务端；多个来源使用各自的 Agent 回环随机端口。主 Dev Container 按发行版启动 udev/eudev，设备规则和非 root 权限随开发镜像交付。
+
+USB/IP 的隔离边界是 Codespace 对应的 Kata 虚拟机。Agent、主 Dev Container 和嵌套 Docker 共享该工作区的来宾设备视图。来源归属于注册它的 SSH 连接，同名注册报错；关闭一个来源只回收该来源，Runtime 停止时全部回收。普通 SSH 反向转发监听在 Dev Container 的实际网络命名空间，USB/IP 特殊绑定监听在 Agent 回环地址；回环地址限制网络范围，认证来自 SSH、Manager 票据和 Agent mTLS。能访问本地 Agent Unix socket 的进程属于工作区信任范围。SSH 认证不能消除恶意 USB 设备或来宾驱动漏洞的风险，工作站也需保护其 USB/IP 服务。
+
+使用需要特权能力的 Kata 配置时，所选 Kata handler 必须启用 `privileged_without_host_devices=true`，把来宾内能力与宿主机设备注入分开。整棵来宾 devtmpfs 的设备节点会在主容器标准 `/dev` 中可见，但能否打开仍受设备 cgroup 和 Linux capability 控制；显式 Dev Container `privileged`、`devices`、`capAdd` 或等效的标准配置可以扩大来宾内部的设备访问范围。部署验证应同时检查实际 RuntimeClass handler、Kata 配置和 Pod 的设备挂载，而不能只检查 RuntimeClass 名称。
+
 Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。Native 节点需要验证默认 CRI 能够运行平台所需的嵌套 Docker，并为模板需要的设备安装 Device Plugin 与 CDI 配置。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选运行方式、节点和扩容策略。
+
+三种运行方式都需要让 Agent 读取内部 Docker 容器的进程信息并进入其网络命名空间，以创建正向连接和普通反向监听。部署验证使用平台既有运行权限完成这一操作，同时检查 IPv4、IPv6 及辅助服务容器，才能确认实际运行时提供了完整的容器网络访问能力。socket 使用 Agent 的凭据与 cgroup，整体统计仍归属 Runtime Pod；容器账户权限由 Shell/SFTP 的 Docker exec 保持。
 
 ### 实现验收点
 
@@ -36,17 +44,22 @@ Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平�
 - 管理页面中 RuntimeClass 与隔离方式联动，StorageClass 来源于当前集群；不存在的资源无法保存。
 - Kata 与 Sysbox 创建的 PVC 分别采用块模式与文件系统模式。
 - Native 使用默认 CRI 和文件系统 PVC，申请的扩展资源与 CDI 设备能够进入 Runtime Pod 和主 Dev Container。
+- 支持 USB/IP 的 Kata 来宾在 Agent 启动前具有活动 VHCI；普通 Kata 来宾仍能运行，只是不提供远程 USB 能力。
+- 完整 USB/IP 验证经过 Manager、Gateway SSH、Agent、Runtime 回环监听和主容器标准 `/dev`，覆盖两个来源的重复 bus ID、独立取消、非 root 设备 I/O、断线重连及停止恢复；普通反向转发在 Native、Sysbox、Kata 中验证容器内动态端口。
+- 完整验证确认 Kubernetes 节点设备不会隐式进入 Runtime，关闭一个 USB/IP 来源只释放该来源的桥接连接；停止 Runtime 释放全部监听和连接，旧 Runtime 的票据不能访问新 Runtime。
+- 使用特权 Kata 配置时，实际 handler 与 `privileged_without_host_devices=true` 均已核对，工作区设备可见性没有越过 Kata 虚拟机边界。
 - Runtime 内 Docker 可用，并且无法访问节点容器运行时或 Kubernetes API 身份。
-- CPU、内存、磁盘和设备使用受模板限制。
+- Native、Sysbox、Kata 的实际 Pod 都能在授权容器内建立正反向 TCP socket；Agent 同端口服务不会被误访问，容器重建后查询新的网络命名空间。
+- Runtime Pod 按模板声明 CPU、内存请求及可选上限，设备数量由 Device Plugin 分配；PVC 按模板申请容量，实际可用空间和容量约束由存储实现提供。
 - Pod 替换后 PVC 数据可以由新的 Runtime 恢复。
 
 ## 镜像、缓存与网络
 
-Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的多架构提供方镜像，由 Runtime Pod 的 init 容器按环境模板选择。Codespace 仓库的 `main` 分支更新核心镜像的 `main` 标签并发布 Helm 预发布版本；同一仓库中的 VS Code 与 DeepSeek Harness Provider 各自只监听自身目录并使用独立发布流程，因此编辑器更新不会重建或发布控制面。管理员保存环境模板时，Manager 只读取提供方镜像的 OCI 配置元数据并把引用固定到 sha256 摘要；Pod 启动时 Kubernetes 再拉取实际镜像层。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。
+Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的多架构提供方镜像，由 Runtime Pod 的 init 容器按环境模板选择；平台与提供方的发布关系见[镜像构建与发布](implementation.md#镜像构建与发布)。管理员保存环境模板时，Manager 只读取提供方镜像的 OCI 配置元数据并把引用固定到 sha256 摘要；Pod 启动时 Kubernetes 再拉取实际镜像层。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。
 
 生产环境的 Gateway 建议至少运行两个副本。控制器使用软反亲和性优先分散到不同节点，因此单节点测试集群仍可运行，多节点集群则能降低节点故障影响；PDB 保护计划内驱逐，实际容量仍需要集群为至少一个替代 Pod 保留资源。Cache 固定为一个 Recreate 副本，其 PVC 使用 ReadWriteOnce，升级窗口允许短暂缓存不可用；Runtime 可以在授权范围内回源，因此这不会改变 Codespace 的持久数据。
 
-标签模式在创建 Pod 时检查最新镜像。Manager、Gateway 和 Cache 会随每次平台构建滚动更新，用户 Runtime 保持运行，直到普通生命周期操作需要创建新的 Pod。摘要模式始终引用同一内容，适合生产和故障复现。这样既能让开发集群及时取得更新，也不会为了刷新标签而中断用户会话。
+标签模式在创建 Pod 时检查最新镜像。更新部署版本后，Manager 和 Gateway 滚动更新，Cache 按 Recreate 策略先停后启；用户 Runtime 保持运行，直到普通生命周期操作需要创建新的 Pod。摘要模式始终引用同一内容，适合生产和故障复现。这样既能让开发集群及时取得更新，也不会为了刷新标签而中断用户会话。
 
 Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。文件系统 Cache 的 PVC 与组件同名并由组件拥有；改用 S3 后控制器回收这块缓存卷。每个 Cache 使用同名 ClusterIP Service 的 `443/https` 端口，Manager 根据 Service 名称签发内部服务证书，Runtime Docker 通过安装级内部根证书验证连接。Cache 只在集群网络中提供，多个站点通过短期凭据和独立命名空间共享它。
 
@@ -54,9 +67,9 @@ Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使�
 
 站点配置中的运行出站网络使用 CIDR 和 TCP 端口放行 Runtime 必需的目标。这里需要包含 Gitea 实际返回的 HTTP 与 SSH 克隆地址，以及 Dev Container 生命周期命令依赖的服务；Manager 控制面能够访问 Gitea 并不代表站点命名空间中的 Runtime 也能访问。使用显式地址段的原因是标准 NetworkPolicy 没有可移植的域名规则，管理员可以先在 Runtime Pod 中解析和验证目标地址，再把稳定的网络范围写入站点配置。
 
-内网部署可以分别为环境模板和 Cache 组件设置 HTTP、HTTPS 或 SOCKS5 出站代理。环境模板适用于该模板创建的 Runtime、Docker 构建和 Dev Container；Cache 代理只用于镜像与对象存储回源。代理使用字面 IP 时，引用模板的每个站点都需要在运行出站网络中放行该 CIDR 和端口，管理 API 会在保存时核对；代理使用域名时，管理员需要按集群 DNS 的实际解析范围放行对应地址段。代理执行 TLS 检查时填写其 CA 证书，平台会在保留系统根证书和 Manager 内部根证书的基础上追加它。
+内网部署可以分别为环境模板和 Cache 组件设置 HTTP、HTTPS 或 SOCKS5 出站代理。环境模板适用于该模板创建的 Runtime、Docker 构建和 Dev Container；Cache 代理只用于镜像与对象存储回源。代理使用字面 IP 时，引用模板的每个站点都需要在运行出站网络中放行该 CIDR 和端口，管理 API 会在保存时核对；代理使用域名时，管理员需要按集群 DNS 的实际解析范围放行对应地址段。代理执行 TLS 检查时填写其 CA 证书，Manager 通过固定的只读文件挂载向工作负载提供该证书，避免额外的文件路径环境配置。
 
-Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，管理员把 PEM 证书链保存到对应站点；Manager 在系统信任库上追加它，并在保存前验证实际 Manager RPC。Agent 把 Manager 内部根证书和可选站点 CA 合并为平台信任包，用于 URL 范围的 Git 克隆、Runtime Docker 和主 Dev Container 系统信任，恢复时重新同步。站点 CA 只用于访问该 Gitea，组件身份仍只信任 Manager 内部根证书；浏览器入口证书继续由外部入口维护。
+Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，管理员把 PEM 证书链保存到对应站点；Manager 在系统信任库上追加它，并在保存前验证实际 Manager RPC。Agent 在每次 Runtime 操作开始时把系统 CA、Manager 内部根证书、站点 CA 和代理 CA 合并为唯一完整信任包，Docker、Git、OCI Feature 和主 Dev Container 使用相同内容。双向 TLS 的组件身份证书、私钥和根集合仍从独立身份 Secret 加载，出站信任包只包含公开证书；浏览器入口证书继续由外部入口维护。
 
 ### 实现验收点
 
@@ -70,7 +83,7 @@ Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，�
 - 站点运行出站网络覆盖实际的 Gitea HTTP 或 SSH 克隆目标；未覆盖时克隆错误能够指出协议与目标主机。
 - 环境模板代理覆盖 Runtime、内层 Docker、构建和 Dev Container，Cache 代理覆盖 OCI 与 S3 回源；两者的集群内部地址保持直连。
 - 字面 IP 代理的 CIDR 和端口已加入所有引用站点的出站规则；域名代理的实际解析范围已由部署验收确认。
-- 使用代理 CA 时，系统公共 CA、Manager 内部 CA、站点 CA 和代理 CA 各自原有的访问路径均可完成 TLS 验证。
+- 使用代理 CA 时，唯一完整信任包同时包含系统公共 CA、Manager 内部 CA、站点 CA 和代理 CA，并在 Docker 第一次拉取前生成。
 - HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。
 - Cache 清空后可以在原授权范围内回源。
 - 文件系统与 S3 缓存使用同一授权流程，切换后只保留当前后端所需的工作负载资源。
@@ -78,7 +91,7 @@ Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，�
 - Cache 的每个 Registry 请求都携带 Manager 签发的短期凭据，共享 Cache 仍按站点、仓库和用户隔离。
 - 多副本 Gateway 优先分散到不同节点，并在计划内驱逐时由 PDB 保留可用入口。
 - Cache 以单副本 Recreate 方式更新；缓存暂时不可用时 Runtime 可以按原授权回源。
-- 公共 CA 和自定义 CA 的 Gitea 都能完成注册、仓库克隆与容器内访问；更新 Bundle 后恢复环境使用新证书。
+- 公共 CA 和自定义 CA 的 Gitea 都能完成注册、仓库克隆、镜像拉取、Feature 下载与容器内访问；更新 Bundle 后恢复环境使用新证书。
 
 ## 身份、容量与恢复
 
@@ -94,7 +107,7 @@ Agent、Gateway 和 Cache 对 Secret 投影的证书使用一分钟内存缓存�
 
 证书 URI 使用同一信任域并直接表达资源身份：Manager 使用 `spiffe://codespace/manager/<management-namespace-uid>`，Agent 使用 `spiffe://codespace/agent/<site-uid>/<codespace-uid>/<pod-uid>`，Gateway 和 Cache 分别使用 `spiffe://codespace/gateway/<component-uid>` 与 `spiffe://codespace/cache/<component-uid>`。管理命名空间、站点、Codespace、Pod 或组件同名重建后会获得新的 Kubernetes UID，因此旧证书不能代表新资源。URI 的构造和解析由同一个身份模块完成，使签发方、Manager、Agent 和 Gateway 使用完全相同的路径结构。
 
-浏览器访问管理页面和 Codespace Endpoint 使用集群入口的外部 HTTPS。Ingress 引用的 TLS Secret 可以由 cert-manager、云平台证书控制器或集群管理员维护；它不参与内部组件身份。SSH 使用独立的 Gateway 主机密钥。
+浏览器入口支持 HTTP 和 HTTPS，生产环境应通过集群入口提供 HTTPS。Ingress 引用的 TLS Secret 可以由 cert-manager、云平台证书控制器或集群管理员维护；它不参与内部组件身份。SSH 使用独立的 Gateway 主机密钥。
 
 环境模板定义单个 Runtime 的 CPU 和内存请求，并可以按集群策略增加资源上限。较小但真实的请求值让调度器保留基本容量，同时允许未设置上限的开发环境使用节点空闲资源。Gitea 站点可以启用总配额；关闭时不创建站点 `ResourceQuota`，容量接纳交给 Kubernetes 调度器和集群已有策略。Manager 在启用配额时统计实际资源和正在创建的任务。备份覆盖 Gitea 数据库和日志、Kubernetes 管理资源、Codespace PVC 以及恢复所需的 Secret。
 
@@ -117,27 +130,9 @@ Agent、Gateway 和 Cache 对 Secret 投影的证书使用一分钟内存缓存�
 - 环境模板始终提供 CPU 和内存请求；资源上限关闭时生成的 Runtime Pod 不包含 CPU 和内存 limit。
 - 恢复后站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。
 
-## 验证与发布
-
-日常开发测试不依赖 Kubernetes，只覆盖可在进程内或本机完成的逻辑。完整端到端测试通过显式 kubeconfig 连接专用 Kubernetes 集群，并在 Kata、Sysbox 和 Native 环境执行同一套测试入口。这样本地反馈可以保持快速，三种运行方式也都通过同一条产品生命周期验证，而不是维护三套逐渐产生差异的脚本。
-
-CI 先在 GitHub 托管 runner 构建平台二进制与镜像归档，再为三种运行方式分别创建一台全新的 `ubuntu-24.04` runner。每项任务在本机安装固定版本的单节点 k3s：Kata 通过官方部署 Chart 安装并使用支持块模式的动态存储，Sysbox 通过校验摘要的发行包安装并注册到 k3s containerd，Native 使用默认 CRI 并注册测试用 FUSE Device Plugin 与 CDI 设备。随后三项任务导入同一份平台镜像归档。Kata 需要观察到独立来宾内核，Sysbox 需要观察到隔离的用户映射，Native 需要验证扩展资源申请、CDI 设备节点和分配环境；同一套用例继续验证嵌套 Docker、PVC 恢复、组件身份、Leader 切换、Cache 和完整生命周期。
-
-完整生命周期由测试进程内的协议服务提供 Gitea 对端，真实 Manager、Kubernetes 资源、Runtime Pod、Gateway、Cache、网络和存储仍在 k3s 中运行。这样可以验证 Codespace 平台边界，而不把另一个仓库的部署和凭据变成前置条件；Gitea 服务端的协议适配由 Gitea 仓库集成测试验证。触发核心 CI 的拉取请求运行三种运行方式的端到端测试，Provider 修改由独立工作流验证；主分支镜像和 Helm Chart 的发布依赖 Kata、Sysbox 与 Native 三项结果。失败任务上传节点、RuntimeClass、StorageClass、Helm 状态、受管资源、事件和 Pod 日志，便于区分基础设施故障与产品故障。
-
-### 实现验收点
-
-- `make test` 不读取 kubeconfig，也不创建 Kubernetes 资源。
-- `make test-e2e` 只在提供显式 kubeconfig、不可变平台镜像和运行时参数后执行。
-- Kata、Sysbox 与 Native CI 使用同一个测试入口；前两项选择对应 RuntimeClass，Native 使用默认 CRI 并注册测试用 Device Plugin 与 CDI 设备。
-- 触发核心 CI 的仓库内和外部仓库拉取请求运行完整端到端测试；仅修改 Provider 的拉取请求由 Provider 工作流验证。测试工作流不读取仓库 Secret。
-- 主分支发布等待 Kata、Sysbox 与 Native 完整端到端测试成功。
-- 运行时名称存在但实际隔离语义不成立时，测试在完整生命周期结束前失败。
-- 失败产物包含定位节点、运行时、存储、控制面和工作负载所需的诊断信息。
-
 ## 上线验收
 
-正式启用前应在目标集群完成：
+CI 验证发布产物，目标集群仍需验证自身的运行时、存储和网络配置。测试分层与发布要求见[实施与测试](implementation.md)，专用测试节点的准备、USB/IP 测试内核和执行命令见 [E2E 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/tests/e2e/README.md)。正式启用前应在目标集群完成：
 
 1. 两个站点分别完成创建和删除，验证资源与网络隔离；
 2. 每种启用的 RuntimeClass 完成 create、stop、resume 和 delete；

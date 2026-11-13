@@ -27,7 +27,7 @@
 
 ## 镜像构建与发布
 
-Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pnpm 12.16.1 和固定版本的 Helm。触发核心 CI 的拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查和镜像冒烟验证。只涉及 Provider 目录或其工作流的修改由独立工作流验证，使编辑器更新与平台发布保持各自的验证范围。
+Codespace 仓库的工具版本由模块文件、Makefile 和[持续集成配置](https://github.com/ExplodingDragon/gitea-codespace/tree/main/.github/workflows)统一声明。触发核心 CI 的拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查、镜像冒烟验证和真实 Kubernetes 测试。Provider 代码及其构建输入由对应独立工作流验证，共享输入触发相关工作流，使编辑器更新与平台发布保持各自的验证范围。
 
 平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入核心镜像，验证与发布使用的也是同一份产物。仓库在 `providers/vscode` 和 `providers/dsh` 中提供两个官方 Web IDE 工程，每个工程按自身依赖的架构与工具链独立构建和发布；核心代码维护通用 OCI 元数据协议，并使用一个伪提供方完成平台端到端测试。采用仓库内独立发布单元的原因是官方实现可以与平台一起审计，同时编辑器依赖和更新频率不会扩大控制面镜像、核心构建链或核心发布范围。
 
@@ -35,11 +35,12 @@ Codespace 仓库的持续集成使用仓库声明的 Go 版本、Node.js 24、pn
 
 部署已发布的 OCI Chart 时，`--devel` 选择最新预发布版本，`--version <chart-version>` 固定某次发布；两种方式都使用 Chart 内置的平台镜像摘要。源码目录中的 Chart 默认保留 `main` 标签和空摘要，适合本地开发，这与 CI 打包后的内容不同。安装和升级命令以 [Helm 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md)为准。
 
-Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes `Always` 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 `IfNotPresent`，复用节点上完全相同的内容。Chart 的 `appVersion` 和组件 Pod 模板中的平台版本注解使 Manager、Gateway 与 Cache 在新构建发布后滚动更新；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。
+Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes `Always` 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 `IfNotPresent`，复用节点上完全相同的内容。部署新版本时，Chart 的 `appVersion` 和组件 Pod 模板中的平台版本注解触发组件按各自策略更新：Manager、Gateway 滚动更新，Cache 使用 Recreate；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。
 
 ### 实现验收点
 
 - 触发核心 CI 的拉取请求同时验证 Go、Vue、内部 Proto、CRD、Helm 和最终镜像内容；仅涉及 Provider 的修改进入对应的独立验证流程。
+- 核心 CI 的仓库内与外部拉取请求都验证 Kata、Sysbox、Native 三种运行方式，测试使用公开输入而非仓库 Secret；主分支平台发布等待三项验证成功。
 - 镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。
 - `main` 分支更新核心平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。
 - 工作流摘要给出核心镜像摘要、Chart 版本和 Chart 摘要；核心发布任务不构建或发布真实 Web IDE。
@@ -63,6 +64,7 @@ Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使
 | `internal/gateway`、`internal/agent`、`internal/runtimecmd` | 路由与连接复用、Docker exec、访问流传输 | [Gateway 与访问](runtime-platform.md#gateway-与访问)、[内部 RPC](rpc-spec.md#组件与-agent) |
 | `internal/cache`、组件控制器与控制流 | Registry、凭据授权和单写维护许可 | [Cache](runtime-platform.md#cache) |
 | `internal/agent`、`internal/cgroup`、`internal/cluster` 资源采集 | Agent 探测、Kubernetes 采样、来源选择与完整快照上报 | [运行资源统计](runtime-platform.md#运行资源统计) |
+| `internal/logbuffer`、Agent 输出与 Manager 诊断 | 共用脱敏与有界日志缓冲、按操作上传 | [操作日志](rpc-spec.md#操作日志) |
 
 管理 API 为站点、环境模板和组件定义各自的请求结构；前端从当前草稿创建请求快照，再使用写接口返回的资源更新列表。资源专有字段和状态归属保持在对应模块内，使新增配置时能够在同一处审阅解析、校验与提交行为。
 
@@ -91,32 +93,27 @@ Manager 默认由 Kubernetes API Priority and Fairness 调度 API 请求；当 k
 | 浏览器测试            | 创建确认、列表、详情、日志增量加载和管理界面            |
 | Helm 测试             | RBAC、身份、服务、网络策略以及标签和摘要镜像            |
 
-测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口。Codespace 使用 `make lint` 检查格式、生成文件、Helm、`go vet` 和 `staticcheck`，`make test` 运行后端的非端到端测试，`make test-frontend` 运行管理界面浏览器测试，`make test-e2e` 编排真实 Kubernetes 全链路。静态检查集中在同一入口并固定工具版本，使本地与持续集成得到一致结果；统一测试入口也避免各子系统各自维护一套环境变量、资源和清理脚本。
+测试选择能覆盖风险的最低层次，并通过生产入口验证用户可观察行为。Gitea 使用其 Makefile 和测试文档规定的入口；Codespace 的安装步骤、检查命令和生成入口由[开发指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/DEVELOPMENT.md)维护。本地和 CI 使用相同入口与工具版本，使结果可以复现。
 
-Dev Container 兼容测试使用官方配置表示验证 Feature 字符串简写和字符串布尔选项，并分别覆盖生命周期来源顺序、依赖循环、锁文件所有权与标准化、Compose 默认工作区、内部代理直连目标与跨服务端点。Compose 代理测试使用真实加载模型验证隐式默认网络和显式别名，使标准的省略网络配置不会只在端到端环境中暴露错误。恢复测试验证宿主初始化可以再次执行、同一操作的替换 Pod 不会重放未知结果，并验证恢复状态只有一个容器生命周期命令来源。选择这些语义测试的原因是它们决定最终运行行为，单纯检查字段或函数是否存在无法发现命令顺序、目标容器或恢复重复执行错误。
+Dev Container 测试使用规范配置验证解析、合并、执行顺序和恢复行为，Compose 测试使用实际加载模型确认目标容器与网络设置。测试断言最终行为而不是内部函数结构，使实现整理后仍能发现配置丢失、命令重放和错误路由。
 
-Web IDE 端到端验证使用只为测试构建的伪提供方镜像。镜像声明字符串、布尔值、整数、数值、枚举、数组和嵌套对象选项，并记录 `prepare` 输入与初始化次数；运行程序提供 HTTP、WebSocket、状态查询和受控退出。这样同一场景可以验证 OCI 标签解析、摘要固定、init 导出、模板与仓库两份配置、Endpoint 发布、提供方自行重启、停止拒绝和恢复持久化，同时不会让核心测试依赖 VS Code、DeepSeek Harness 或其外部下载服务。
+Web IDE 端到端验证使用独立的伪提供方镜像，覆盖镜像解析、配置传递、适配器执行、访问和持久化。伪提供方可控制进程退出并记录输入，因此核心测试可以验证完整协议，而不依赖真实编辑器的发布和外部下载。官方提供方在各自工作流中验证实际适配器与插件。
 
 ### 实现验收点
 
-- 状态机覆盖成功、并发抢占、非当前版本和恢复路径。
-- Dev Container 测试验证 Feature 选项、依赖排序、生命周期命令组、Compose 服务端点和恢复初始化的实际语义。
-- Compose 代理测试加载隐式默认网络并验证服务名、显式别名与已有直连目标的合并结果。
-- Agent 测试验证替换 Pod 不会重放同一操作，宿主命令只接收明确提供的非敏感环境。
-- 状态测试真实制造 `resourceVersion` 冲突，并验证控制器、Agent 与站点协调器的独立事实都被保留。
-- Cache 维护测试覆盖带端口的上游路径、NetworkPolicy 与 Pod 端口一致性、凭据发放与 GC 冻结竞态、上传间隙保护、许可到期和控制连接重建。
-- 站点配置测试覆盖旧设备配额保留、显式删除，以及已有 PVC 的 StorageClass 修改拒绝和默认 StorageClass 语义。
+- 状态机覆盖成功、并发更新、过期身份和恢复路径，真实冲突下仍保留各流程负责的事实。
+- Dev Container 测试覆盖标准配置的有效语义，创建、恢复和连接按相应生命周期执行，同一操作的重连与 Pod 替换保持确定结果。
+- 配置和资源测试覆盖保存、更新与依赖变化，实际生成的工作负载符合已确认配置。
+- 访问与 Cache 测试验证传输取消、授权、执行许可和维护边界，失败能够释放对应资源。
 - 权限测试覆盖对象 ID 篡改、跨用户、跨站点和凭据重放。
 - 前端测试在项目支持的浏览器中稳定，不依赖精确计时。
 - 本地和自动化使用相同的公开测试入口。
-- 普通测试不会因为本机存在 kubeconfig 或 Docker 而隐式进入真实环境测试。
-- 完整端到端测试由单个入口启动，阶段失败会直接终止并保留诊断。
-- Web IDE 端到端测试只使用伪提供方镜像，并覆盖所有受支持选项类型、HTTP、WebSocket、子进程重启以及恢复时 `initialize=false`。
-- 块卷授权、跨站点缓存、无 UUID 记录维护、执行取消和缓存许可到期由行为测试覆盖。
+- 普通测试独立于集群配置；完整端到端测试通过显式配置的统一入口运行，阶段失败会终止并保留诊断。
+- Web IDE 端到端测试覆盖受支持选项类型、HTTP、WebSocket、进程重启和恢复持久化；官方提供方验证各自的真实配置与插件行为。
 
 ## 真实环境验证
 
-Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata、Sysbox 与 Native 通过同一入口分别执行，使结果明确对应实际 RuntimeClass、默认 CRI、Device Plugin、CDI 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。
+Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜像和独立命名空间。一个集群由同一套 Manager 控制面协调集群级 GiteaSite 和 EnvironmentTemplate；独立命名空间用于组织测试资源，其他 Manager 安装需要在测试前停用，以避免两套控制面修改同一资源。Kata、Sysbox 与 Native 通过同一入口分别执行，使结果明确对应实际 RuntimeClass、默认 CRI、Device Plugin、CDI 与 StorageClass。测试在 Runtime Pod 内验证 Docker、Dev Container 和持久卷，而不是借用开发机的容器运行时。CI 为三种运行方式分别准备全新 k3s worker，导入同一份平台镜像产物；节点准备、测试内核缓存和执行步骤由 [E2E 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/tests/e2e/README.md)维护。
 
 测试开始前检查集群能力、核心镜像、伪 Web IDE OCI 布局和测试协议服务监听地址，随后覆盖组件身份、Leader 切换、访问路径、S3 兼容缓存和完整生命周期。测试进程提供 Gitea 协议对端，使 Kubernetes 平台测试不依赖另一套产品部署；Gitea 对 Manager 的适配由 Gitea 仓库测试验证。Runtime 内执行的测试及时输出场景开始、结果和失败信息，便于区分外部下载缓慢与执行阻塞。成功后清理测试资源；失败时先收集资源状态、事件和组件日志，再执行清理，诊断文件保留用于定位。
 
