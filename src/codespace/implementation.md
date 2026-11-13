@@ -33,9 +33,7 @@ Codespace 仓库的工具版本由模块文件、Makefile 和[持续集成配置
 
 核心 CI 在 `main` 分支验证成功后发布平台镜像的 `main` 标签。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 `0.1.0-main.<run-number>` 形式的预发布版本，`appVersion` 记录 `main-<commit-sha>`。打包时 CI 把本次平台镜像摘要写入 Chart 的 `image.digest`，使每个 Chart 都对应经过验证的镜像内容。核心镜像与 Chart 产生不可变摘要和来源证明，核心镜像还包含软件物料清单。两个官方 Web IDE 工程分别监听自身目录并发布各自的 `main` 多架构镜像，第三方提供方沿用同一协议自行发布；环境模板保存时把所选版本解析为摘要，因此 Chart 无需绑定编辑器发布周期。
 
-部署已发布的 OCI Chart 时，`--devel` 选择最新预发布版本，`--version <chart-version>` 固定某次发布；两种方式都使用 Chart 内置的平台镜像摘要。源码目录中的 Chart 默认保留 `main` 标签和空摘要，适合本地开发，这与 CI 打包后的内容不同。安装和升级命令以 [Helm 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md)为准。
-
-Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使用 Kubernetes `Always` 拉取策略，让新建或重建的工作负载取得当前内容；摘要引用使用 `IfNotPresent`，复用节点上完全相同的内容。部署新版本时，Chart 的 `appVersion` 和组件 Pod 模板中的平台版本注解触发组件按各自策略更新：Manager、Gateway 滚动更新，Cache 使用 Recreate；正在运行的用户 Runtime 不会仅因标签内容变化而被主动重启。
+镜像选择和组件更新行为由[部署设计](deployment-requirements.md#镜像缓存与网络)定义，安装和升级步骤以 [Helm 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md)为准。本节维护构建产物与发布记录的对应关系，使发布验证与部署操作各有明确入口。
 
 ### 实现验收点
 
@@ -47,7 +45,6 @@ Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使
 - 仓库内 VS Code 与 DeepSeek Harness 工程分别验证自身改动，并在 `main` 上独立发布 linux/amd64、linux/arm64 的官方 Provider 镜像。
 - 端到端测试使用独立构建且不会发布的伪 Web IDE 镜像，覆盖 OCI 元数据、选项、HTTP、WebSocket、重启和恢复。
 - 源码 Chart 默认渲染 `main` 标签与 `Always`；发布的 OCI Chart 渲染本次镜像摘要与 `IfNotPresent`，固定 Chart 版本即可同时固定默认平台镜像。
-- 新平台构建触发 Manager、Gateway 和 Cache 更新，不主动重启正在运行的用户 Runtime。
 - 发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。
 
 ## 实现职责与设计入口
@@ -66,21 +63,13 @@ Manager 只接受带显式标签或摘要的平台镜像引用。标签引用使
 | `internal/agent`、`internal/cgroup`、`internal/cluster` 资源采集 | Agent 探测、Kubernetes 采样、来源选择与完整快照上报 | [运行资源统计](runtime-platform.md#运行资源统计) |
 | `internal/logbuffer`、Agent 输出与 Manager 诊断 | 共用脱敏与有界日志缓冲、按操作上传 | [操作日志](rpc-spec.md#操作日志) |
 
-管理 API 为站点、环境模板和组件定义各自的请求结构；前端从当前草稿创建请求快照，再使用写接口返回的资源更新列表。资源专有字段和状态归属保持在对应模块内，使新增配置时能够在同一处审阅解析、校验与提交行为。
-
-标准 Dev Container 引擎提供通用镜像定制回调和容器操作，`internal/devcontainerruntime` 负责平台附加输入。Web IDE 的配置合并、参数和持续运行由镜像内的 `prepare`、`serve` 适配器负责；核心只依赖公共运行协议。这样单容器与 Compose 共用构建保障，编辑器更新也不会扩大核心实现范围。
-
-Manager 默认由 Kubernetes API Priority and Fairness 调度 API 请求；当 kubeconfig 明确提供 QPS 或限流器时采用运维配置。控制器工作队列负责单对象重试和退避，因此 API Server 负责集群级公平，控制器负责业务级收敛。
-
 ### 实现验收点
 
-- 站点、模板和组件写接口使用各自的请求类型，校验与错误处理位于对应管理 API。
+- 每个代码范围能从上表定位对应的行为设计和验收点。
+- 站点、模板和组件的专有字段、校验与错误处理位于对应管理 API。
 - 控制器、Agent 和站点协调器分别更新自己负责的运行事实，身份与并发规则按[数据模型](data-model.md#标识并发与清理)验证。
-- 单容器与 Compose 使用同一个平台镜像定制入口，标准解析器完整保留 Dev Container 字段。
+- 标准 Dev Container 解析和执行留在通用引擎，平台附加输入由 `internal/devcontainerruntime` 提供。
 - Provider 专有配置和进程参数由提供方镜像解释，新增提供方通过公共协议接入。
-- HTTP、WebSocket 和 SSH 复用同一 Agent 访问实现，按内部 RPC 的确认、EOF 和取消语义测试。
-- 资源统计从 Agent 与 Kubernetes 采样合成完整快照，上报路径只读取缓存。
-- Manager 采用集群 API 调度或显式限流配置，单对象失败由控制器工作队列退避。
 
 ## 测试层次
 
