@@ -157,48 +157,58 @@
                     <main>
                         <h1 id="合并结果与冲突解决记录"><a class="header" href="#合并结果与冲突解决记录">合并结果与冲突解决记录</a></h1>
 <h2 id="本轮固定结果"><a class="header" href="#本轮固定结果">本轮固定结果</a></h2>
-<p>2026-11-07 从 <code>self@0a47af0f52</code> 合并 Codespace PR <code>68bcefaa69</code> 和 Pages PR <code>e645501a81</code>，两者都包含 <code>upstream/main@c74f2f9216</code>。最终头为 <code>53d76a7ab0</code>，业务代码按两个 PR 的正常组合运行，数据库期望版本从 368 提升到 372。</p>
-<p>本轮只把数据库迁移执行位置作为长期维护差异。其他冲突以保留上游当前行为、Codespace 功能和 Pages 功能为目标解决。</p>
+<p>2026-11-16 从 <code>self@53d76a7ab066085c21af9098862392ba1d2fc420</code> 合并 Codespace PR <code>0f1c19ba10</code> 和 Pages PR <code>5000d55fb2</code>，两者都包含 <code>upstream/main@23836eb610</code>。最终 self 为 <code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code>，数据库从版本 372 提升到 374。</p>
+<p>业务冲突按两个 PR 的正常组合解决，self 长期差异只保留在数据库迁移安排。这个原则保证当前部署得到两个 PR 的完整功能，又让上一版 self 数据库沿原生迁移器升级。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>三个固定来源均为最终头的祖先。</li>
-<li>最终迁移列表连续到 371，期望数据库版本为 372。</li>
-<li><code>git status</code> 不包含未解决冲突标记或未合并路径。</li>
+<li>三个固定来源均为最终 self 的祖先。</li>
+<li>最终迁移列表连续到 373，期望数据库版本为 374。</li>
+<li>工作树中没有冲突标记或未合并路径。</li>
 </ul>
-<h2 id="迁移列表与来源文件冲突"><a class="header" href="#迁移列表与来源文件冲突">迁移列表与来源文件冲突</a></h2>
-<p>两个 PR 的最新头都在上游迁移 365—367 之后把自己的完整建表迁移放到 368。<code>self</code> 已经在 365—367 发布 Codespace、Pages 和 Manager 注册令牌，因此合并时保留这三项既有含义，并把上游三项迁移追加为 368—370。</p>
-<p>Codespace 完整迁移不重复注册，因为它的基础表和注册令牌已由 <code>self</code> 建立；来源新增的索引删除独立成为迁移 371。Pages 完整迁移也不重复注册，因为 <code>self</code> 迁移 366 已经建立相同五张表。来源文件改用稳定名称，实际编号在迁移列表和映射中记录。</p>
+<h2 id="codespace-合并冲突"><a class="header" href="#codespace-合并冲突">Codespace 合并冲突</a></h2>
+<p>第一笔合并在迁移列表、Codespace 基础迁移、仓库设置和仓库转移测试发生冲突。迁移列表保留已发布 self 365—371；Codespace 基础迁移保留 <code>pr-38337-v365-patch1.go</code>，同时把被重命名检测碰撞的官方 <code>v368.go</code> 以原文件加入。PR 自带的完整 <code>v370.go</code> 不重复进入 self。</p>
+<p>仓库设置继续使用 Pages 扩展后的 <code>UpdateRepositoryOptions</code>，仓库转移测试同时保留 Pages 更新时间断言和 Codespace/上游作用域工作流断言。这样冲突结果与两个功能共同存在时的服务接口一致。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>AddCodespaceTables</code>、<code>AddPagesTables</code>、<code>AddCodespaceManagerRegistrationTokenTable</code> 各注册一次。</li>
-<li>上游 365—367 的实现分别注册为 <code>self</code> 368—370。</li>
-<li>Codespace <code>queued_timeout</code> 索引由迁移 371 删除，迁移可以重复执行。</li>
+<li><code>pr-38337-v365-patch1.go</code> 保持已发布 self 基础迁移内容。</li>
+<li>官方 <code>v368.go</code> 与上游一致，PR 的完整 <code>v370.go</code> 不存在。</li>
+<li><code>TestTransferOwnership</code> 同时检查 Pages 时间和作用域工作流来源。</li>
 </ul>
-<h2 id="仓库转移冲突"><a class="header" href="#仓库转移冲突">仓库转移冲突</a></h2>
-<p><code>services/repository/transfer.go</code> 同时发生三类变化：上游改用已加载的旧所有者对象发送通知；Codespace 使用仓库级 <code>WorkingLockKey</code> 串行化写操作；Pages 在转移期间锁定生命周期状态并更新时间。最终实现按“仓库写锁、加载所有者、Pages 生命周期锁、数据库事务、对象通知”的关系组合三者。</p>
-<p>Pages 最新头还补充转移测试，验证转移完成后站点仍存在且 <code>PagesUpdatedUnixNano</code> 增加。这个冲突结果属于两个 PR 的正常组合，不是 <code>self</code> 专用业务分支。</p>
+<h2 id="pages-合并冲突"><a class="header" href="#pages-合并冲突">Pages 合并冲突</a></h2>
+<p>第二笔合并只需要人工处理迁移列表和仓库设置错误响应。迁移列表继续保留 self 365—371，Pages 自带的完整 <code>v370.go</code> 不重复进入；仓库更新调用保留 <code>UpdateRepositoryOptions</code>，错误响应采用 Pages 当前头使用的 <code>ServerErrorAuto</code>。</p>
+<p>组织可见性、仓库删除、仓库转移和管理端测试的双方组合已经在上一版 self 中存在，本轮合并结果继续保留这些行为：组织删除前置检查、Pages 生命周期时间传播、Codespace 解绑、Pages 删除墓碑和仓库写锁均同时生效。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>接受转移和直接转移路径都使用仓库级写锁。</li>
-<li>通知服务接收转移前已加载的旧所有者对象。</li>
-<li>Pages 生命周期锁覆盖转移事务，转移测试验证更新时间增加。</li>
+<li>仓库设置使用当前 <code>UpdateRepositoryOptions</code> 接口和自动错误响应。</li>
+<li>仓库删除事务先处理 Codespace 关系和 Pages 墓碑，再删除仓库记录。</li>
+<li>组织可见性变化继续把 Pages 更新时间传入仓库处理。</li>
 </ul>
-<h2 id="数据库兼容边界"><a class="header" href="#数据库兼容边界">数据库兼容边界</a></h2>
-<p>上一版 <code>self</code> 数据库版本 368 与当前分支保持连续关系，本轮直接执行 368—371。分叉前版本不高于 365 的数据库也能按完整 <code>self</code> 序列升级。</p>
-<p>迁移 365 之后的上游、Codespace PR 和 Pages PR 数据库使用了不同编号含义，因此它们继续沿各自分支升级。明确这条边界的原因是 Gitea 只存储版本数字；在数字相同但历史不同的情况下，根据表是否存在自动猜测来源会增加不可验证分支，也会掩盖错误部署。</p>
+<h2 id="官方迁移文件恢复"><a class="header" href="#官方迁移文件恢复">官方迁移文件恢复</a></h2>
+<p>上一版 self 中三个官方迁移曾以 <code>pr-39998-v365-patch1</code>、<code>pr-40231-v366-patch1</code>、<code>pr-40214-v367-patch1</code> 保存。本轮把它们恢复为官方 <code>v365</code>、<code>v366</code>、<code>v367</code> 路径，并保留官方测试文件原名。五次重命名内容相似度均为 100%，函数仍注册在 self 的 368—370。</p>
+<p>恢复路径是为了保持官方文件身份和未来迁移槽位连续。只有 Codespace、Pages 两个由本项目继续维护的 PR 使用 <code>pr-*</code> 规则；已经进入上游的正式迁移按官方文件管理。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>旧 <code>self@0a47af0f52</code> 的版本 368 可以升级到 372。</li>
-<li>分叉前数据库可以执行 365—371 得到完整结构。</li>
-<li>迁移代码不包含按猜测表结构切换分支历史的识别逻辑。</li>
+<li><code>f19882d9ba</code> 显示五项 100% 重命名和零行内容变化。</li>
+<li>官方 <code>v365</code>—<code>v369</code> 文件及测试与上游一致。</li>
+<li>官方迁移由 <code>v365</code>—<code>v369</code> 文件和统一接入记录表达。</li>
 </ul>
-<h2 id="代码组合检查"><a class="header" href="#代码组合检查">代码组合检查</a></h2>
-<p>非数据库代码由两个 PR 头与共同上游组成。迁移目录中的文件名、注册位置、增量实现和直接测试表达 <code>self</code> 的升级历史；业务模型、服务、路由、模板和前端保持来源实现。完整后端、前端、集成和浏览器测试用于验证这种组合。</p>
+<h2 id="self-372-到-374"><a class="header" href="#self-372-到-374">self 372 到 374</a></h2>
+<p>上一版 self 已完成迁移 371，数据库版本为 372。本轮把官方 <code>v368.go</code> 的团队名称唯一索引函数注册为 self 372，把官方 <code>v369.go</code> 的运行器名称函数注册为 self 373。文件身份保持官方编号，执行位置由 self 连续序列决定。</p>
+<p>真实升级测试从版本表 372 和迁移前结构开始调用完整迁移器，验证两项数据变化和最终版本 374。这比只比较函数列表更接近实际部署升级。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>Codespace 和 Pages 的模型、服务及路由测试通过。</li>
-<li>仓库转移组合行为有直接后端测试覆盖。</li>
-<li><code>self</code> 特有的代码差异可以在 <code>modelmigration</code> 目录和迁移列表中定位。</li>
+<li>372 → 374 升级实际执行两项迁移并通过。</li>
+<li>团队重复名称得到处理，Actions 任务回填运行器名称。</li>
+<li>迁移后版本表为 374。</li>
+</ul>
+<h2 id="非数据库差异检查"><a class="header" href="#非数据库差异检查">非数据库差异检查</a></h2>
+<p>使用两个 PR 当前头生成正常合并树，排除数据库目录以及正常合并本来就需要人工组合的 <code>routers/api/v1/api.go</code>、<code>services/org/org.go</code>、<code>services/repository/delete.go</code>、<code>tests/integration/api_admin_test.go</code> 后，与 self 比较没有差异。四个人工文件再按双方路由权限、Pages 生命周期、Codespace 清理和当前测试语义逐项检查。</p>
+<p>因此 self 没有新增额外业务兼容层；业务实现就是上游与两个 PR 的合并结果，数据库目录承担 self 升级差异。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>自动合并文件的非数据库比较为空。</li>
+<li>四个人工组合文件同时包含双方必要行为，执行路径与正常功能组合一致。</li>
+<li>相对上游的 self 数据库差异可完整列为四项 PR 来源文件、迁移列表和 self 测试。</li>
 </ul>
 
                     </main>

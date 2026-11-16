@@ -157,28 +157,28 @@
                     <main>
                         <h1 id="codespace-pr-38337来源迁移-365-patch3"><a class="header" href="#codespace-pr-38337来源迁移-365-patch3">Codespace PR #38337：来源迁移 365 patch3</a></h1>
 <h2 id="来源与执行位置"><a class="header" href="#来源与执行位置">来源与执行位置</a></h2>
-<p>Codespace 提交 <code>79e802a5fa34dcfba4730d800b1b105184960877</code> 改进调度流程，并从来源迁移 365 的 <code>codespace</code> 表定义中删除 <code>queued_timeout</code> 索引。旧 <code>self</code> 已经通过迁移 365 创建过该索引，因此当前分支把删除动作安排为实际迁移 371，完成后数据库版本为 372。</p>
+<p>Codespace 提交 <code>79e802a5fa34dcfba4730d800b1b105184960877</code> 改进调度流程，并从完整 Codespace 结构中删除 <code>queued_timeout</code> 索引。旧 self 已经通过迁移 365 创建该索引，因此用第三项增量在实际迁移 371 清理，完成后数据库版本为 372。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>文件名为 <code>pr-38337-v365-patch3.go</code>。</li>
-<li><code>DropCodespaceQueuedTimeoutIndex</code> 注册为 <code>self</code> 迁移 371。</li>
-<li>来源提交 <code>79e802a5fa</code> 和移植提交 <code>dc1a1f5b68</code> 都可从当前历史解析。</li>
+<li>文件为 <code>pr-38337-v365-patch3.go</code>，测试使用同一前缀。</li>
+<li><code>DropCodespaceQueuedTimeoutIndex</code> 注册为 self 371。</li>
+<li>上一版 self 完成该迁移后的数据库版本为 372。</li>
 </ul>
 <h2 id="实现理由"><a class="header" href="#实现理由">实现理由</a></h2>
-<p>迁移通过当前数据库方言读取 <code>codespace</code> 表索引，匹配 <code>queued_timeout</code> 后使用方言生成的删除语句。找不到该索引时直接成功，因此全新数据库、已清理数据库和重复执行都得到同一结果。代码只删除明确目标，不改变 <code>running_timeout</code> 或其他调度索引。</p>
+<p>迁移读取当前数据库方言提供的索引信息，找到 <code>queued_timeout</code> 后使用方言生成的语句删除。目标索引已经不存在时直接成功，<code>running_timeout</code> 和表数据保持不变。这个增量把旧 self 结构推进到当前 PR 的完整结构。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>索引存在时被删除，不存在时迁移仍成功。</li>
+<li>索引存在时删除，不存在时重复执行仍成功。</li>
 <li><code>running_timeout</code> 在迁移后继续存在。</li>
-<li>实现使用数据库方言提供的索引读取和删除能力。</li>
+<li>迁移不修改 Codespace 行数据。</li>
 </ul>
 <h2 id="直接测试"><a class="header" href="#直接测试">直接测试</a></h2>
-<p>直接测试建立旧结构，创建 <code>queued_timeout</code> 与 <code>running_timeout</code>，写入一条 Codespace 数据，然后连续执行两次迁移。测试再次读取索引与数据，证明迁移是幂等的，且不会因删除索引丢失行。</p>
+<p><code>TestDropCodespaceQueuedTimeoutIndex</code> 建立两个调度索引并写入数据，连续执行两次迁移，再验证目标索引消失、保留索引存在且原数据仍可读取。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>TestDropCodespaceQueuedTimeoutIndex</code> 在 <code>make test-migration</code> 中通过。</li>
-<li>测试验证目标索引消失、保留索引存在、原数据仍可读取。</li>
-<li>昨天版本 368 的 <code>self</code> 最终会执行本项并到达版本 372。</li>
+<li>直接测试在 <code>make test-migration</code> 中通过。</li>
+<li>当前 PR 的完整结构与 patch1、patch2、patch3 执行后的 self 结构一致。</li>
+<li>版本 372 的现有 self 不会再次执行本项。</li>
 </ul>
 
                     </main>
