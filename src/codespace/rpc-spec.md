@@ -27,13 +27,13 @@ Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端�
 
 `RegisterManager` 使用范围注册令牌换取 Manager ID 和独立运行密钥。该方法不携带 Manager 身份请求头，因为身份正是在这次交换中建立；协议版本、令牌和名称仍在服务端校验。注册令牌可重复用于同一范围的多台 Manager，运行密钥只属于一次注册结果。这样管理面可以直接完成接入，而后续所有 RPC 仍具有稳定、可撤销的实例身份。
 
-注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。Runtime UUID 由 Manager 在领取 create 后生成，Gitea 通过数据库唯一约束完成一次绑定。
+注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。所有实例请求使用数字 Codespace ID，Gitea 同时校验认证 Manager 的归属。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。
 
-Runtime 信息还携带主 Dev Container 解析完成后的 `workspaceFolder`。Agent 把它与访问目标一起上报，Manager 保存到 Codespace 状态后再放入公共 Runtime Metadata，Gitea 据此生成 VS Code 和 Zed 的 SSH 打开地址。选择解析后的容器路径，是因为 Dockerfile、Compose、Feature 和变量替换都可能改变编辑器实际应打开的位置；主机工作区路径不能表达这个结果。该字段属于可重建的运行事实，由 Kubernetes Codespace 状态持久化并在 Gitea 中按 Runtime Metadata 缓存。启动阶段可以尚未取得路径，发布 ready 时必须同时提供有效的绝对容器路径。
+Runtime Metadata 携带完整 Endpoint URL、授权入口 URL、SSH 主机/端口/用户名和 VS Code、Zed 打开地址。Manager 使用当前 Gateway 配置、CR UID 和 Agent 上报的解析后 `workspaceFolder` 生成这些地址，因为实际域名映射和容器路径都属于运行平台。Gitea 校验 HTTP 地址属于该 Manager 声明的 Gateway，授权入口与 Endpoint 同源，SSH 地址匹配声明且编辑器 URI 类型有效；页面使用上报地址，兑换入口只追加本次授权码。Gateway 配置更新进入既有 Metadata 代数和通知流程，Manager 重启可以从 CR 恢复相同地址。启动阶段可以尚未取得路径，发布 ready 时同时提供有效的绝对容器路径。
 
-`FetchOperations` 使用至少一次交付。`ObservedOperation` 表示 Manager 已经把该 Runtime UUID 和操作版本持久化到 Kubernetes，并持有当前版本的本地执行许可，而不是仅在内存中收到消息。Gitea 对精确匹配当前版本的观察记录续租；未观察或低版本观察会在现有租约内重新返回当前 payload，返回的有效期是数据库租约的剩余时间。Manager Leader 重启后通过一次重新下发恢复本地许可；确定拒绝撤销许可，失败提交暂时不可达时仍会再次收到同一 payload。这个定义使请求和响应丢失可以安全重试，也确保尚未接受或已经拒绝的操作不会因轮询自动延长。
+`FetchOperations` 使用至少一次交付。`ObservedOperation` 表示 Manager 已经把该 Codespace ID 和操作版本持久化到 Kubernetes，并持有当前版本的本地执行许可，而不是仅在内存中收到消息。Gitea 对精确匹配当前版本的观察记录续租；未观察或低版本观察会在现有租约内重新返回当前 payload，返回的有效期是数据库租约的剩余时间。Manager Leader 重启后通过一次重新下发恢复本地许可；确定拒绝撤销许可，失败提交暂时不可达时仍会再次收到同一 payload。这个定义使请求和响应丢失可以安全重试，也确保尚未接受或已经拒绝的操作不会因轮询自动延长。
 
-`FinalizeOperation` 使用 Codespace ID、操作版本、类型和认证 Manager 定位业务操作。Runtime 已绑定时还必须精确匹配 Runtime UUID；未绑定 create 的确定性失败使用空 Runtime UUID 提交，使错误能够在分配运行身份前收敛。过期、重复或已经被新操作替代的最终报告按幂等成功处理，但不能修改当前状态。采用 Codespace ID 作为基础定位，是因为 create 在绑定前还没有 Runtime UUID，而数据库业务行已经具有稳定身份。
+`FinalizeOperation` 使用 Codespace ID、操作版本、类型和认证 Manager 定位业务操作。创建资源前的确定性失败也使用同一接口，因为业务记录已经具有稳定 ID。过期、重复或已经被新操作替代的最终报告按幂等成功处理，但不能修改当前状态。失败后的资源清理由完整清单确认，使业务失败报告不依赖 Kubernetes 删除速度。
 
 没有任务的轮询返回正常空结果。高频成功轮询可以省略普通 HTTP 请求日志，错误仍保留诊断信息。
 
@@ -49,11 +49,12 @@ ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公�
 - Manager 凭据只能操作对应的 Manager 记录。
 - 领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。
 - 未观察或低版本观察返回当前 operation 且不延长租约，精确观察当前版本才返回续租结果。
-- `FinalizeOperation` 始终携带 Codespace ID；已绑定操作同时匹配 Runtime UUID，未绑定 create 只接受失败终态和空 Runtime UUID。
-- 每个 Runtime UUID 只绑定一个 Codespace，未绑定请求可以正常排队。
+- `FinalizeOperation` 按 Codespace ID、认证 Manager 和当前操作版本处理结果；资源创建前的失败也能进入终态。
+- 同一数字 ID 在不同 Gitea 站点中由各自 Site UID 隔离。
 - 运行材料按请求时的用户和仓库权限生成。
 - create/resume 完成不依赖展示缓存命中，后续 Runtime 报告必须匹配持久化的运行实例版本。
-- ready Runtime Metadata 包含主 Dev Container 的解析后工作目录；Manager 重启或 Endpoint 更新后仍能从 Codespace 状态恢复同一路径。
+- ready Runtime Metadata 包含解析后工作目录与完整访问地址；地址改变后使用新代数上报，Manager 重启仍能从 Codespace 状态恢复。
+- Gitea 使用上报地址展示和跳转，拒绝不属于声明 Gateway 的 HTTP/SSH 入口和不同源的授权入口。
 - 资源上报使用现有完整消息；同一次快照的时间反映最早参与观察，缺少必要指标时沿用有效快照或等待后续采集。
 - 两端接受相同大小范围的 RPC 消息，资源保存仍执行自己的对象大小校验。
 
@@ -125,7 +126,7 @@ Agent 在入队前完成凭据脱敏、UTF-8 整理和拆行，单行最多 32 K
 
 Agent 每操作的队列预算为 1 MiB；Manager 每操作为 1 MiB、全部操作合计为 64 MiB。预算包含正在上传的数据和行记录开销。达到预算时丢弃新日志，在随后有空间时追加汇总的丢失行数。日志是诊断信息，接受进程重启、网络异常或内存满时的少量缺失，换取生命周期执行和资源使用的可预测性。队列、发送偏移和进度去重信息都由进程内存管理；执行报告继续按生命周期要求持久化。
 
-每个操作只有一个 Manager 发送流程。初始化时使用现有 `UpdateLog` 的空 `Lines`、`Offset = 0` 查询远端末尾，然后发送不可变批次；成功后采用 Gitea 返回的 `NextOffset`。该查询负责确定发送位置，操作载荷中的日志位置属于变化中的观测值，保存执行输入时将其归零，使同一操作能够在日志继续增长时重复领取。
+每个操作只有一个 Manager 发送流程。初始化时使用 `UpdateLog` 的空 `Lines`、`Offset = 0` 查询远端末尾，然后发送不可变批次；成功后采用 Gitea 返回的 `NextOffset`。发送位置由日志接口确认，使 Manager 重启后的发送从已保存的末尾接续，操作领取只传递执行所需的输入与租约。
 
 暂时错误由发送层按 1、2、4、5 秒的间隔重试，每次 RPC 最多 5 秒，同一批次保持内容、时间戳和偏移不变，使响应丢失后的重试能够复用 Gitea 的重放确认。偏移冲突或空缺时放弃冲突批次，重新查询末尾后继续。操作过期、实例消失或达到日志上限时结束发送；其他永久请求错误记录本地诊断并结束。网络等待在队列锁之外进行，各实例独立发送。
 
@@ -135,7 +136,7 @@ Agent 命令结束后提交剩余半行，最多等待 5 秒完成当前输出�
 
 - Pod 创建前产生接收进度，PVC、调度、容器等待、停止和删除进度能够与 Agent 输出进入同一操作日志。
 - 日志批次保留原始时间戳并按接收顺序发送；Manager 响应丢失后重发相同批次只追加一次。
-- 日志末尾位置变化时，同一操作仍可重复领取，发送流程以远端当前偏移继续提交。
+- 发送流程初始化时查询远端末尾，每次成功后采用返回的偏移继续提交。
 - Agent 上传回复丢失后仍能提交后续日志，并在后续输出中汇总丢失情况。
 - 阻塞上传时，正在发送的批次仍计入每操作和全局内存预算。
 - 偏移冲突后重新取得远端末尾，重启后也从远端当前末尾接续。

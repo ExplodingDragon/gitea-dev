@@ -40,16 +40,17 @@ sequenceDiagram
     U->>G: 确认提交、环境、权限和 Secret
     G->>G: 事务创建 Codespace 与 create 操作
     M->>G: 领取 create
-    M->>G: 绑定新分配的 Runtime UUID
-    M->>K: 创建 CR、PVC 和 Runtime Pod
+    M->>K: 持久化 CR、站点与 Codespace ID、操作输入
+    M->>M: 授予当前操作执行许可
+    M->>K: 创建 PVC 和 Runtime Pod
     A->>M: 建立控制流并执行初始化
     M->>G: 上报日志、Runtime 信息和结果
     G-->>U: running
 ```
 
-Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后分配 Runtime UUID，绑定成功后才创建集群资源。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 再提交 create 结果。Web IDE 是附加服务，它的启动或重启不参与 Codespace 主状态判断；Endpoint 的发布条件见[Web IDE 交付与启动](runtime-platform.md#web-ide-交付与启动)。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。
+Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后按 Site UID 与数字 Codespace ID 持久化 CR 和操作输入，再授予本地执行许可。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 上报完整访问地址并提交 create 结果。Web IDE 是附加服务，它的启动或重启不参与 Codespace 主状态判断；Endpoint 的发布条件见[Web IDE 交付与启动](runtime-platform.md#web-ide-交付与启动)。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。
 
-Manager 在绑定 Runtime 后立即把操作已接收的日志入队，并随着 PVC、Pod 的状态变化记录简短进度；调度失败或容器等待时使用 Kubernetes 的原因代码说明等待位置。这样页面从基础设施创建阶段就有可读日志，而不必等到 Agent 开始编译环境。Agent 收到操作后先记录证书和容器引擎准备，再记录工作区准备等执行阶段和命令输出。两种来源统一由 Manager 异步上传，日志接收和网络发送都与资源创建分离。
+Manager 在持久接受操作后立即把操作已接收的日志入队，并随着 PVC、Pod 的状态变化记录简短进度；调度失败或容器等待时使用 Kubernetes 的原因代码说明等待位置。这样页面从基础设施创建阶段就有可读日志，而不必等到 Agent 开始编译环境。Agent 收到操作后先记录证书和容器引擎准备，再记录工作区准备等执行阶段和命令输出。两种来源统一由 Manager 异步上传，日志接收和网络发送都与资源创建分离。
 
 日志使用有界内存，少量缺失属于诊断信息的可接受代价；实际执行结果仍由持久化的生命周期事实确定。Agent 执行结束后最多用 5 秒提交尾部输出，Manager 最终提交结果前也最多给已有队列 5 秒排空时间。具体批次、丢失与重试语义见[操作日志协议](rpc-spec.md#操作日志)。
 
@@ -57,15 +58,15 @@ Manager 在绑定 Runtime 后立即把操作已接收的日志入队，并随着
 
 Agent 在内部容器回滚前采集退出状态及标准输出、错误输出尾部，使 systemd 等容器内初始化错误进入同一操作日志。每个容器请求最后 200 行，整次日志正文最多 64 KiB，与状态查询共用两秒预算。Manager 的 Pod 日志反映外层运行情况，Agent 的 Docker 日志反映内部容器运行情况，两者共用凭据脱敏规则；字节截断或读取中断时仅输出已确认完整的边界行，避免泄露无法匹配脱敏规则的凭据片段。采集失败只记录说明，资源清理继续执行。
 
-输入和权限错误在持久化前返回。Manager 领取后若发现环境授权、运行设置或持久化操作身份存在确定性错误，会使用 Codespace ID 和当前操作版本提交失败；尚未绑定 Runtime UUID 的 create 也能因此直接进入 failed。已经产生的局部 CR 使用同一操作版本进入清理：create 删除局部资源，resume 停止已启动资源并保留工作区。采用同一最终提交接口的原因是 Gitea 仍是业务状态的唯一权威，Manager 无需维护另一套“拒绝”状态。
+输入和权限错误在持久化前返回。Manager 领取后若发现环境授权、运行设置或持久化操作身份存在确定性错误，会使用 Codespace ID 和当前操作版本提交失败；尚未创建 CR 的 create 也能直接进入 failed。已经产生的局部 CR 使用同一操作版本进入清理：create 删除局部资源，resume 停止已启动资源并保留工作区。Gitea 保留 Manager 归属，直到完整清单确认实例消失后解除。采用同一最终提交接口的原因是 Gitea 仍是业务状态的唯一权威，而清理需要能够独立重试。
 
 块卷首次初始化由 Manager 先持久化格式化开始状态，再授权当前 Pod；Agent 完成 ext4 检查和挂载后确认就绪。初始化结果未知时保留数据，避免重复 create 或 Pod 重建把旧数据当成空卷。
 
 ### 实现验收点
 
 - 创建确认、授权和任务入队位于同一数据库事务。
-- 同一 create 只对应一个 Runtime UUID、一组 CR/PVC 和一个有效操作版本。
-- Runtime UUID 绑定前不创建对外可用的 Runtime。
+- 同一站点的一个 Codespace ID 只对应一组 CR/PVC，执行前已持久化当前操作输入。
+- 外部访问别名由 CR UID 生成；发布地址前核对当前运行目标。
 - 页面在 create 完成前可以按偏移读取日志，成功后状态为 running。
 - 页面在 Agent 启动前可看到 Manager 的操作接收、PVC 和 Pod 进度；Agent 启动后可看到容器引擎、工作区准备及命令输出。
 - 调试开启时，回滚前的内部容器日志包含可用的原始错误；TTY 与非 TTY 输出均可读取，采集超时或失败不阻断清理。
@@ -73,7 +74,7 @@ Agent 在内部容器回滚前采集退出状态及标准输出、错误输出�
 - Gitea 日志上传短暂失败时，Manager 发送层重试同一批次，Agent 继续执行；队列满或日志排空期限到达也能完成生命周期结果提交。
 - create 完成不依赖展示缓存是否命中，running 后只展示与运行实例版本匹配的 Runtime 信息。
 - 格式化授权先于设备写入持久化，同一卷不会因初始化响应丢失获得第二次格式化许可。
-- create 在 Runtime UUID 绑定前被确定拒绝时，Gitea 进入 failed 并解除 Manager 占用；已经创建的局部 CR 最终被删除。
+- create 被确定拒绝时进入 failed，局部 CR 最终被删除；完整清单确认清理后 Gitea 解除 Manager 归属。
 
 ## 运行与访问
 
@@ -97,7 +98,7 @@ Runtime 信息是可重建的展示数据。暂时失联会让访问入口显示
 
 ## 停止、恢复与自动停止
 
-stop 定向到已绑定 Manager。Manager 撤销路由和运行期凭据、停止 Runtime Pod 并保留 CR/PVC，确认完成后 Gitea 进入 stopped。resume 复用 Runtime UUID、CR、PVC 和已确定的环境配置，创建具有新 Pod UID、Agent 身份和访问目标版本的 Pod。
+stop 定向到已分配的 Manager。Manager 撤销路由和运行期凭据、停止 Runtime Pod 并保留 CR/PVC，确认完成后 Gitea 进入 stopped。resume 复用 CR、PVC 和已确定的环境配置，保持外部访问别名，创建具有新 Pod UID、Agent 身份和访问目标版本的 Pod。
 
 Agent 在停止主 Dev Container 前关闭 USB/IP 监听器和设备连接。Manager 撤销路由可能更早结束 SSH 会话，因此 `stop` 脚本按设备可能已经离线的情况完成收尾；这与其他用户访问采用同一撤销时序。恢复重新发现当前来宾的 VHCI 能力并准备标准设备挂载，用户随后建立新的 SSH 转发和显式附加。远端总线 ID 只对应当前 SSH 转发入口，设备连接不会被带入下一次恢复；关闭监听器的确认完成后才会释放重新建立入口所需的资源。
 
@@ -149,11 +150,11 @@ Gitea 删除 Manager 时立即撤销身份并清理其业务记录，运行平�
 
 尚未被 Manager 领取的 create 和 resume 不设置执行期限。create 会等待任一具有对应环境标签和剩余容量的 Manager，用户可以通过删除结束等待；resume 只等待原 Manager 恢复容量，用户可以取消并回到 stopped。Manager 领取操作后才建立租约和总执行期限，避免排队时间消耗实际执行预算。已领取的 create 执行超时进入 failed，已领取的 resume 执行超时回到 stopped。stop 和 delete 表达必须完成的收敛意图；已领取操作的执行许可到期后以更高操作版本重新排队，并保留首次创建时间用于诊断。
 
-Gitea 对已领取操作使用至少一次交付。Manager 只有在操作输入已经持久化到当前 Codespace CR，并为当前版本建立本地执行许可后，才在下一次 Fetch 中提交 Runtime UUID 和操作版本作为已观察记录；Gitea 只为与当前版本完全相同的记录续租。未报告或报告旧版本表示 Manager 尚未持久接受当前输入，Gitea 会在原租约内重新下发相同操作，并携带剩余期限而不是生成新期限。Leader 重启后本地许可为空，因此会先重新取得并核对同一 payload，再恢复续租。确定拒绝会立即撤销许可，即使失败提交遇到网络中断也不会把无法执行的版本继续续租。这样请求或响应丢失可以自动恢复，同时反复拉取不会无限延长尚未接受的工作。当前数据库租约已经到期时，Gitea 先执行既有超时转换，再处理续租或重新下发。
+Gitea 对已领取操作使用至少一次交付。Manager 只有在操作输入已经持久化到当前 Codespace CR，并为当前版本建立本地执行许可后，才在下一次 Fetch 中提交 Codespace ID 和操作版本作为已观察记录；Gitea 只为与当前版本完全相同的记录续租。未报告或报告旧版本表示 Manager 尚未持久接受当前输入，Gitea 会在原租约内重新下发相同操作，并携带剩余期限而不是生成新期限。Leader 重启后本地许可为空，因此会先重新取得并核对同一 payload，再恢复续租。确定拒绝会立即撤销许可，即使失败提交遇到网络中断也不会把无法执行的版本继续续租。这样请求或响应丢失可以自动恢复，同时反复拉取不会无限延长尚未接受的工作。当前数据库租约已经到期时，Gitea 先执行既有超时转换，再处理续租或重新下发。
 
-Manager 将错误按是否可能通过重试恢复区分。Kubernetes 冲突、API 暂时不可用、模板尚未就绪和网络故障保留操作并重试；输入、身份或已持久化操作相互冲突时，create/resume 通过现有最终提交进入失败状态。Gitea 已经不再接受某个未绑定 Runtime 身份时，Manager 把对应局部 CR 安排删除，并从完整资源清单中排除，避免一条孤立记录阻止站点恢复上线。
+Manager 将错误按是否可能通过重试恢复区分。Kubernetes 冲突、API 暂时不可用、模板尚未就绪和网络故障保留操作并重试；输入、身份或已持久化操作相互冲突时，create/resume 通过现有最终提交进入失败状态。完整资源清单包含本站点当前 CR，Gitea 对已经失去业务归属的资源返回清理指令，使孤立资源能够随正常协调流程删除。
 
-Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清单并核对 Gitea、CR、PVC、Pod 和 Agent。工作区准备会核对现有仓库提交并重新配置当前凭据，因此崩溃后可以安全继续。生命周期命令按创建、恢复或连接操作选择对应阶段；Journal 使用操作版本和固定阶段名保存执行意图，同一操作更换 Pod 后仍会命中原阶段。已持久记录的结果只重复上报，命令开始后未记录完成则明确失败，因为控制流重连不能证明命令是否适合再次执行。后续新的恢复操作具有新的操作版本，会按规范重新执行 `initializeCommand` 和 `postStartCommand`。旧 Pod 是否仍可能写入 PVC 的处理见[运行平台](runtime-platform.md#高可用与恢复)。
+Manager Leader 接管时先提交完整资源清单，核对 Gitea 与本地 CR 的归属和状态，再重新取得并确认当前操作输入；控制器继续核对 PVC、Pod 和 Agent。工作区准备会核对现有仓库提交并重新配置当前凭据，因此崩溃后可以安全继续。生命周期命令按创建、恢复或连接操作选择对应阶段；Journal 使用操作版本和固定阶段名保存执行意图，同一操作更换 Pod 后仍会命中原阶段。已持久记录的结果只重复上报，命令开始后未记录完成则明确失败，因为控制流重连不能证明命令是否适合再次执行。后续新的恢复操作具有新的操作版本，会按规范重新执行 `initializeCommand` 和 `postStartCommand`。旧 Pod 是否仍可能写入 PVC 的处理见[运行平台](runtime-platform.md#高可用与恢复)。
 
 控制器、Agent 和站点协调循环可能同时观察同一 Runtime。它们在最新 CR Status 上合并各自负责的事实，并在 Kubernetes 报告 `resourceVersion` 冲突时有限重试。重试前会再次核对资源 UID、操作版本与类型和 Pod UID；身份已经变化表示旧观察自然结束，由新一轮协调处理。Gitea RPC 位于本地状态重试之外，避免一次远程成功因为 Kubernetes 并发更新而被重复发送。
 
@@ -168,7 +169,7 @@ Manager Leader 接管时先续期仍绑定的操作，再提交完整资源清�
 - 未观察或只观察旧版本的 operation 在原租约内重新下发，数据库租约保持不变；精确观察当前版本才续租。
 - 当前已领取租约到期后不会继续下发或续租，create 收敛到 failed，resume 收敛到 stopped。
 - 确定性 create/resume 拒绝通过最终提交立即收敛；暂时性基础设施和网络错误保持可重试。
-- 未绑定且已经失去 Gitea 操作身份的局部 CR 会被清理，不阻止站点完成恢复。
+- 已经失去 Gitea 业务归属的局部 CR 会收到清理指令，清理完成后完整清单确认资源消失。
 - 两个 Manager 竞争时只有一个能领取同一操作。
 - 新 Leader 不依赖前任进程内状态即可恢复协调。
 - Agent 状态、Runtime 资源状态和清单确认并发写入时均被保留，旧操作或旧 Pod 的结果不会进入当前生命周期。

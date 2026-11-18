@@ -97,22 +97,22 @@ Kata 与 Native 在 dockerd 启动前准备 Runtime 私有 cgroup v2 层级：�
 
 ### Web IDE 交付与启动
 
-Web IDE 由环境模板中的镜像决定，空镜像表示关闭。管理页面提供 VS Code 与 DeepSeek Harness 镜像建议，也允许填写遵循同一协议的第三方镜像。Manager 读取 OCI 元数据、校验默认选项和管理员输入，并在保存模板时把引用固定到 sha256 摘要；创建和恢复使用该 Codespace 已确认的快照。
+Web IDE 由环境模板中的镜像决定，空镜像表示关闭。管理页面提供官方镜像建议，也允许填写遵循同一协议的第三方镜像。Manager 校验 OCI 元数据、默认选项和管理员输入，创建和恢复使用该 Codespace 已确认的镜像引用与选项快照；保存语义见[平台数据](data-model.md#平台数据)，官方镜像与更新规则见 [Provider 概览](https://github.com/ExplodingDragon/gitea-codespace/blob/main/providers/README.md)。
 
-官方 Provider 使用独立的多架构 BusyBox 镜像交付，第三方可以选择满足导出协议的载体镜像和支持的架构。Runtime Pod 的 init 容器把程序清单、编辑器及适配器完整导出到磁盘临时卷，主容器再将其只读映射到 Dev Container。init 容器只负责导出程序；其运行权限、可写路径和 Bundle 格式由 [Provider 开发指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/providers/DEVELOPMENT.md)定义。
+Provider 镜像交付程序文件，Kubernetes 通过 `image` volume 将镜像中的 `/provider` 只读挂载到 Runtime，Agent 再把同一程序目录只读映射到主 Dev Container。官方镜像以 `scratch` 为基础并按支持的架构打包程序，编辑器实际使用 Dev Container 的运行环境。这样程序文件可以复用节点镜像存储，交付方式与用户镜像构建缓存分离。Bundle 格式、运行库与远程用户读取和执行权限由 [Provider 开发指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/providers/DEVELOPMENT.md)定义。
 
-程序属于 Pod 临时数据，Pod 替换时从固定镜像重新取得；设置、扩展、插件和会话保存在 Codespace PVC。编辑器和适配器随 Provider 独立发布，使编辑器更新与核心平台镜像、仓库 Dev Container 构建缓存分离。
+程序文件随 Pod 挂载，Pod 替换时按保存的镜像引用重新取得；设置、扩展、插件和会话保存在 Codespace PVC。标签引用可取得新发布的内容，显式摘要保持内容固定；运行中的 Pod 保留已挂载的镜像。
 
-Agent 校验程序清单后，把模板 `options` 与标准 Dev Container 的 `customizations.<provider>` 交给适配器，由它负责合并配置、初始化和管理编辑器进程。镜像拉取或 init 导出失败会阻止 Runtime 主容器启动；此后的清单校验、`prepare` 或启动提交失败只影响 Web IDE，并记录操作日志。清单和 `prepare` 成功且 Docker 接受后台 `serve` 执行后发布 Workspace Endpoint。编辑器尚未监听或正在重启时，当前请求返回暂时不可用，随后可以自然恢复。
+Agent 校验程序清单后，把模板 `options` 与标准 Dev Container 的 `customizations.<provider>` 交给适配器，由它负责合并配置、初始化和管理编辑器进程。镜像拉取或挂载失败会阻止 Runtime 主容器启动；此后的清单校验、`prepare` 或启动提交失败只影响 Web IDE，并记录操作日志。清单和 `prepare` 成功且 Docker 接受后台 `serve` 执行后发布 Workspace Endpoint。编辑器尚未监听或正在重启时，当前请求返回暂时不可用，随后可以自然恢复。
 
 #### 实现验收点
 
-- 模板解析展示提供方、版本、平台与摘要，默认选项和保存的选项均通过镜像 Schema 校验；已有 Codespace 沿用自己的镜像摘要和配置。
-- 启用 Web IDE 时，init 容器在主容器启动前完成程序导出；Pod 替换后重新导出，PVC 中用户数据保留。
+- 模板解析展示提供方、版本、平台与镜像引用，默认选项和保存的选项均通过镜像 Schema 校验；已有 Codespace 沿用自己的镜像引用和配置。
+- 启用 Web IDE 时，Kubernetes 在主容器启动前挂载程序镜像；主 Dev Container 的远程用户可以读取和执行只读程序，Pod 替换保留 PVC 中的用户数据。
 - 清单校验或适配器启动失败只影响本次 Web IDE，SSH 等基础访问按自身启动结果提供服务。
 - `prepare` 成功且 Docker 接受后台 `serve` 后发布 Endpoint；请求在编辑器开始监听后成功，Codespace 状态保持独立。
 - 官方 Provider 只在首次创建初始化仓库设置，此后保留用户修改；编辑器退出后由 Provider 重启，终止信号结束其进程循环。
-- 浏览器访问通过 Gateway 完成身份与来源校验；通用输入、导出和启动行为符合 Provider 开发指南。
+- 浏览器访问通过 Gateway 完成身份与来源校验；程序布局、输入与启动行为符合 Provider 开发指南。
 
 ### Native 设备与 CDI
 
@@ -168,13 +168,13 @@ Agent 在首次创建和每次恢复的容器启动前，从同一份授权变�
 
 systemd 文件使用其原生引号与转义规则，保留多行、末尾换行、空白、特殊字符及空值。非法 UTF-8、NUL、Unicode 非字符和 BOM 在写入前返回只含变量名及原因的错误。系统管理器在切换服务身份前读取文件，因此所有系统级服务，包括设置 `User=` 的服务，都处于工作区授权范围内；服务自身配置的覆盖关系继续遵循 systemd 语义。该文件服务于系统级服务进程，PID 1 自身及独立用户管理器的环境具有不同语义。
 
-SSH、Web IDE 和生命周期命令由 Agent 显式传入授权变量，登录 shell 通过 profile 读取文件。Kata、Sysbox、Native 共用此挂载，Compose 只应用于主服务。更新 Gitea Secret 后停止并恢复环境，会在下一次容器启动前生成当前授权，使系统服务首次启动即可取得相同变量。
+SSH、Web IDE 和生命周期命令由 Agent 显式传入授权变量，登录 shell 通过 profile 读取文件。Kata、Sysbox、Native 共用此挂载，Compose 只应用于主服务。每次恢复在容器启动前使用实例 Secret 快照和新签发的运行期 Token 生成环境文件，使系统服务首次启动即可取得与 SSH、Web IDE 相同的值。凭据来源与生命周期见 [Gitea 服务端](gitea-server.md#凭据配置与后台任务)。
 
 #### 实现验收点
 
 - CLI 入口、授权文件和补全在模板 `start` 前可用，平台程序更新保持项目镜像与 Feature 构建输入稳定。
 - 首次创建和恢复均在容器启动前准备环境文件及 systemd 公共配置，系统服务首次启动可取得本次授权。
-- shell 与 systemd 两种格式保留合法多行值及特殊字符，格式错误只报告变量名和原因；原子刷新移除已撤销变量。
+- shell 与 systemd 两种格式保留合法多行值及特殊字符，格式错误只报告变量名和原因；原子刷新后文件完整对应本次授权变量。
 - systemd 文件保持 root 所有且为 `0600`，shell 文件可由实际远程用户读取；系统级服务的授权范围明确，Compose 辅助服务采用仓库环境。
 - 独立 CLI、SSH、Web IDE 和生命周期命令使用当前授权，普通镜像保留自己的启动方式。
 
@@ -275,7 +275,7 @@ Manager 每 30 秒批量请求一次 PodMetrics，每 60 秒按相关节点去�
 
 ## Gateway 与访问
 
-Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。它从 Manager 获取当前路由，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。Manager 不转发用户数据。
+Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。Manager 使用 Codespace CR UID 生成域名与 SSH 用户名中的外部别名，并向 Gitea 上报完整访问地址。Gateway 从路由快照将别名解析为 Site UID 与数字 Codespace ID，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。这样地址映射与实际资源由同一平台维护，Manager 不转发用户数据。
 
 HTTP 与 SSH 服务启动前初始化同一份路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接均核对当前路由的站点 UID。HTTP 成功授权缓存 30 秒，并合并同一授权的并发查询。共享查询具有独立的 10 秒预算，每个请求可以取消自己的等待；因此浏览器取消一个资源请求时，其他正在等待同一次授权的请求仍能取得结果。拒绝与查询错误返回给等待者，后续请求重新查询。允许结果、并发查询、用户身份与连接限制都包含站点 UID，因为不同 Gitea 实例可能分配相同数字用户或仓库 ID。
 
@@ -289,7 +289,7 @@ HTTP 按端点子域名选择当前路由，Gateway 的登录兑换入口为 `/.
 
 活动上报只统计当前控制流最近一次成功路由快照中的实例。Gateway 在实例从无连接变为有连接或反向变化时立即上报，固定心跳继续同步完整活动状态。自动停止只关心是否有活动连接，因此这种上报方式能避免每个浏览器资源请求都触发控制消息和 Kubernetes 查询。
 
-路由快照只包含当前 Gateway UID 关联的已就绪站点，以及这些站点命名空间中绑定有效、Pod 和访问目标可用的实例。Manager 使用组件 UID、站点 Gateway UID 和实例 Site UID 的缓存索引定位候选，避免每个 Gateway 周期扫描整个集群。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。
+路由快照只包含当前 Gateway UID 关联的已就绪站点，以及这些站点命名空间中站点归属有效、Pod 和访问目标可用的实例。Manager 使用组件 UID、站点 Gateway UID 和实例 Site UID 的缓存索引定位候选，避免每个 Gateway 周期扫描整个集群。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。
 
 Gateway SSH 主机密钥由 Manager 生成，私钥保存在 Kubernetes Secret 中。轮换时 Manager 更新当前组件拥有的 Secret，凭据资源版本随 Pod 模板变化并触发 Gateway 滚动更新，再发布新的公钥指纹。会话密钥保持稳定，使已有浏览器会话在主机密钥轮换后仍可验证。使用固定 Secret 名称可以让 Deployment 始终引用当前组件的密钥，组件 UID 与所有者关系则防止同名重建后继承旧密钥。Agent 提供 Shell、命令、SFTP、HTTP Endpoint 和回环端口转发；Dev Container 通过本地 Unix socket 管理 Endpoint。
 
@@ -316,6 +316,7 @@ Gateway 默认只把 TCP 对端作为客户端地址。只有直接对端属于�
 ### 实现验收点
 
 - 每个数据流都需要当前有效的用户授权和 Agent 票据。
+- HTTP 与 SSH 别名只定位当前快照中的实例；两个站点的相同数字 ID 不会共享路由、授权或活动记录。
 - 授权缓存、并发查询与连接限制使用站点 UID 区分身份；成功授权在 30 秒内复用，拒绝和错误由后续请求重新核对。
 - 共享授权查询在独立的 10 秒预算内完成并释放容量；取消任一等待请求后，其他请求仍可取得查询结果。
 - HTTP 与 SSH 已有连接在授权查询暂时失败后继续运行，明确拒绝时结束访问；运行许可和运行身份变化仍正常关闭连接。

@@ -29,9 +29,9 @@
 
 Codespace 仓库的工具版本由模块文件、Makefile 和[持续集成配置](https://github.com/ExplodingDragon/gitea-codespace/tree/main/.github/workflows)统一声明。触发核心 CI 的拉取请求执行格式与静态检查、后端测试、管理界面测试、生成文件检查、镜像冒烟验证和真实 Kubernetes 测试。Provider 代码及其构建输入由对应独立工作流验证，共享输入触发相关工作流，使编辑器更新与平台发布保持各自的验证范围。
 
-平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入核心镜像，验证与发布使用的也是同一份产物。仓库在 `providers/vscode` 和 `providers/dsh` 中提供两个官方 Web IDE 工程，每个工程按自身依赖的架构与工具链独立构建和发布；核心代码维护通用 OCI 元数据协议，并使用一个伪提供方完成平台端到端测试。采用仓库内独立发布单元的原因是官方实现可以与平台一起审计，同时编辑器依赖和更新频率不会扩大控制面镜像、核心构建链或核心发布范围。
+平台二进制在 GitHub Runner 上交叉编译为 `linux/amd64`，随后作为任务产物交给镜像验证或发布任务。Docker 构建只安装运行时依赖并复制该二进制，因此编译工具链不会进入核心镜像，验证与发布使用的也是同一份产物。官方 Web IDE 工程位于 `providers`，各自验证适配器与插件并独立构建发布；核心端到端测试使用可控制行为的伪提供方验证通用协议。采用仓库内独立发布单元的原因是官方实现可以与平台一起审计，同时编辑器依赖和更新频率不会扩大控制面镜像、核心构建链或核心发布范围。官方 Provider 列表、版本标签和构建步骤分别由 [Provider 概览](https://github.com/ExplodingDragon/gitea-codespace/blob/main/providers/README.md)与[开发指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/providers/DEVELOPMENT.md#maintain-the-official-providers)维护。
 
-核心 CI 在 `main` 分支验证成功后发布平台镜像的 `main` 标签。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 `0.1.0-main.<run-number>` 形式的预发布版本，`appVersion` 记录 `main-<commit-sha>`。打包时 CI 把本次平台镜像摘要写入 Chart 的 `image.digest`，使每个 Chart 都对应经过验证的镜像内容。核心镜像与 Chart 产生不可变摘要和来源证明，核心镜像还包含软件物料清单。两个官方 Web IDE 工程分别监听自身目录并发布各自的 `main` 多架构镜像，第三方提供方沿用同一协议自行发布；环境模板保存时把所选版本解析为摘要，因此 Chart 无需绑定编辑器发布周期。
+核心 CI 在 `main` 分支验证成功后发布平台镜像的 `main` 标签。Helm OCI 要求 Chart 标签与 Chart 的语义化版本一致，因此每次运行发布 `0.1.0-main.<run-number>` 形式的预发布版本，`appVersion` 记录 `main-<commit-sha>`。打包时 CI 把本次平台镜像摘要写入 Chart 的 `image.digest`，使每个 Chart 都对应经过验证的镜像内容。核心镜像与 Chart 产生不可变摘要和来源证明，核心镜像还包含软件物料清单。环境模板独立选择 Provider 镜像引用，因此 Chart 固定平台产物而不绑定编辑器发布周期。
 
 镜像选择和组件更新行为由[部署设计](deployment-requirements.md#镜像缓存与网络)定义，安装和升级步骤以 [Helm 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md)为准。本节维护构建产物与发布记录的对应关系，使发布验证与部署操作各有明确入口。
 
@@ -42,7 +42,7 @@ Codespace 仓库的工具版本由模块文件、Makefile 和[持续集成配置
 - 镜像构建阶段不编译 Go 或前端，验证与发布消费同一份 Runner 构建产物。
 - `main` 分支更新核心平台镜像的 `main` 标签，并发布唯一的 Helm 预发布版本。
 - 工作流摘要给出核心镜像摘要、Chart 版本和 Chart 摘要；核心发布任务不构建或发布真实 Web IDE。
-- 仓库内 VS Code 与 DeepSeek Harness 工程分别验证自身改动，并在 `main` 上独立发布 linux/amd64、linux/arm64 的官方 Provider 镜像。
+- 每个官方 Provider 验证自身及共享构建输入的改动，并在 `main` 上独立发布 linux/amd64、linux/arm64 镜像，标签与摘要对应已验证的同一多架构产物。
 - 端到端测试使用独立构建且不会发布的伪 Web IDE 镜像，覆盖 OCI 元数据、选项、HTTP、WebSocket、重启和恢复。
 - 源码 Chart 默认渲染 `main` 标签与 `Always`；发布的 OCI Chart 渲染本次镜像摘要与 `IfNotPresent`，固定 Chart 版本即可同时固定默认平台镜像。
 - 发布镜像包含源码提交、MIT 许可证、软件物料清单和来源证明，Chart 包含源码提交、许可证和来源证明。

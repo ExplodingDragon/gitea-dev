@@ -4,7 +4,7 @@
 
 ## Kubernetes 基础能力
 
-Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass 和 Service；由 Manager 发布 HTTP Endpoint 时还需要 Ingress 控制器。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。Gateway 与 Cache 在管理页面创建后由 Manager 部署，因此 Helm 只负责控制面，不需要预先知道组件数量和域名。
+Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass 和 Service，并支持 Web IDE 所用的 `image` volume 及其 `subPath` 挂载；最低 Kubernetes 与容器运行时版本见 Helm 指南。由 Manager 发布 HTTP Endpoint 时还需要 Ingress 控制器。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。Gateway 与 Cache 在管理页面创建后由 Manager 部署，因此 Helm 只负责控制面，不需要预先知道组件数量和域名。
 
 管理页面从 Kubernetes API 读取 RuntimeClass、StorageClass、IngressClass、TLS Secret 与 cert-manager Issuer 并提供选择，保存时 Manager 再次确认引用仍然存在且类型匹配。资源数量使用数值与单位分离的输入方式，最终保存为 Kubernetes 原生 quantity 或运行时 duration。这样管理员能够直接使用集群已经声明的能力，同时保留 Kubernetes 调度、证书和容量语义。
 
@@ -55,7 +55,7 @@ Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平�
 
 ## 镜像、缓存与网络
 
-Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的多架构提供方镜像，由 Runtime Pod 的 init 容器按环境模板选择；平台与提供方的发布关系见[镜像构建与发布](implementation.md#镜像构建与发布)。管理员保存环境模板时，Manager 只读取提供方镜像的 OCI 配置元数据并把引用固定到 sha256 摘要；Pod 启动时 Kubernetes 再拉取实际镜像层。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。
+Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的提供方镜像，通过 Runtime Pod 的只读 `image` volume 交付程序；启动流程见[Web IDE 交付与启动](runtime-platform.md#web-ide-交付与启动)。保存 Web IDE 配置时 Manager 读取 OCI 元数据，Pod 启动时由 Kubernetes 拉取并挂载实际镜像层。因此 Manager 与 Runtime 节点分别需要访问镜像仓库。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。
 
 生产环境的 Gateway 建议至少运行两个副本。控制器使用软反亲和性优先分散到不同节点，因此单节点测试集群仍可运行，多节点集群则能降低节点故障影响；PDB 保护计划内驱逐，实际容量仍需要集群为至少一个替代 Pod 保留资源。Cache 固定为一个 Recreate 副本，其 PVC 使用 ReadWriteOnce，升级窗口允许短暂缓存不可用；Runtime 可以在授权范围内回源，因此这不会改变 Codespace 的持久数据。
 
@@ -75,8 +75,8 @@ Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，�
 
 - Manager 与其创建的工作负载使用同一平台镜像引用。
 - Helm Chart 版本、Chart 摘要和核心平台镜像摘要可以在对应 GitHub Actions 运行摘要中找到；Web IDE 提供方按自身发布记录审计版本和摘要。
-- Runtime 节点可以拉取模板选择的提供方镜像；私有仓库凭据同时适用于核心 Runtime 和 Web IDE init 容器。
-- Manager 能使用同一私有仓库凭据解析 Web IDE 镜像元数据，模板保存后只保留 sha256 引用。
+- Runtime 节点可以拉取并挂载模板选择的提供方镜像；私有仓库凭据同时适用于核心 Runtime 镜像与 Web IDE 镜像卷。
+- Manager 能使用同一私有仓库凭据解析 Web IDE 镜像元数据，模板保留所选标签或显式摘要。
 - 标签模式的新建工作负载获取当前镜像，摘要模式的工作负载保持内容固定。
 - 私有仓库凭据只投递给需要它的工作负载。
 - Runtime 无法访问其他站点的 Runtime 网络。
@@ -128,7 +128,7 @@ Agent、Gateway 和 Cache 对 Secret 投影的证书使用一分钟内存缓存�
 - 凭据轮换后旧身份和旧会话按有效期失效。
 - 启用的站点配额包含运行中和正在创建的 Runtime；关闭配额的站点不依赖 `ResourceQuota` 完成调度。
 - 环境模板始终提供 CPU 和内存请求；资源上限关闭时生成的 Runtime Pod 不包含 CPU 和内存 limit。
-- 恢复后站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。
+- 恢复后通过 Site UID 和数字 Codespace ID 重新关联 CR、PVC 与 Gitea 记录，并核对实际资源 UID。
 
 ## 上线验收
 
