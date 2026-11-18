@@ -257,8 +257,8 @@
 </ul>
 <h3 id="kata-usb-设备"><a class="header" href="#kata-usb-设备">Kata USB 设备</a></h3>
 <p>Agent 在 Kata Runtime 中发现活动的 <code>vhci_hcd</code> 控制器时启用 USB/IP，并使用平台镜像中的标准客户端。用户通过已有 SSH 身份建立 <code>-R usbip.&lt;来源名&gt;:3240:&lt;服务端&gt;:&lt;端口&gt;</code>，SSH 客户端访问实际服务端。Agent 将每个逻辑来源绑定到独立回环随机端口，使 USB/IP 与 Dev Container 的普通端口分离。来源命名、CLI 和转发协议见 <a href="rpc-spec.html#%E7%BB%84%E4%BB%B6%E4%B8%8E-agent">组件与 Agent</a>，用户操作见 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/docs/usbip.md">USB 连接指南</a>。</p>
-<p>创建和恢复按当前能力准备平台 USB CLI。VS Code 与 DSH 插件使用同一能力判断显示 USB 视图、命令和对话工具，通过 CLI JSON 查询和修改设备。能力查询失败只影响 USB 界面；转发断开后仍可查询和解绑已导入设备。操作错误保留已有列表，超时后查询实际状态，由用户决定是否重试，避免重复执行结果未知的设备操作。</p>
-<p>Agent 显式挂载来宾 devtmpfs，再将其非递归映射到主 Dev Container 的标准 <code>/dev</code>，让设备节点随内核热插拔直接出现。外层 Pod 的 <code>/dev</code> 通常是独立 tmpfs，不能替代来宾设备树。主容器分别保留 <code>/dev/pts</code>、<code>/dev/shm</code> 和 <code>/dev/mqueue</code>，共享 IPC 与共享内存设置继续采用 Docker 语义。最终创建请求追加原始 USB、USB 串口、CDC ACM 的设备规则和处理 eudev netlink 事件所需的 <code>NET_ADMIN</code>；其余仓库运行设置保持原义。<code>/dev</code> 或 <code>/dev/pts</code> 存在冲突挂载时明确失败，因为两个来源无法同时定义设备树。</p>
+<p>创建和恢复按当前能力准备平台 USB CLI。VS Code、DSH 与 Yep Anywhere 的集成按能力显示各自的 USB 管理入口，通过 CLI JSON 查询和修改设备。能力查询失败只影响 USB 界面；转发断开后仍可查询和解绑已导入设备。操作错误保留已有列表，超时后查询实际状态，由用户决定是否重试，避免重复执行结果未知的设备操作。</p>
+<p>Agent 显式挂载来宾 devtmpfs，再将其非递归映射到主 Dev Container 的标准 <code>/dev</code>，让设备节点随内核热插拔直接出现。外层 Pod 的 <code>/dev</code> 通常是独立 tmpfs，不能替代来宾设备树。主容器分别保留 <code>/dev/pts</code>、<code>/dev/shm</code> 和 <code>/dev/mqueue</code>，共享 IPC 与共享内存设置继续采用 Docker 语义。最终创建请求追加原始 USB、USB 串口、CDC ACM、I²C、SPI、USB miscellaneous（含 USBTMC）的字符设备规则，以及处理 eudev netlink 事件所需的 <code>NET_ADMIN</code>。HIDRAW 和 GPIO 的主设备号由来宾内核动态分配，因此创建容器时从已注册的字符设备中发现并追加规则；驱动需在创建前加载，已有容器保留创建时的规则。块设备访问与文件系统挂载采用开发配置显式声明的权限，具体准备步骤见 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md#enable-kata-usbip">Helm USB/IP 指南</a>。<code>/dev</code> 或 <code>/dev/pts</code> 存在冲突挂载时明确失败，因为两个来源无法同时定义设备树。</p>
 <p><code>/dev/mqueue</code> 在容器 PID 1 启动后、生命周期脚本之前完成挂载。设备准备失败时停止本次已恢复的容器；设备树挂载随 Agent 进程存在，单次操作取消后仍可供后续操作使用。Dev Container 自己启动 udev/eudev 并维护规则、组和非 root 权限，来宾内核提供设备类驱动，平台负责标准设备路径和事件可达性。</p>
 <p>同一 Codespace 的进程共享附加设备。每个来源有独立监听身份，取消来源只关闭其待接受连接和设备流；SSH 会话结束回收该会话的全部转发，Runtime 停止或主容器更换回收全部连接。重新连接后按当前来源和 bus ID 再次附加，逐设备解绑使用 VHCI 端口。</p>
 <p>Kata 虚拟机是宿主机与工作区之间的隔离边界；Agent、主 Dev Container 和嵌套 Docker 共享来宾设备视图。所选 handler 的 <code>privileged_without_host_devices=true</code> 将来宾能力与 Kubernetes 节点设备分开。默认设备规则只限定默认访问，仓库显式扩大的权限按来宾内同一信任范围处理。SSH、Manager 票据和 Agent mTLS 承担跨组件授权，本地 Agent socket 属于工作区信任接口。设备服务端和来宾驱动仍需独立的安全审查，因为 SSH 认证不能消除恶意设备或驱动漏洞。</p>
@@ -267,6 +267,7 @@
 <li>活动 VHCI 自动启用 USB/IP；创建、恢复和插件初始化均按当前能力准备命令与界面，USB 查询失败时端口管理仍可用。</li>
 <li>USB 命令和插件共用真实状态；隧道断开后仍可查询和解绑，操作超时后的刷新只查询状态。</li>
 <li>主 Dev Container 使用来宾 devtmpfs，附加、移除事件可被 udev/eudev 处理，非 root 设备权限符合开发镜像规则。</li>
+<li>创建容器时追加受支持的固定字符设备规则及已注册的 HIDRAW、GPIO 主设备号；设备访问同时满足内核驱动和开发配置声明的权限。</li>
 <li>Dockerfile 与 Compose 主服务得到相同挂载和设备规则；PTY、共享内存、消息队列和仓库其他运行设置正常，辅助服务保留原配置。</li>
 <li>操作取消保留 Agent 设备挂载，恢复准备失败停止刚启动的容器，Agent 退出释放挂载。</li>
 <li>多来源、同名 bus ID、取消与重连都有明确归属；关闭一个来源保留其他来源，主容器更换回收全部监听。</li>
@@ -318,16 +319,19 @@
 <li>无效恢复状态保留数据并报告明确错误；块卷格式化先取得持久化许可，已有 ext4 可恢复，未知文件系统保留数据等待处理。</li>
 </ul>
 <h3 id="出站网络与证书"><a class="header" href="#出站网络与证书">出站网络与证书</a></h3>
-<p>站点运行网络显式声明 Runtime 可访问的 CIDR 与 TCP 端口，包括 Gitea 克隆地址和开发所需服务。标准 NetworkPolicy 以地址及端口表达规则，因此域名服务由管理员按实际解析范围配置。访问失败日志给出协议和目标主机，并通过脱敏保护凭据。</p>
+<p>站点 NetworkPolicy 分别控制 Runtime 的入站与出站，覆盖内层 Dev Container 的流量。默认保留 Gateway 到 Agent 的入站，以及 Runtime 到 Manager、Cache 和集群 DNS 的必要出站。公网访问与同站点互通使用独立开关，默认均关闭；同站点互通开启后，允许该站点不同用户的 Runtime Pod 之间双向 TCP/UDP 通信。将两种方向分别处理，可以开放开发所需的外部服务，同时保持外部用户访问经过 Gateway 的认证入口。</p>
+<p>公网开关放行公共地址的 TCP/UDP 出站，排除内网及特殊用途地址；管理员补充内部 CIDR，以涵盖使用公共地址的组织网络。显式出站规则按 CIDR、TCP/UDP 协议、单个端口、端口范围或全部端口授予访问，即使公网开关关闭也生效，适合 Gitea、内网服务和代理。标准 NetworkPolicy 按目标 IP 而非域名执行，因此域名服务需要按实际解析范围配置。网络配置变更作用于已有与新建 Pod，具体操作和网络插件要求见 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md#configure-network-access">Helm 网络指南</a>。访问失败日志给出协议和目标主机，并通过脱敏保护凭据。</p>
 <p>环境模板支持 HTTP、HTTPS、SOCKS5 代理及直连目标。代理使用标准 URL，管理页面回显实际配置；大小写标准环境变量覆盖 Agent、Docker 拉取、构建和容器运行。SOCKS5 为未单独配置的 HTTP/HTTPS 提供后备。直连列表合并回环、Kubernetes Service、用户配置及 Compose 服务名和网络别名，使集群与服务间流量保持直连。代理构建使用 Docker 预定义参数，运行配置从 Codespace 快照取得，Dev Container 持久状态只保存非代理执行信息。</p>
 <p>Agent 在启动 dockerd 前把 Runtime 系统 CA、公开内部根证书、站点 CA 和代理 CA 合并为 <code>/run/codespace/ca/bundle.pem</code>，去重后原子写入。Docker 通过 <code>SSL_CERT_FILE</code> 使用该文件，已配置 Registry 取得 <code>certs.d</code> 投影；Git 配置 <code>sslCAInfo</code>，OCI Feature 客户端从同一文件构造信任池，使首次下载即使用完整信任链。</p>
 <p>同一文件只读映射为 <code>/var/lib/gitea-codespace/ca/bundle.pem</code>。容器启动和恢复时按发行版更新系统信任库，必要时安装标准证书工具，并提供 <code>SSL_CERT_FILE</code>、<code>NODE_EXTRA_CA_CERTS</code> 和 Git 固定文件配置。Feature 安装发生在构建阶段，使用构建镜像自身证书；容器运行时再引用已挂载的平台文件。CA 脚本在平台目录创建临时文件并在退出时清理，以避开 systemd 启动期间重新挂载 <code>/tmp</code> 的时序。</p>
 <p>Manager、Gateway、Cache 和 Agent 的 mTLS 始终从各自身份目录加载证书、私钥与根池。Dev Container 取得的是公开出站信任包，这两类信任材料服务于不同边界，站点或代理 CA 不因此取得内部组件身份授权。</p>
 <h4 id="实现验收点-9"><a class="header" href="#实现验收点-9">实现验收点</a></h4>
 <ul>
+<li>公网出站与同站点互通分别按开关生效；开启公网出站后，直接入站仍只遵循平台连接与同站点互通规则。</li>
+<li>显式出站规则按 CIDR、协议及端口范围生效，覆盖已有与新建 Runtime；平台必要连接保持可用。</li>
 <li>放行实际 Gitea 克隆目标后 HTTP/SSH 克隆可完成，失败日志给出目标而不泄露凭据。</li>
 <li>代理作用于下载、镜像拉取、构建及相关容器；恢复使用实例快照，直连列表包含用户目标、集群服务和有效 Compose 别名。</li>
-<li>字面 IP 代理保存时核对站点出站 CIDR 和端口；域名代理按实际解析范围放行。代理凭据保留在授权配置中，Dev Container 状态和普通日志采用各自脱敏规则。</li>
+<li>字面 IP 代理保存时核对公网出站或显式 TCP 规则是否覆盖目标；域名代理按实际解析范围放行。代理凭据保留在授权配置中，Dev Container 状态和普通日志采用各自脱敏规则。</li>
 <li>首次网络请求前生成统一 CA Bundle，Docker、Git 和 OCI Feature 下载使用同一信任；恢复取得当前证书。</li>
 <li>主容器系统信任与固定证书环境变量采用同一 Bundle，Feature 构建使用构建镜像自身信任，临时文件准备不受 systemd 挂载 <code>/tmp</code> 影响。</li>
 <li>组件身份验证继续使用独立证书、私钥和根池，公开出站 CA 仅服务于相应 TLS 访问。</li>
@@ -357,7 +361,8 @@
 <p>HTTP 与 SSH 服务启动前初始化同一份路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接均核对当前路由的站点 UID。HTTP 成功授权缓存 30 秒，并合并同一授权的并发查询。共享查询具有独立的 10 秒预算，每个请求可以取消自己的等待；因此浏览器取消一个资源请求时，其他正在等待同一次授权的请求仍能取得结果。拒绝与查询错误返回给等待者，后续请求重新查询。允许结果、并发查询、用户身份与连接限制都包含站点 UID，因为不同 Gitea 实例可能分配相同数字用户或仓库 ID。</p>
 <p>运行中的 HTTP 与 SSH 连接通过定期授权复核收敛权限变化。明确拒绝会结束对应访问；查询暂时失败则记录诊断并在下一周期重试，避免控制面短暂故障中断 Shell、WebSocket 或 USB/IP 连接。新的访问仍需成功授权。站点或 Pod 身份失效、运行许可到期和用户主动关闭分别按各自生命周期结束连接，因此保留已有连接不等于延长 Gateway 的运行许可。</p>
 <p>HTTP 按端点子域名选择当前路由，Gateway 的登录兑换入口为 <code>/.gitea-codespace/open</code>。其余路径属于应用，原样保留路径编码、重复斜杠和末尾斜杠；这些字符可能参与应用的资源标识和路由匹配。找不到当前端点时返回 <code>404</code>，登录兑换成功后回到同源应用路径或根路径。</p>
-<p>浏览器打开入口后取得由 Gateway 组件独立的 32 字节会话密钥认证加密的 Cookie。所有副本挂载同一组件密钥，因此任意副本都能校验会话的站点、用户、Codespace、端点和有效期，并在本进程建立连接计数。成功请求只续期空闲期限，绝对有效期保持不变；并发与连接上限继续按副本计算，用于保护单个进程资源，而不作为站点配额。</p>
+<p>浏览器打开入口后取得由 Gateway 组件独立的 32 字节会话密钥认证加密的 Cookie。所有副本挂载同一组件密钥，因此任意副本都能校验会话的站点、用户、Codespace 和端点，并在本进程建立连接计数。Workspace 请求通过授权与路由校验后续期 Cookie；活动的 WebSocket、SSE 等请求保持会话，最后一个请求结束后开始计算空闲时间。旧 Cookie 超过签发期限时，Gateway 根据本地状态或 Manager 汇总的活动确认 Workspace 会话仍然有效，再接受请求并续期，使持续使用工作区的用户能够继续发起新请求。</p>
+<p>应用端口会话保持固定有效期，并按自身请求记录空闲状态；应用端口流量不延长 Workspace 会话，因为访问转发服务与使用编辑器是不同的活动。并发与连接上限继续按副本计算，用于保护单个进程资源，而不作为站点配额。</p>
 <p>每个副本使用独立实例标识向 Manager 上报活动。Manager 的控制响应同时授予 30 秒运行许可：控制流短暂中断时，副本在剩余许可期内保持就绪并尝试重连，避免控制连接轮换中断正在使用的工作区。建立新控制流本身不会延长许可，只有收到 Manager 的有效响应才取得新期限；许可到期仍未恢复时退出就绪状态并关闭监听器和现有连接。Manager 在许可有效期内把失联副本的活动视为未知并暂停自动停止判断，许可到期后才移除报告。该顺序保证 Manager 不会把仍在服务但暂时失联的副本误判为空闲，也不会因只建立了半开连接而无限延长服务时间。</p>
 <p>活动上报只统计当前控制流最近一次成功路由快照中的实例。Gateway 在实例从无连接变为有连接或反向变化时立即上报，固定心跳继续同步完整活动状态。自动停止只关心是否有活动连接，因此这种上报方式能避免每个浏览器资源请求都触发控制消息和 Kubernetes 查询。</p>
 <p>路由快照只包含当前 Gateway UID 关联的已就绪站点，以及这些站点命名空间中站点归属有效、Pod 和访问目标可用的实例。Manager 使用组件 UID、站点 Gateway UID 和实例 Site UID 的缓存索引定位候选，避免每个 Gateway 周期扫描整个集群。实例处于停止、恢复或尚未获得地址等状态时，只从快照中排除该实例；身份冲突同时记录诊断，实际读取故障仍返回错误。签发票据前实时核对站点、实例、Pod UID 和目标版本，因此缓存中的旧路由不能授权新的连接。</p>
@@ -394,7 +399,9 @@
 <li>每个反向 TCP 连接使用独立 Access 流和 SSH channel，复用 Gateway 到 Agent 的 mTLS HTTP/2 连接。取消普通监听后已建立的 channel 继续传输；取消 USB/IP 来源会结束其设备流。取消成功回复前完成新连接接受和 channel 打开的交接；监听控制流失败结束所属 SSH 连接，单个数据 channel 的失败不关闭其他转发。</li>
 <li>Pod、Agent 身份或地址变化后释放旧客户端和活动流；端点移除或可见性变化结束对应 HTTP 访问。展示信息与端点列表更新保留未改变目标的连接，新的票据仍绑定当前目标版本。</li>
 <li>同名 Service 始终只提供 <code>80/http</code> 与 <code>22/ssh</code>，切换发布方式不会重建 Gateway Deployment。</li>
-<li>一个副本签发的浏览器会话可以由同组件的其他副本验证，篡改、过期或资源身份不匹配的会话会被拒绝。</li>
+<li>一个副本签发的浏览器会话可以由同组件的其他副本验证，并继续校验站点、用户、实例与端点身份。</li>
+<li>Workspace 成功请求续期 Cookie，活动 WebSocket/SSE 保持会话，最后一个请求结束后计算空闲时间；跨副本请求能通过 Manager 确认仍有效的活动会话。</li>
+<li>应用端口会话遵循自己的固定有效期与空闲期限，应用端口流量不延长 Workspace 会话。</li>
 <li>SSH 主机密钥轮换保留会话密钥；活动状态在连接数跨越零时立即上报，固定心跳同步完整状态，Manager 仅接收当前快照中的实例活动。</li>
 <li>Gateway 控制流失联期间自动停止等待运行许可收敛；许可到期后该副本不再保留监听器或用户连接。</li>
 <li>Ingress 只使用选定的 IngressClass 和通配端点域名；HTTPS 只引用选定的 TLS Secret 或 Issuer。</li>

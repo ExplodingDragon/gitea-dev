@@ -180,6 +180,7 @@
 <h2 id="gitea-控制面"><a class="header" href="#gitea-控制面">Gitea 控制面</a></h2>
 <p><code>RegisterManager</code> 使用范围注册令牌换取 Manager ID 和独立运行密钥。该方法不携带 Manager 身份请求头，因为身份正是在这次交换中建立；令牌和名称在服务端校验。注册令牌可重复用于同一范围的多台 Manager，运行密钥只属于一次注册结果。这样管理面可以直接完成接入，而后续所有 RPC 仍具有稳定、可撤销的实例身份。</p>
 <p>注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。所有实例请求使用数字 Codespace ID，Gitea 同时校验认证 Manager 的归属。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。</p>
+<p>Manager 的 Gitea HTTP 客户端默认使用 15 秒请求超时，Gitea 为单次 Manager RPC 设置 30 秒的服务端处理上限，及时释放异常请求占用的资源。心跳和周期元数据刷新间隔均为 30 秒，超过 120 秒没有声明时判定 Manager 离线；元数据与资源观测保留 240 秒有效窗口，使短暂漏报不立即丢失展示信息。这些时序各自按通信和数据用途确定，管理员配置的操作总时限单独控制业务执行预算。</p>
 <p>Runtime Metadata 携带完整 Endpoint URL、<code>ssh://user@host:port</code> 连接 URI 和解析后的 <code>workspace_folder</code>。Manager 使用当前 Gateway 配置、CR UID 和 Agent 上报的容器路径生成连接信息，因为实际地址映射和工作目录属于运行平台。Gitea 校验 HTTP 与 SSH 地址属于该 Manager 声明的 Gateway，并在展示层根据 SSH URI 和工作目录生成 SSH 命令、VS Code 与 Zed 链接。编辑器链接属于页面展示，集中生成可以使编辑器格式变化独立于运行平台发布。</p>
 <p>打开浏览器端点时，Gitea 只复核所选端点的 Gateway 归属；公开端点直接使用上报 URL，私有端点使用同源固定路径 <code>/.gitea-codespace/open</code> 并携带本次授权码。这使认证入口始终与实际目标同源，也使 SSH 配置变化与网页访问各自独立。Workspace 通过端点 ID 识别，显示名称由 Gitea 本地化，普通转发端口的 label 则保留用户定义。</p>
 <p>同一次启动操作按阶段顺序前进，页面使用本地化名称展示。阶段与资源采样都在当前操作版本内比较，分别保留已到达的阶段和较新的采样；这样迟到报告不会覆盖当前进度，恢复后的新操作也可以从初始阶段重新开始。</p>
@@ -197,6 +198,7 @@
 <li>除 <code>RegisterManager</code> 外，ManagerService 方法都要求有效的 Manager ID 与运行密钥。</li>
 <li>注册令牌重置不改变已经签发的运行身份。</li>
 <li>Manager 凭据只能操作对应的 Manager 记录。</li>
+<li>正常声明返回 30 秒的心跳及周期元数据刷新间隔；离线判断依据最近声明时间，展示数据过期只影响可用信息。</li>
 <li>领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。</li>
 <li>未观察或低版本观察返回当前 operation 且不延长租约，精确观察当前版本才返回续租结果。</li>
 <li>启动容量与环境标签共同决定可领取的启动任务，清理容量独立生效；克隆按照地址顺序尝试并保持固定提交检出。</li>
