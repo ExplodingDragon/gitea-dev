@@ -192,7 +192,7 @@
 <h2 id="manager-与调度"><a class="header" href="#manager-与调度">Manager 与调度</a></h2>
 <p>Gitea 为站点全局范围和每个用户范围分别维护一个可重复使用的 Manager 注册令牌。管理员从 Codespace Manager 管理面提交 Gitea 地址、注册令牌和显示名称；Gitea 根据令牌确定所有者，在同一事务中创建 Manager 并签发该 Manager 独有的运行密钥。注册响应只返回一次运行密钥，Codespace Manager 将它保存到受管 Kubernetes Secret。Gitea 在数据库保存当前范围注册令牌，Codespace 集群侧只在这次请求中使用它，不写入 CR 或 Secret。</p>
 <p>注册令牌用于批量接入同一管理范围，运行密钥用于区分已经注册的实例。二者分开后，新增 Manager 不需要修改 Gitea 中的预创建记录，轮换注册令牌也不会中断现有 Manager。管理员可以显式重置范围注册令牌；旧令牌随即停止接受新注册，已经签发的运行身份继续有效。</p>
-<p>Manager 注册接口只校验协议版本、注册令牌和名称，不要求运行身份请求头。声明、领取、续期、日志和完成等后续接口都要求 Manager ID 与运行密钥。个人范围令牌只能创建归该用户所有的 Manager，站点令牌创建全局 Manager。</p>
+<p>Manager 注册接口校验注册令牌和名称，不要求运行身份请求头。声明、领取、续期、日志和完成等后续接口都要求 Manager ID 与运行密钥。个人范围令牌只能创建归该用户所有的 Manager，站点令牌创建全局 Manager。</p>
 <p>create 以尚未分配 Manager 的状态入队。Manager 拉取任务时提交当前可接受的环境标签和本实例剩余容量，Gitea 按所有权、标签和排队顺序选择候选，并通过条件更新完成唯一领取。同一范围内声明相同标签的多个 Manager 共同承担首次创建；没有剩余容量的实例不会领取，其他有容量的实例仍可继续领取。所有实例都没有容量时，任务保留在队列中，待后续请求自动领取。领取确定 Manager 归属后，resume、stop 和 delete 都返回同一 Manager，避免生命周期中途迁移持久工作区。</p>
 <p>环境标签就是 Manager 集群中 <code>EnvironmentTemplate</code> 的 Kubernetes 资源名。Gitea 以这个名称合并多个 Manager 的声明，因此相同名称表示可以互换的首次放置能力，不同名称表示不同环境。标签只决定首次调度；已有环境恢复时使用创建时保存的配置，因此模板后续修改不会隐式迁移环境。</p>
 <p>删除 Manager 会撤销其凭据并清理 Gitea 中绑定的业务记录。确认页面同时说明运行数据需在 Manager 管理面停用对应站点后清理，使业务身份撤销与不可逆的数据删除各自具有明确的操作人和确认步骤。</p>

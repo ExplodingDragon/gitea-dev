@@ -353,7 +353,7 @@
 <li>发往 Gitea 的统计始终是现有字段组成的完整快照，时间由真实来源决定，采集失败不会改变生命周期状态。</li>
 </ul>
 <h2 id="gateway-与访问"><a class="header" href="#gateway-与访问">Gateway 与访问</a></h2>
-<p>Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。Manager 使用 Codespace CR UID 生成域名与 SSH 用户名中的外部别名，并向 Gitea 上报完整访问地址。Gateway 从路由快照将别名解析为 Site UID 与数字 Codespace ID，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。这样地址映射与实际资源由同一平台维护，Manager 不转发用户数据。</p>
+<p>Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。Manager 使用 Codespace CR UID 生成域名与 SSH 用户名中的外部别名，并向 Gitea 上报 HTTP URL、SSH URI 和工作目录；Gitea 根据这些信息生成认证入口与编辑器链接，职责见<a href="rpc-spec.html#gitea-%E6%8E%A7%E5%88%B6%E9%9D%A2">控制面协议</a>。Gateway 从路由快照将别名解析为 Site UID 与数字 Codespace ID，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。这样地址映射与实际资源由同一平台维护，Manager 不转发用户数据。</p>
 <p>HTTP 与 SSH 服务启动前初始化同一份路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接均核对当前路由的站点 UID。HTTP 成功授权缓存 30 秒，并合并同一授权的并发查询。共享查询具有独立的 10 秒预算，每个请求可以取消自己的等待；因此浏览器取消一个资源请求时，其他正在等待同一次授权的请求仍能取得结果。拒绝与查询错误返回给等待者，后续请求重新查询。允许结果、并发查询、用户身份与连接限制都包含站点 UID，因为不同 Gitea 实例可能分配相同数字用户或仓库 ID。</p>
 <p>运行中的 HTTP 与 SSH 连接通过定期授权复核收敛权限变化。明确拒绝会结束对应访问；查询暂时失败则记录诊断并在下一周期重试，避免控制面短暂故障中断 Shell、WebSocket 或 USB/IP 连接。新的访问仍需成功授权。站点或 Pod 身份失效、运行许可到期和用户主动关闭分别按各自生命周期结束连接，因此保留已有连接不等于延长 Gateway 的运行许可。</p>
 <p>HTTP 按端点子域名选择当前路由，Gateway 的登录兑换入口为 <code>/.gitea-codespace/open</code>。其余路径属于应用，原样保留路径编码、重复斜杠和末尾斜杠；这些字符可能参与应用的资源标识和路由匹配。找不到当前端点时返回 <code>404</code>，登录兑换成功后回到同源应用路径或根路径。</p>
