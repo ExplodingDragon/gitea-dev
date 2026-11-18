@@ -275,7 +275,7 @@ Manager 每 30 秒批量请求一次 PodMetrics，每 60 秒按相关节点去�
 
 ## Gateway 与访问
 
-Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。Manager 使用 Codespace CR UID 生成域名与 SSH 用户名中的外部别名，并向 Gitea 上报完整访问地址。Gateway 从路由快照将别名解析为 Site UID 与数字 Codespace ID，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。这样地址映射与实际资源由同一平台维护，Manager 不转发用户数据。
+Gateway 提供 HTTP/WebSocket、SSH 和 SFTP 入口。Manager 使用 Codespace CR UID 生成域名与 SSH 用户名中的外部别名，并向 Gitea 上报 HTTP URL、SSH URI 和工作目录；Gitea 根据这些信息生成认证入口与编辑器链接，职责见[控制面协议](rpc-spec.md#gitea-控制面)。Gateway 从路由快照将别名解析为 Site UID 与数字 Codespace ID，每次建立数据流前复核 Gitea 权限并取得短期 Agent 票据，再通过 mTLS 直连 Agent。这样地址映射与实际资源由同一平台维护，Manager 不转发用户数据。
 
 HTTP 与 SSH 服务启动前初始化同一份路由存储。Open Token 兑换、浏览器会话、公开 Endpoint 和 SSH 连接均核对当前路由的站点 UID。HTTP 成功授权缓存 30 秒，并合并同一授权的并发查询。共享查询具有独立的 10 秒预算，每个请求可以取消自己的等待；因此浏览器取消一个资源请求时，其他正在等待同一次授权的请求仍能取得结果。拒绝与查询错误返回给等待者，后续请求重新查询。允许结果、并发查询、用户身份与连接限制都包含站点 UID，因为不同 Gitea 实例可能分配相同数字用户或仓库 ID。
 
