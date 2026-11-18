@@ -158,7 +158,7 @@
                         <h1 id="部署要求"><a class="header" href="#部署要求">部署要求</a></h1>
 <p>本文面向集群管理员，说明上线所需的平台能力和验收场景。安装命令与 values 由 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md">Helm chart README</a> 维护。</p>
 <h2 id="kubernetes-基础能力"><a class="header" href="#kubernetes-基础能力">Kubernetes 基础能力</a></h2>
-<p>Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass 和 Service；由 Manager 发布 HTTP Endpoint 时还需要 Ingress 控制器。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。Gateway 与 Cache 在管理页面创建后由 Manager 部署，因此 Helm 只负责控制面，不需要预先知道组件数量和域名。</p>
+<p>Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、PVC、NetworkPolicy、RuntimeClass 和 Service，并支持 Web IDE 所用的 <code>image</code> volume 及其 <code>subPath</code> 挂载；最低 Kubernetes 与容器运行时版本见 Helm 指南。由 Manager 发布 HTTP Endpoint 时还需要 Ingress 控制器。Helm chart 安装 CRD、RBAC、Manager、内部服务、管理服务和网络策略。Gateway 与 Cache 在管理页面创建后由 Manager 部署，因此 Helm 只负责控制面，不需要预先知道组件数量和域名。</p>
 <p>管理页面从 Kubernetes API 读取 RuntimeClass、StorageClass、IngressClass、TLS Secret 与 cert-manager Issuer 并提供选择，保存时 Manager 再次确认引用仍然存在且类型匹配。资源数量使用数值与单位分离的输入方式，最终保存为 Kubernetes 原生 quantity 或运行时 duration。这样管理员能够直接使用集群已经声明的能力，同时保留 Kubernetes 调度、证书和容量语义。</p>
 <p>管理服务默认为 <code>ClusterIP</code>，首次配置通过 <code>kubectl port-forward</code> 完成。管理页面使用浏览器当前地址，不要求配置固定的公开 URL；启用 Helm Ingress 时 host 与 TLS Secret 可按入口控制器能力分别配置。Manager 多副本使用 Lease 选举；健康副本保持 Ready，内部 RPC 与管理服务只选择当前 Leader。Ready 表示副本可以参与接替，Leader 标签表示副本可以处理有状态请求，这两个信号分别服务可用性和单写者约束。</p>
 <h3 id="实现验收点"><a class="header" href="#实现验收点">实现验收点</a></h3>
@@ -197,7 +197,7 @@
 <li>Pod 替换后 PVC 数据可以由新的 Runtime 恢复。</li>
 </ul>
 <h2 id="镜像缓存与网络"><a class="header" href="#镜像缓存与网络">镜像、缓存与网络</a></h2>
-<p>Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的多架构提供方镜像，由 Runtime Pod 的 init 容器按环境模板选择；平台与提供方的发布关系见<a href="implementation.html#%E9%95%9C%E5%83%8F%E6%9E%84%E5%BB%BA%E4%B8%8E%E5%8F%91%E5%B8%83">镜像构建与发布</a>。管理员保存环境模板时，Manager 只读取提供方镜像的 OCI 配置元数据并把引用固定到 sha256 摘要；Pod 启动时 Kubernetes 再拉取实际镜像层。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。</p>
+<p>Manager、Gateway、Cache 和 Runtime 使用同一个核心平台镜像引用，但作为独立工作负载运行。Web IDE 使用独立发布的提供方镜像，通过 Runtime Pod 的只读 <code>image</code> volume 交付程序；启动流程见<a href="runtime-platform.html#web-ide-%E4%BA%A4%E4%BB%98%E4%B8%8E%E5%90%AF%E5%8A%A8">Web IDE 交付与启动</a>。保存 Web IDE 配置时 Manager 读取 OCI 元数据，Pod 启动时由 Kubernetes 拉取并挂载实际镜像层。因此 Manager 与 Runtime 节点分别需要访问镜像仓库。私有仓库凭据通过 Helm 引用现有 Docker Registry Secret，Manager 使用它解析元数据，并把同一凭据同步到站点命名空间供 Runtime Pod 拉取。</p>
 <p>生产环境的 Gateway 建议至少运行两个副本。控制器使用软反亲和性优先分散到不同节点，因此单节点测试集群仍可运行，多节点集群则能降低节点故障影响；PDB 保护计划内驱逐，实际容量仍需要集群为至少一个替代 Pod 保留资源。Cache 固定为一个 Recreate 副本，其 PVC 使用 ReadWriteOnce，升级窗口允许短暂缓存不可用；Runtime 可以在授权范围内回源，因此这不会改变 Codespace 的持久数据。</p>
 <p>标签模式在创建 Pod 时检查最新镜像。更新部署版本后，Manager 和 Gateway 滚动更新，Cache 按 Recreate 策略先停后启；用户 Runtime 保持运行，直到普通生命周期操作需要创建新的 Pod。摘要模式始终引用同一内容，适合生产和故障复现。这样既能让开发集群及时取得更新，也不会为了刷新标签而中断用户会话。</p>
 <p>Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使用 PVC 或 S3，内容属于可重新生成的性能数据。文件系统 Cache 的 PVC 与组件同名并由组件拥有；改用 S3 后控制器回收这块缓存卷。每个 Cache 使用同名 ClusterIP Service 的 <code>443/https</code> 端口，Manager 根据 Service 名称签发内部服务证书，Runtime Docker 通过安装级内部根证书验证连接。Cache 只在集群网络中提供，多个站点通过短期凭据和独立命名空间共享它。</p>
@@ -209,8 +209,8 @@
 <ul>
 <li>Manager 与其创建的工作负载使用同一平台镜像引用。</li>
 <li>Helm Chart 版本、Chart 摘要和核心平台镜像摘要可以在对应 GitHub Actions 运行摘要中找到；Web IDE 提供方按自身发布记录审计版本和摘要。</li>
-<li>Runtime 节点可以拉取模板选择的提供方镜像；私有仓库凭据同时适用于核心 Runtime 和 Web IDE init 容器。</li>
-<li>Manager 能使用同一私有仓库凭据解析 Web IDE 镜像元数据，模板保存后只保留 sha256 引用。</li>
+<li>Runtime 节点可以拉取并挂载模板选择的提供方镜像；私有仓库凭据同时适用于核心 Runtime 镜像与 Web IDE 镜像卷。</li>
+<li>Manager 能使用同一私有仓库凭据解析 Web IDE 镜像元数据，模板保留所选标签或显式摘要。</li>
 <li>标签模式的新建工作负载获取当前镜像，摘要模式的工作负载保持内容固定。</li>
 <li>私有仓库凭据只投递给需要它的工作负载。</li>
 <li>Runtime 无法访问其他站点的 Runtime 网络。</li>
@@ -252,7 +252,7 @@
 <li>凭据轮换后旧身份和旧会话按有效期失效。</li>
 <li>启用的站点配额包含运行中和正在创建的 Runtime；关闭配额的站点不依赖 <code>ResourceQuota</code> 完成调度。</li>
 <li>环境模板始终提供 CPU 和内存请求；资源上限关闭时生成的 Runtime Pod 不包含 CPU 和内存 limit。</li>
-<li>恢复后站点、Runtime UUID、PVC 与 Gitea 记录能够重新关联。</li>
+<li>恢复后通过 Site UID 和数字 Codespace ID 重新关联 CR、PVC 与 Gitea 记录，并核对实际资源 UID。</li>
 </ul>
 <h2 id="上线验收"><a class="header" href="#上线验收">上线验收</a></h2>
 <p>CI 验证发布产物，目标集群仍需验证自身的运行时、存储和网络配置。测试分层与发布要求见<a href="implementation.html">实施与测试</a>，专用测试节点的准备、USB/IP 测试内核和执行命令见 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/tests/e2e/README.md">E2E 指南</a>。正式启用前应在目标集群完成：</p>
