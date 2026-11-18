@@ -31,6 +31,8 @@ Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端�
 
 注册完成后，Manager 声明自身、领取和完成操作，上报日志、Runtime 信息与资源清单，并按需请求运行材料。所有实例请求使用数字 Codespace ID，Gitea 同时校验认证 Manager 的归属。领取、续期、日志和完成请求携带当前操作版本；running 状态的 Runtime 报告携带建立当前实例的 create/resume 版本。
 
+Manager 的 Gitea HTTP 客户端默认使用 15 秒请求超时，Gitea 为单次 Manager RPC 设置 30 秒的服务端处理上限，及时释放异常请求占用的资源。心跳和周期元数据刷新间隔均为 30 秒，超过 120 秒没有声明时判定 Manager 离线；元数据与资源观测保留 240 秒有效窗口，使短暂漏报不立即丢失展示信息。这些时序各自按通信和数据用途确定，管理员配置的操作总时限单独控制业务执行预算。
+
 Runtime Metadata 携带完整 Endpoint URL、`ssh://user@host:port` 连接 URI 和解析后的 `workspace_folder`。Manager 使用当前 Gateway 配置、CR UID 和 Agent 上报的容器路径生成连接信息，因为实际地址映射和工作目录属于运行平台。Gitea 校验 HTTP 与 SSH 地址属于该 Manager 声明的 Gateway，并在展示层根据 SSH URI 和工作目录生成 SSH 命令、VS Code 与 Zed 链接。编辑器链接属于页面展示，集中生成可以使编辑器格式变化独立于运行平台发布。
 
 打开浏览器端点时，Gitea 只复核所选端点的 Gateway 归属；公开端点直接使用上报 URL，私有端点使用同源固定路径 `/.gitea-codespace/open` 并携带本次授权码。这使认证入口始终与实际目标同源，也使 SSH 配置变化与网页访问各自独立。Workspace 通过端点 ID 识别，显示名称由 Gitea 本地化，普通转发端口的 label 则保留用户定义。
@@ -59,6 +61,7 @@ ManagerService 的请求和响应统一限制为 32 MiB，两端直接使用公�
 - 除 `RegisterManager` 外，ManagerService 方法都要求有效的 Manager ID 与运行密钥。
 - 注册令牌重置不改变已经签发的运行身份。
 - Manager 凭据只能操作对应的 Manager 记录。
+- 正常声明返回 30 秒的心跳及周期元数据刷新间隔；离线判断依据最近声明时间，展示数据过期只影响可用信息。
 - 领取、续期、日志、Runtime 报告和完成都校验当前绑定与版本。
 - 未观察或低版本观察返回当前 operation 且不延长租约，精确观察当前版本才返回续租结果。
 - 启动容量与环境标签共同决定可领取的启动任务，清理容量独立生效；克隆按照地址顺序尝试并保持固定提交检出。

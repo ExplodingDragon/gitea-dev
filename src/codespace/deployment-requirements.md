@@ -65,9 +65,9 @@ Dev Container 镜像由 Runtime 内的 Docker 拉取或构建。Cache 可以使�
 
 每个站点使用独立命名空间和 NetworkPolicy；用户流量统一进入 Gateway，再由 Gateway 连接 Agent。外部 DNS 与 TLS 由 Ingress、cert-manager 或集群运维维护，SSH 可以通过 Manager 创建的独立 LoadBalancer Service 发布。外部入口证书与 Cache 内部 HTTPS 证书服务于不同网络边界，分别由入口设施和 Manager 内部 CA 维护。
 
-站点配置中的运行出站网络使用 CIDR 和 TCP 端口放行 Runtime 必需的目标。这里需要包含 Gitea 实际返回的 HTTP 与 SSH 克隆地址，以及 Dev Container 生命周期命令依赖的服务；Manager 控制面能够访问 Gitea 并不代表站点命名空间中的 Runtime 也能访问。使用显式地址段的原因是标准 NetworkPolicy 没有可移植的域名规则，管理员可以先在 Runtime Pod 中解析和验证目标地址，再把稳定的网络范围写入站点配置。
+站点分别配置公网出站、同站点互通和显式目标放行，后者支持 CIDR、TCP/UDP 协议以及端口范围或全部端口。出站规则需要覆盖 Gitea 实际返回的克隆地址及开发依赖；Manager 能访问 Gitea 并不代表 Runtime 的出站路径已经放行。域名目标按实际解析地址配置，使用公共地址的组织内网需要加入内部 CIDR。网络边界见[出站网络与证书](runtime-platform.md#出站网络与证书)，配置步骤与 CNI 要求见 [Helm 网络指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md#configure-network-access)。
 
-内网部署可以分别为环境模板和 Cache 组件设置 HTTP、HTTPS 或 SOCKS5 出站代理。环境模板适用于该模板创建的 Runtime、Docker 构建和 Dev Container；Cache 代理只用于镜像与对象存储回源。代理使用字面 IP 时，引用模板的每个站点都需要在运行出站网络中放行该 CIDR 和端口，管理 API 会在保存时核对；代理使用域名时，管理员需要按集群 DNS 的实际解析范围放行对应地址段。代理执行 TLS 检查时填写其 CA 证书，Manager 通过固定的只读文件挂载向工作负载提供该证书，避免额外的文件路径环境配置。
+内网部署可以分别为环境模板和 Cache 组件设置 HTTP、HTTPS 或 SOCKS5 出站代理。环境模板适用于该模板创建的 Runtime、Docker 构建和 Dev Container；Cache 代理只用于镜像与对象存储回源。环境模板代理使用字面 IP 时，管理 API 在保存时核对引用站点的公网出站或显式 TCP 规则是否覆盖目标；代理使用域名时，管理员需要按集群 DNS 的实际解析范围验证放行。代理执行 TLS 检查时填写其 CA 证书，Manager 通过固定的只读文件挂载向工作负载提供该证书，避免额外的文件路径环境配置。
 
 Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，管理员把 PEM 证书链保存到对应站点；Manager 在系统信任库上追加它，并在保存前验证实际 Manager RPC。Agent 在每次 Runtime 操作开始时把系统 CA、Manager 内部根证书、站点 CA 和代理 CA 合并为唯一完整信任包，供 Docker 拉取镜像、Git、OCI Feature 包下载和主 Dev Container 运行时使用。Dockerfile 的 `RUN` 和 Feature 安装脚本在构建镜像内执行，使用该镜像自身的证书配置，具体见[出站网络与证书](runtime-platform.md#出站网络与证书)。双向 TLS 的组件身份证书、私钥和根集合仍从独立身份 Secret 加载，出站信任包只包含公开证书；浏览器入口证书继续由外部入口维护。
 
@@ -80,9 +80,10 @@ Gitea 使用公共 CA 时站点配置留空 CA Bundle。使用内部 CA 时，�
 - 标签模式的新建工作负载获取当前镜像，摘要模式的工作负载保持内容固定。
 - 私有仓库凭据只投递给需要它的工作负载。
 - Runtime 无法访问其他站点的 Runtime 网络。
+- 公网出站、同站点互通和指定 CIDR 的 TCP/UDP 端口规则分别按站点配置执行，Gateway 与平台必要连接保持可用。
 - 站点运行出站网络覆盖实际的 Gitea HTTP 或 SSH 克隆目标；未覆盖时克隆错误能够指出协议与目标主机。
 - 环境模板代理覆盖 Runtime、内层 Docker、构建和 Dev Container，Cache 代理覆盖 OCI 与 S3 回源；两者的集群内部地址保持直连。
-- 字面 IP 代理的 CIDR 和端口已加入所有引用站点的出站规则；域名代理的实际解析范围已由部署验收确认。
+- 环境模板代理的目标已被所有引用站点的公网出站或显式 TCP 规则覆盖；域名代理的实际解析范围已由部署验收确认。
 - 使用代理 CA 时，唯一完整信任包同时包含系统公共 CA、Manager 内部 CA、站点 CA 和代理 CA，并在 Docker 第一次拉取前生成。
 - HTTP、WebSocket、SSH 和 SFTP 用户流量均经过 Gateway。
 - Cache 清空后可以在原授权范围内回源。
