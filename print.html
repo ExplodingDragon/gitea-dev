@@ -2253,136 +2253,117 @@ make check
 <li>工作树没有意外生成物，测试资源和临时凭据已经清理。</li>
 <li>变更说明列出已执行测试及尚未验证的真实环境场景。</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="gitea-self-分支维护总览"><a class="header" href="#gitea-self-分支维护总览">Gitea self 分支维护总览</a></h1>
-<h2 id="维护目标"><a class="header" href="#维护目标">维护目标</a></h2>
-<p><code>gitea/self</code> 是本项目实际部署并持续升级的 Gitea 分支，<code>gitea-dev/main</code> 负责固定已经验证的内层提交并保存维护记录。业务代码采用 <a href="https://github.com/go-gitea/gitea/pull/38337">Codespace PR #38337</a>、<a href="https://github.com/go-gitea/gitea/pull/40071">Pages PR #40071</a> 与它们包含的上游代码的正常合并结果；self 只为自己的已发布数据库序列安排不同的迁移执行编号。</p>
-<p>当前内层提交为 <code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code>，上游固定在 <code>23836eb610b6673dc4ef7001d432e48dd3af1537</code>，Codespace PR 固定在 <code>0f1c19ba10e2d6e026efd0f63e435e545fc3d230</code>，Pages PR 固定在 <code>5000d55fb2b0c3312fe4a49e3716bd871efc1ce7</code>。当前期望数据库版本为 374。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>内层当前分支为 <code>self</code>，远端 <code>origin/self</code> 指向 <code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code>。</li>
-<li>三个固定来源都是当前 self 的祖先。</li>
-<li><code>modelmigration.ExpectedDBVersion()</code> 返回 374。</li>
-</ul>
-<h2 id="兼容范围"><a class="header" href="#兼容范围">兼容范围</a></h2>
-<p>self 保证已经沿 self 分支运行的实例继续升级。本轮最重要的升级锚点是上一版 <code>self@53d76a7ab066085c21af9098862392ba1d2fc420</code>：该版本数据库为 372，升级后依次执行迁移 372 和 373，到达版本 374。更早的 self 数据库继续沿同一条连续序列补齐迁移；全新安装由当前代码创建最终结构。</p>
-<p>上游和两个单独 PR 在迁移 365 之后使用了与 self 不同的编号含义。本项目不把这些分支已经安装或升级过的数据库直接切换到 self，因为 Gitea 的版本表只保存数字，无法证明同一个数字执行过哪一组迁移。这个边界把兼容承诺集中到真实部署的 self 历史，升级行为可以通过确定的旧版本数据库测试，而不需要猜测表结构来源。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li><code>TestUpgradeSelfDatabaseFrom372</code> 使用旧结构和真实版本记录执行 372 → 374 升级。</li>
-<li>版本 372 只有迁移 372、373 待执行，版本 373 只有迁移 373 待执行，版本 374 没有待执行迁移。</li>
-<li>部署记录能够证明数据库一直沿 self 分支升级。</li>
-</ul>
-<h2 id="迁移文件身份"><a class="header" href="#迁移文件身份">迁移文件身份</a></h2>
-<p>官方迁移文件保留上游原始路径和内容，例如 <code>v365.go</code> 到 <code>v369.go</code>。文件名表达它们在上游的身份，<code>migrations.go</code> 决定它们在 self 中的真实执行位置。这样下一轮同步时可以直接逐字比较官方文件，也为未来官方 <code>v370.go</code> 和后续文件保留正常位置。</p>
-<p>只有两个自维护 PR 的数据库变化使用以下稳定格式：</p>
-<pre><code class="language-text">pr-&lt;PR 编号&gt;-v&lt;最初来源迁移编号&gt;-patch&lt;增量序号&gt;.go
-</code></pre>
-<p>例如 <code>pr-38337-v365-patch3.go</code> 表示 Codespace PR 最初迁移 365 的第三项后续变化；它在 self 中实际执行为迁移 371。来源身份与执行编号分开记录，是为了在 PR 变基或上游增加迁移后仍能识别同一项自维护变化。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li><code>modelmigration/v29/v365.go</code> 至 <code>v369.go</code> 及现有测试与 <code>upstream/main</code> 逐字一致。</li>
-<li>自维护文件只有 <code>pr-38337-v365-patch1/2/3</code> 和 <code>pr-40071-v365-patch1</code> 四组来源身份。</li>
-<li>self 迁移目录由四组自维护 PR 文件和官方 <code>v365</code>—<code>v369</code> 组成，官方后续 <code>v370.go</code> 位置保持可用。</li>
-</ul>
-<h2 id="本轮结果"><a class="header" href="#本轮结果">本轮结果</a></h2>
-<p>本轮以双父合并保存两个 PR 的完整提交记录，再用普通提交整理数据库执行序列：</p>
-<div class="table-wrapper"><table><thead><tr><th>内容</th><th>提交</th><th>结果</th></tr></thead><tbody>
-<tr><td>合并 Codespace 当前头</td><td><code>23ca84e0c82c43f8c457d3736a4ab721b6525c93</code></td><td>第二父为 <code>0f1c19ba10</code></td></tr>
-<tr><td>合并 Pages 当前头</td><td><code>d87314faabe04bd6560d9b39cb422a6f4117c4d7</code></td><td>第二父为 <code>5000d55fb2</code></td></tr>
-<tr><td>恢复官方迁移文件身份</td><td><code>f19882d9babed0ecd7526607c5cc364cd51d7a81</code></td><td>官方 <code>v365</code>—<code>v367</code> 回到原路径</td></tr>
-<tr><td>追加 self 迁移</td><td><code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code></td><td>注册 372、373，并加入 372 → 374 测试</td></tr>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="gitea-self-分支维护"><a class="header" href="#gitea-self-分支维护">Gitea self 分支维护</a></h1>
+<h2 id="当前来源与交付范围"><a class="header" href="#当前来源与交付范围">当前来源与交付范围</a></h2>
+<p>内层 <code>gitea/self</code> 保存部署代码，外层 <code>main</code> 保存其已验证提交和维护记录。2026-11-19 接入 Codespace PR #38337 的更新；Pages PR 没有新提交，继续保留原有合并历史。</p>
+<div class="table-wrapper"><table><thead><tr><th>项目</th><th>固定提交或版本</th></tr></thead><tbody>
+<tr><td>更新前 self</td><td><code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code>，数据库 374</td></tr>
+<tr><td>Codespace PR #38337</td><td><code>09670abbdecdd30f42a13e1e20b1dd2a625cc527</code></td></tr>
+<tr><td>Pages PR #40071</td><td><code>5000d55fb2b0c3312fe4a49e3716bd871efc1ce7</code></td></tr>
+<tr><td>已包含的官方主线</td><td><code>23836eb610b6673dc4ef7001d432e48dd3af1537</code></td></tr>
+<tr><td>Codespace 双父合并</td><td><code>e152d93af21700a53df53c05924c0a607afff450</code></td></tr>
+<tr><td>self 数据库提交</td><td><code>098facfe362119127e54aed8faddd0c3caa40914</code></td></tr>
+<tr><td>完成后数据库版本</td><td>375</td></tr>
 </tbody></table>
 </div>
-<p>非数据库文件与两个 PR 的正常合并结果一致。长期 self 差异集中在 <code>modelmigration</code> 中：自维护 PR 迁移文件、self 执行列表和 self 升级测试。</p>
+<p>本轮范围是更新 <code>feat-remote-dev</code>，没有另外合入 PR 尚未包含的官方主线。所有业务文件采用本次正常 Git 合并结果；self 的新增代码只在 <code>modelmigration/</code> 中安排已部署数据库的升级。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>两个合并提交的第二父分别是固定的 PR 头。</li>
-<li>排除双方正常合并时需要人工组合的文件后，非数据库文件与 Git 自动合并结果没有差异。</li>
-<li>人工组合的路由、组织、仓库删除和管理端测试同时保留 Codespace、Pages 与上游行为。</li>
+<li>Codespace 合并的第二父为 <code>09670abbde</code>，Pages 和已包含的官方主线仍是 self 的祖先。</li>
+<li>数据库目录以外与本轮正常合并树 <code>b1f1d5f8656885ec7445e857dff1a43e74972326</code> 完全相同。</li>
+<li><code>ExpectedDBVersion()</code> 返回 375；外层指针固定已推送的 self 提交。</li>
 </ul>
-<h2 id="文档入口-1"><a class="header" href="#文档入口-1">文档入口</a></h2>
+<h2 id="升级承诺与本次一次性清理"><a class="header" href="#升级承诺与本次一次性清理">升级承诺与本次一次性清理</a></h2>
+<p>self 保证沿自身历史运行的数据库继续升级。当前直接验证上一版 374 → 375，并保留 372 → 375 的跨版本测试。全新安装直接创建当前结构。官方分支及两个独立 PR 在迁移 365 后具有不同编号含义；这些已安装数据库需要按明确来源另行设计转换。</p>
+<p>本次 Codespace 改为数字实例 ID 和创建时的密钥快照。按已审阅方案，迁移 374 删除全部旧 Codespace 实例、实例令牌、实例 SSH 公钥和旧日志，用户随后重新创建实例。个人密钥密文、Manager 及注册令牌、模板、仓库权限授权保持原值；个人密钥旧仓库关联和旧字段按新 PR 结构移除。其他 Gitea、Pages 数据沿正常业务维护。</p>
+<p>“可升级”表示迁移可以完成、保留项维持原值，并不表示保留旧 Codespace 工作目录。部署时还要按 <a href="maintenance/self/patches/pr-38337-v365-patch4.html">patch4 部署说明</a> 清理对应站点的旧运行资源并更新配套组件。数据库迁移不会连接 Kubernetes。</p>
+<p><strong>实现验收点</strong></p>
 <ul>
-<li><a href="maintenance/self/database-versioning.html">数据库版本与升级范围</a>说明兼容承诺和 365—374 的连续关系。</li>
-<li><a href="maintenance/self/migration-map.html">迁移映射</a>集中记录来源身份、官方文件身份和 self 执行编号。</li>
-<li><a href="maintenance/self/upstream-migrations.html">官方迁移接入记录</a>说明 <code>v365</code>—<code>v369</code> 为什么保留原文件名。</li>
-<li><a href="maintenance/self/git-history.html">Git 历史结构</a>记录双父合并和普通迁移提交。</li>
-<li><a href="maintenance/self/upstream-sync.html">上游同步流程</a>给出下一轮一次性同步方法。</li>
-<li><a href="maintenance/self/conflict-resolutions.html">合并结果与冲突解决</a>说明本轮人工组合结果。</li>
-<li><a href="maintenance/self/verification.html">验证记录</a>保存实际命令、通过结果和已确认的环境差异。</li>
-<li><code>patches/</code> 分别说明两个自维护 PR 的四项来源迁移。</li>
+<li>完整迁移器执行 374 → 375 和 372 → 375，版本只在迁移成功后推进。</li>
+<li>清理范围、保留范围及个人密钥新语义有直接测试。</li>
+<li>375 再次启动时，新建实例和凭据保持不变。</li>
+<li>发布前完成旧运行资源清理、配套版本核对和新实例创建验证。</li>
+</ul>
+<h2 id="文件身份与后续维护"><a class="header" href="#文件身份与后续维护">文件身份与后续维护</a></h2>
+<p>官方 <code>vXXX.go</code> 和对应测试保持原路径、原内容；self 执行位置由 <code>migrations.go</code> 决定。Codespace、Pages 使用稳定的 <code>pr-&lt;PR&gt;-v&lt;最初来源&gt;-patch&lt;N&gt;</code> 身份。本轮新增 <code>pr-38337-v365-patch4.go</code>，注册为 self 374，完成后为 375。</p>
+<p>这样区分来源身份和执行编号，可以保留官方文件的后续合并位置，同时让已发布 self 历史继续向末尾追加。已发布 patch1—patch3 保持原样，patch4 仅处理本次结构变化。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li><a href="maintenance/self/migration-map.html">迁移映射</a> 与代码中的 365—374 连续列表一致。</li>
+<li>官方迁移可与固定主线逐字比较，历史 PR 迁移可与上一版 self 逐字比较。</li>
+<li>后续变化从 self 375 追加，按实际变化确定新的官方迁移或 PR patch。</li>
+</ul>
+<h2 id="维护资料"><a class="header" href="#维护资料">维护资料</a></h2>
+<ul>
+<li><a href="maintenance/self/database-versioning.html">数据库版本与升级范围</a>：版本边界、来源范围和真实升级测试。</li>
+<li><a href="maintenance/self/migration-map.html">迁移映射</a>、<a href="maintenance/self/upstream-migrations.html">官方迁移记录</a>：来源、文件和执行位置。</li>
+<li><a href="maintenance/self/git-history.html">Git 历史</a>、<a href="maintenance/self/conflict-resolutions.html">合并差异审计</a>：原始提交及 self 差异证据。</li>
+<li><a href="maintenance/self/upstream-sync.html">同步流程</a>、<a href="maintenance/self/verification.html">验证记录</a>：下一轮操作与本轮实际验证结果。</li>
+<li><a href="maintenance/self/patches/pr-38337-v365-patch4.html">Codespace patch4</a>：数据处理、失败重试及部署步骤。</li>
 </ul>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>每项当前迁移都能从映射表追溯到官方记录或自维护 PR 记录。</li>
-<li>文档中的来源提交、迁移编号、数据库版本和测试结果与代码一致。</li>
-<li>官方迁移统一由“官方迁移接入记录”说明，自维护 PR 迁移统一由 <code>patches/</code> 说明。</li>
+<li>维护资料及 <code>src/SUMMARY.md</code> 可通过 mdBook 构建。</li>
+<li>每项来源、迁移、测试结果都有对应代码或提交记录。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="数据库版本与升级范围"><a class="header" href="#数据库版本与升级范围">数据库版本与升级范围</a></h1>
-<h2 id="当前连续序列"><a class="header" href="#当前连续序列">当前连续序列</a></h2>
-<p>Gitea 的数据库版本等于最后完成的迁移编号加一。self 在上游迁移 364 之后保留已经发布的自维护序列，并把本轮两项新官方迁移追加到末尾：</p>
-<pre><code class="language-go">newMigration(365, "Add Codespace tables", v29.AddCodespaceTables),
-newMigration(366, "Add Pages support", v29.AddPagesTables),
-newMigration(367, "Add Codespace Manager registration token table", v29.AddCodespaceManagerRegistrationTokenTable),
-newMigration(368, "Normalize legacy repository unit and login source JSON", v29.NormalizeLegacyConfigJSON),
-newMigration(369, "Drop user_open_id table", v29.DropUserOpenIDTable),
-newMigration(370, "Add latest_release_id to repository table", v29.AddLatestReleaseIDToRepository),
-newMigration(371, "Drop obsolete Codespace queued timeout index", v29.DropCodespaceQueuedTimeoutIndex),
-newMigration(372, "Add unique index for team name", v29.AddUniqueTeamNameIndex),
-newMigration(373, "Add runner_name to action_task", v29.AddRunnerNameToActionTask),
-</code></pre>
-<div class="table-wrapper"><table><thead><tr><th style="text-align: right">self 迁移</th><th style="text-align: right">完成后版本</th><th>结构变化</th></tr></thead><tbody>
-<tr><td style="text-align: right">365</td><td style="text-align: right">366</td><td>建立 Codespace 基础结构</td></tr>
-<tr><td style="text-align: right">366</td><td style="text-align: right">367</td><td>建立 Pages 基础结构</td></tr>
-<tr><td style="text-align: right">367</td><td style="text-align: right">368</td><td>建立 Codespace Manager 注册令牌表</td></tr>
-<tr><td style="text-align: right">368</td><td style="text-align: right">369</td><td>规范化旧配置 JSON</td></tr>
-<tr><td style="text-align: right">369</td><td style="text-align: right">370</td><td>删除 OpenID 2.0 表</td></tr>
-<tr><td style="text-align: right">370</td><td style="text-align: right">371</td><td>增加仓库最新发行版指针</td></tr>
-<tr><td style="text-align: right">371</td><td style="text-align: right">372</td><td>删除 Codespace 已停用的排队超时索引</td></tr>
-<tr><td style="text-align: right">372</td><td style="text-align: right">373</td><td>建立组织内团队名称唯一索引</td></tr>
-<tr><td style="text-align: right">373</td><td style="text-align: right">374</td><td>保存 Actions 任务使用的运行器名称</td></tr>
+<h2 id="连续执行序列"><a class="header" href="#连续执行序列">连续执行序列</a></h2>
+<p>Gitea 版本表保存下一项待执行迁移编号，因此完成迁移 374 后版本为 375。self 在官方迁移 364 之后维护自己的连续执行序列，文件来源身份与执行编号分别记录。</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: right">self 迁移</th><th style="text-align: right">完成后版本</th><th>内容</th></tr></thead><tbody>
+<tr><td style="text-align: right">365</td><td style="text-align: right">366</td><td>Codespace 基础结构，patch1</td></tr>
+<tr><td style="text-align: right">366</td><td style="text-align: right">367</td><td>Pages 基础结构，patch1</td></tr>
+<tr><td style="text-align: right">367</td><td style="text-align: right">368</td><td>Codespace Manager 注册令牌，patch2</td></tr>
+<tr><td style="text-align: right">368</td><td style="text-align: right">369</td><td>官方 v365：旧 JSON 规范化</td></tr>
+<tr><td style="text-align: right">369</td><td style="text-align: right">370</td><td>官方 v366：移除 OpenID 2.0 表</td></tr>
+<tr><td style="text-align: right">370</td><td style="text-align: right">371</td><td>官方 v367：最新发行版指针</td></tr>
+<tr><td style="text-align: right">371</td><td style="text-align: right">372</td><td>Codespace 排队超时索引清理，patch3</td></tr>
+<tr><td style="text-align: right">372</td><td style="text-align: right">373</td><td>官方 v368：组织内团队名称唯一索引</td></tr>
+<tr><td style="text-align: right">373</td><td style="text-align: right">374</td><td>官方 v369：Actions 任务运行器名称</td></tr>
+<tr><td style="text-align: right">374</td><td style="text-align: right">375</td><td>Codespace 旧实例清理及新结构，patch4</td></tr>
 </tbody></table>
 </div>
+<p>上一版 self 已完成 365—373。把本次变化追加为 374，使该实例能准确执行新变化；保留历史文件同时保证更早 self 可以补齐同一条执行序列。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>migrations.go</code> 中 365—373 连续、没有重复编号。</li>
-<li>每行完成后版本等于迁移编号加一。</li>
-<li>当前最终数据库版本为 374。</li>
+<li><code>migrations.go</code> 连续注册到 374，期望版本为 375。</li>
+<li>历史 365—373 的函数及含义保持原样。</li>
+<li>官方文件和测试仍使用上游原名及内容。</li>
 </ul>
-<h2 id="为什么从-372-继续追加"><a class="header" href="#为什么从-372-继续追加">为什么从 372 继续追加</a></h2>
-<p>上一版 self 已经发布数据库版本 372，这个数字表示 365—371 全部完成。上游最新代码把团队名称唯一索引和运行器名称迁移放在官方编号 368、369；如果按官方编号重新排列，就会改变已发布 self 数据库中 368、369 的既有含义。</p>
-<p>因此 self 复用官方迁移函数，但把实际执行编号安排为 372、373。旧 self 数据库会按 Gitea 原生迁移器顺序执行新增项，官方文件本身仍保持 <code>v368.go</code>、<code>v369.go</code>。这个设计同时保护已运行实例和上游文件身份。</p>
+<h2 id="兼容性矩阵"><a class="header" href="#兼容性矩阵">兼容性矩阵</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>数据库来源</th><th>本轮处理</th><th>直接验证内容</th></tr></thead><tbody>
+<tr><td>上一版 self 374</td><td>执行 374，到 375</td><td>完整迁移器、清理范围、最终结构、失败重试</td></tr>
+<tr><td>历史 self 372</td><td>顺序执行 372、373、374，到 375</td><td>团队重命名、运行器名回填和 Codespace 结构升级</td></tr>
+<tr><td>当前 self 375</td><td>保持 375</td><td>再次调用迁移器，保留新实例和新令牌</td></tr>
+<tr><td>更早且仍受 Gitea 支持的 self</td><td>补齐连续序列</td><td>历史迁移套件；直接 self 升级测试以 372、374 为准</td></tr>
+<tr><td>全新安装</td><td>创建当前模型结构，版本 375</td><td>构建、集成及端到端测试</td></tr>
+<tr><td>官方或独立 PR 已安装数据库</td><td>按来源另行制定转换</td><td>本轮兼容承诺限定 self 历史</td></tr>
+</tbody></table>
+</div>
+<p>数字相同的版本可能来自不同分支结构，版本表无法识别来源。因此按真实部署来源界定升级范围，比根据表是否存在猜测来源更明确。迁移中的列存在检查仅用于同一 self 迁移中断后的重试。</p>
+<p>本次兼容特例是明确清理旧 Codespace：旧实例及运行数据重新创建；个人密钥、Manager 等保留项按 <a href="maintenance/self/patches/pr-38337-v365-patch4.html">patch4</a> 处理。升级是单向变化，旧二进制不能继续使用升级后的数据库。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>版本 372 的数据库依次执行 <code>AddUniqueTeamNameIndex</code> 和 <code>AddRunnerNameToActionTask</code>。</li>
-<li>官方 <code>v368.go</code>、<code>v369.go</code> 的代码与测试没有为 self 改名或改写。</li>
-<li>两项迁移完成后版本记录依次变为 373、374。</li>
+<li>运维记录升级前的 self 提交和数据库版本。</li>
+<li>374、372 和 375 三个入口由真实迁移测试覆盖。</li>
+<li>业务验收分别检查保留数据和重新创建的 Codespace，不以旧实例保留作为本次目标。</li>
 </ul>
-<h2 id="支持的升级来源"><a class="header" href="#支持的升级来源">支持的升级来源</a></h2>
-<p>本项目支持全新安装和 self 历史中的连续升级。当前直接验证的生产锚点为上一版 self 数据库 372；更早 self 版本按同一迁移列表补齐尚未执行的编号。Gitea 已不支持的过低历史版本仍遵循上游迁移器给出的升级路径。</p>
-<p>上游或单独 PR 在迁移 365 之后安装、升级得到的数据库不属于 self 兼容范围，因为它们用相同数字表示不同结构。需要迁入 self 时，应使用进入分歧迁移前的备份，或单独设计一次有明确来源和验收数据的转换；日常 self 更新不通过检测表是否存在来猜测来源。</p>
+<h2 id="真实升级与重复启动测试"><a class="header" href="#真实升级与重复启动测试">真实升级与重复启动测试</a></h2>
+<p><code>self_migrations_test.go</code> 通过冻结的历史迁移构造旧 Codespace 表，写入真实版本表，再执行 <code>Migrate</code>。374 测试核对最终列和索引，并插入新模型实例及令牌后再次执行迁移，确认不会重复清理。372 测试继续检查两项官方数据变化。</p>
+<p>SQLite 中通过依赖 <code>uuid</code> 的临时视图制造删列失败，确认版本停留 374；解除依赖后重试到 375。直接迁移测试另行验证清理事务回滚、重复执行、删除最高 ID 后自增序列仍延续，以及保留数据和索引。重试只用于升级维护期间，业务恢复以版本 375 成功为前提。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>现有 self 版本 372 可以直接升级到 374。</li>
-<li><code>make test-migration</code> 验证历史数据库能执行当前迁移器。</li>
-<li>运维记录包含实例所用分支，能判断数据库是否属于 self 历史。</li>
+<li><code>TestUpgradeSelfDatabaseFrom372</code>、<code>TestUpgradeSelfDatabaseFrom374</code> 通过。</li>
+<li><code>TestUpgradeSelfDatabaseFrom374RetriesFailedSchemaChange</code> 验证失败保留版本及成功重试。</li>
+<li><code>TestSelfMigrationTail</code> 覆盖 372、373、374、375 的待执行边界。</li>
+<li><a href="maintenance/self/verification.html">验证记录</a> 区分完整套件、数据库种类及实际结果。</li>
 </ul>
-<h2 id="372-到-374-的真实升级测试"><a class="header" href="#372-到-374-的真实升级测试">372 到 374 的真实升级测试</a></h2>
-<p><code>modelmigration/self_migrations_test.go</code> 建立版本 372 的 SQLite 数据库，使用迁移前的 <code>team</code>、<code>action_task</code> 和 <code>action_runner</code> 结构写入数据，再调用完整的 <code>modelmigration.Migrate</code>。测试确认重复团队名得到稳定重命名，<code>runner_name</code> 从运行器表回填，版本表最终写为 374。</p>
-<p>测试使用完整迁移入口而不是直接调用两个函数，因此同时验证待执行迁移选择、执行顺序和版本推进。<code>migrations_test.go</code> 另行检查 372、373、374 三个边界的待执行列表。</p>
+<h2 id="下一次追加"><a class="header" href="#下一次追加">下一次追加</a></h2>
+<p>下一项实际迁移编号为 375，完成后版本为 376。Codespace 后续数据库变化使用 patch5，Pages 后续变化使用 patch2；官方变化继续保留 <code>vXXX.go</code>，再在 self 末尾注册。patch4 的清理是本次已确认的旧协议替换，不作为日后每次更新的通用操作。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>TestUpgradeSelfDatabaseFrom372</code> 在 <code>make test-migration</code> 中通过。</li>
-<li>旧团队数据和 Actions 任务数据在升级后仍可读取。</li>
-<li>版本边界测试证明不会漏执行或重复调度 372、373。</li>
-</ul>
-<h2 id="下一项迁移"><a class="header" href="#下一项迁移">下一项迁移</a></h2>
-<p>下一项 self 数据库变化从实际编号 374 开始，完成后数据库版本为 375。若变化来自两个自维护 PR 已有迁移，则为对应 <code>pr-*</code> 身份增加下一个 <code>patchN</code>；若变化来自新的官方 <code>vXXX.go</code>，保留官方文件名和内容，只在 self 迁移列表末尾安排执行编号。</p>
-<p>采用这两条路径是为了分别表达“我们维护的 PR 增量”和“上游正式迁移”。执行编号始终追加，来源身份始终保持稳定，审阅者可以同时回答代码来源和旧实例执行时机。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>下一项 self 实际迁移编号为 374。</li>
-<li>新迁移在映射中同时记录来源文件身份、self 编号、完成后版本和测试。</li>
-<li>新增官方迁移可以直接与同一上游文件逐字比较。</li>
+<li>下一轮先比较固定来源的实际数据库差异，再决定新增项。</li>
+<li>新增迁移配套上一版 self 的真实升级测试及映射记录。</li>
+<li>现有 375 数据库从新追加项继续，不再次调度迁移 374。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="数据库迁移映射"><a class="header" href="#数据库迁移映射">数据库迁移映射</a></h1>
 <h2 id="当前映射"><a class="header" href="#当前映射">当前映射</a></h2>
@@ -2395,24 +2376,26 @@ newMigration(373, "Add runner_name to action_task", v29.AddRunnerNameToActionTas
 <tr><td>官方删除 OpenID 2.0 表</td><td><code>87ebf3b1ba</code></td><td><code>v366.go</code></td><td style="text-align: right">369</td><td style="text-align: right">370</td><td>官方文件，self 改执行位置</td></tr>
 <tr><td>官方最新发行版指针</td><td><code>a5201dc427</code></td><td><code>v367.go</code></td><td style="text-align: right">370</td><td style="text-align: right">371</td><td>官方文件，self 改执行位置</td></tr>
 <tr><td>Codespace 排队超时索引清理</td><td><code>79e802a5fa</code></td><td><code>pr-38337-v365-patch3.go</code></td><td style="text-align: right">371</td><td style="text-align: right">372</td><td>已发布 self 历史</td></tr>
-<tr><td>官方团队名称唯一索引</td><td><code>6bc92f464a</code></td><td><code>v368.go</code></td><td style="text-align: right">372</td><td style="text-align: right">373</td><td>本轮接入</td></tr>
-<tr><td>官方 Actions 运行器名称</td><td><code>dc9a2aefdc</code></td><td><code>v369.go</code></td><td style="text-align: right">373</td><td style="text-align: right">374</td><td>本轮接入</td></tr>
+<tr><td>官方团队名称唯一索引</td><td><code>6bc92f464a</code></td><td><code>v368.go</code></td><td style="text-align: right">372</td><td style="text-align: right">373</td><td>已发布 self 历史</td></tr>
+<tr><td>官方 Actions 运行器名称</td><td><code>dc9a2aefdc</code></td><td><code>v369.go</code></td><td style="text-align: right">373</td><td style="text-align: right">374</td><td>已发布 self 历史</td></tr>
+<tr><td>Codespace 密钥快照、数字实例 ID 及旧实例清理</td><td><code>24e9558ca9</code>、<code>c334da5d5f</code>；本轮头 <code>09670abbde</code></td><td><code>pr-38337-v365-patch4.go</code></td><td style="text-align: right">374</td><td style="text-align: right">375</td><td>本轮接入</td></tr>
 </tbody></table>
 </div>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>表中九项 self 迁移编号连续为 365—373。</li>
-<li>四项自维护来源使用 <code>pr-*</code> 名称，五项官方来源使用 <code>v365</code>—<code>v369</code> 原名。</li>
+<li>表中十项 self 迁移编号连续为 365—374。</li>
+<li>五项自维护来源使用 <code>pr-*</code> 名称，五项官方来源使用 <code>v365</code>—<code>v369</code> 原名。</li>
 <li>每项完成后版本等于 self 迁移编号加一。</li>
 </ul>
 <h2 id="两个-pr-当前完整迁移的关系"><a class="header" href="#两个-pr-当前完整迁移的关系">两个 PR 当前完整迁移的关系</a></h2>
-<p>Codespace 与 Pages 当前头都包含上游数据库版本 370，因此各自在 <code>modelmigration/v29/v370.go</code> 放置完整功能迁移。self 已经在 365—367 执行 Codespace、Pages 和 Manager 注册令牌结构，又在 371 执行 Codespace 的后续索引清理，所以不会再次注册两个 PR 的完整 <code>v370.go</code>。</p>
-<p>这不是舍弃 PR 的数据库变化，而是把当前完整结构拆解为 self 已经发布的四项增量。业务代码仍直接来自 PR 当前头；数据库只保留现有 self 实例真正需要执行的变化。</p>
+<p>Codespace <code>09670abbde</code> 与 Pages <code>5000d55fb2</code> 都包含上游数据库版本 370，因此各自在 <code>modelmigration/v29/v370.go</code> 放置完整功能迁移。self 已经在 365—367 执行基础结构，在 371 清理排队超时索引，本轮再由 374 清理旧实例并更新列和关联表。</p>
+<p>两个 PR 的当前完整结构由五项自维护增量共同提供。业务代码保持正常合并结果；数据库只执行现有 self 实例尚未完成的变化。因此完整 <code>v370.go</code> 及其只适用于新结构的测试由对应的 self 补丁和升级测试替代。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
 <li><code>AddCodespaceTables</code>、<code>AddPagesTables</code>、<code>AddCodespaceManagerRegistrationTokenTable</code> 各注册一次。</li>
 <li><code>DropCodespaceQueuedTimeoutIndex</code> 注册为 371，并有直接测试。</li>
-<li>self 通过四项增量得到两个 PR 的当前数据库结构，官方后续 <code>v370.go</code> 位置保持可用。</li>
+<li><code>ResetLegacyCodespaceInstancesAndUpdateSchema</code> 注册为 374；完整升级后 Codespace 列和索引与当前模型一致。</li>
+<li>self 通过五项增量得到两个 PR 的当前数据库结构，官方后续 <code>v370.go</code> 位置保持可用。</li>
 </ul>
 <h2 id="官方文件与-self-编号的关系"><a class="header" href="#官方文件与-self-编号的关系">官方文件与 self 编号的关系</a></h2>
 <p>官方文件名不等于 self 实际编号。<code>v365.go</code>、<code>v366.go</code>、<code>v367.go</code> 在 self 中分别执行为 368、369、370；<code>v368.go</code>、<code>v369.go</code> 分别执行为 372、373。中间的 self 371 是 Codespace 已发布迁移的第三项增量。</p>
@@ -2451,14 +2434,14 @@ newMigration(373, "Add runner_name to action_task", v29.AddRunnerNameToActionTas
 <tr><td><code>v369.go</code></td><td><code>dc9a2aefdcf588fef1fa15473483476820549fe3</code></td><td>保存 Actions 运行器名称</td><td style="text-align: right">373</td><td style="text-align: right">374</td></tr>
 </tbody></table>
 </div>
-<p>官方 370 与 self 372 之间保留 self 迁移 371，因为 Codespace 早期基础迁移已经创建 <code>queued_timeout</code> 索引，而当前 PR 结构已经移除它。self 必须先以独立增量清理旧实例，再继续执行新的官方迁移。</p>
+<p>官方 <code>v367.go</code> 对应的 self 370 与 <code>v368.go</code> 对应的 self 372 之间保留 self 迁移 371，因为 Codespace 早期基础迁移已经创建 <code>queued_timeout</code> 索引，而后续 PR 结构已移除它。self 以独立增量清理旧索引，再继续执行官方迁移；该项保留实例数据。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
 <li>五项官方函数在 self 中各注册一次。</li>
 <li>self 迁移 371 仍由 <code>pr-38337-v365-patch3.go</code> 提供。</li>
 <li>版本 372 的旧 self 从官方 <code>v368.go</code> 对应函数开始继续升级。</li>
 </ul>
-<h2 id="本轮文件整理"><a class="header" href="#本轮文件整理">本轮文件整理</a></h2>
+<h2 id="2026-11-16-文件整理"><a class="header" href="#2026-11-16-文件整理">2026-11-16 文件整理</a></h2>
 <p>上一版维护方案曾把官方 <code>v365</code>—<code>v367</code> 改名为三个 <code>pr-*</code> 文件。提交 <code>f19882d9babed0ecd7526607c5cc364cd51d7a81</code> 以百分之百重命名恢复官方路径，没有改动函数或测试内容。官方 PR #39998、#40231、#40214 的三篇旧补丁文档随之合并到本页，因为这些变化现在按官方迁移管理。</p>
 <p>该整理特意保留在独立提交中，后续审阅可以区分“文件身份恢复”和“新增迁移执行编号”，也能防止维护时再次把官方文件改成自维护 PR 格式。</p>
 <p><strong>实现验收点</strong></p>
@@ -2477,257 +2460,210 @@ newMigration(373, "Add runner_name to action_task", v29.AddRunnerNameToActionTas
 <li>新增记录同步更新本页、迁移映射、数据库版本和升级测试。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="git-历史结构"><a class="header" href="#git-历史结构">Git 历史结构</a></h1>
-<h2 id="本轮提交关系"><a class="header" href="#本轮提交关系">本轮提交关系</a></h2>
-<p>两个 PR 使用双父合并保留原始提交历史，数据库文件身份和执行编号使用普通提交表达：</p>
-<pre><code class="language-text">53d76a7ab0  上一版 self，数据库版本 372
+<h2 id="2026-11-19-更新"><a class="header" href="#2026-11-19-更新">2026-11-19 更新</a></h2>
+<pre><code class="language-text">8d65b612a2  更新前 self，数据库 374
     |\
-    | 0f1c19ba10  Codespace PR #38337 当前头
+    | 09670abbde  Codespace PR #38337 本轮头
     |/
-23ca84e0c8  合并 Codespace 与其中的 upstream/main@23836eb610
-    |\
-    | 5000d55fb2  Pages PR #40071 当前头
-    |/
-d87314faab  合并 Pages
+e152d93af2  双父合并，保留已发布迁移
     |
-f19882d9ba  恢复官方 v365—v367 文件身份
-    |
-8d65b612a2  追加 self 迁移 372、373 和升级测试
+098facfe36  普通提交，追加迁移 374 和测试，数据库 375
 </code></pre>
-<p>原 PR 提交哈希保持不变，Git 可以在下一轮从各自当前头计算增量。数据库普通提交位于两个合并之后，清楚表达 self 相对正常业务合并结果的维护差异。</p>
+<p>本轮只更新有变化的 Codespace PR。Pages <code>5000d55fb2</code> 已通过上一轮双父合并进入历史，保留即可。双父关系保存原作者提交和下一轮增量起点，后续普通提交单独记录 self 数据库执行安排。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>23ca84e0c8</code>、<code>d87314faab</code> 各有两个父提交。</li>
-<li><code>f19882d9ba</code>、<code>8d65b612a2</code> 各有一个父提交。</li>
-<li>当前 self 头为 <code>8d65b612a2</code>，并能沿第一父回到上一版 <code>53d76a7ab0</code>。</li>
+<li><code>e152d93af21700a53df53c05924c0a607afff450</code> 第一父为 <code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code>。</li>
+<li>其第二父为 <code>09670abbdecdd30f42a13e1e20b1dd2a625cc527</code>。</li>
+<li><code>098facfe362119127e54aed8faddd0c3caa40914</code> 是单父提交，文件范围只含 <code>modelmigration/</code>。</li>
 </ul>
-<h2 id="四项提交的职责"><a class="header" href="#四项提交的职责">四项提交的职责</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>提交</th><th>类型</th><th>职责</th></tr></thead><tbody>
-<tr><td><code>23ca84e0c82c43f8c457d3736a4ab721b6525c93</code></td><td>双父合并</td><td>接入 Codespace PR 当前头和最新上游，组合现有 Pages 行为</td></tr>
-<tr><td><code>d87314faabe04bd6560d9b39cb422a6f4117c4d7</code></td><td>双父合并</td><td>接入 Pages PR 当前头，完成两个 PR 的正常业务组合</td></tr>
-<tr><td><code>f19882d9babed0ecd7526607c5cc364cd51d7a81</code></td><td>普通提交</td><td>把官方迁移恢复到 <code>v365</code>—<code>v367</code> 原路径</td></tr>
-<tr><td><code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code></td><td>普通提交</td><td>注册 self 372、373，增加边界测试和真实升级测试</td></tr>
+<h2 id="已发布历史"><a class="header" href="#已发布历史">已发布历史</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>提交</th><th>类型</th><th>内容</th></tr></thead><tbody>
+<tr><td><code>23ca84e0c82c43f8c457d3736a4ab721b6525c93</code></td><td>双父合并</td><td>2026-11-16 接入 Codespace <code>0f1c19ba10</code></td></tr>
+<tr><td><code>d87314faabe04bd6560d9b39cb422a6f4117c4d7</code></td><td>双父合并</td><td>接入 Pages <code>5000d55fb2</code></td></tr>
+<tr><td><code>f19882d9babed0ecd7526607c5cc364cd51d7a81</code></td><td>普通提交</td><td>官方迁移恢复原始文件名及测试名</td></tr>
+<tr><td><code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code></td><td>普通提交</td><td>注册 self 372、373，数据库达到 374</td></tr>
+<tr><td><code>e152d93af21700a53df53c05924c0a607afff450</code></td><td>双父合并</td><td>2026-11-19 接入 Codespace <code>09670abbde</code></td></tr>
+<tr><td><code>098facfe362119127e54aed8faddd0c3caa40914</code></td><td>普通提交</td><td>注册 self 374、清理旧 Codespace、增加升级测试</td></tr>
 </tbody></table>
 </div>
-<p>拆成四笔记录是为了让代码来源、文件身份和数据库执行安排可以分别审阅。任何一项出现问题时，都能定位到具体来源与处理阶段，不需要改写已有提交。</p>
+<p>历史记录保留每次来源与 self 自有变化；更新维护说明只替换当前说明，过往说明仍由 Git 提交保存。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>两个合并提交的第二父分别精确等于固定 PR 头。</li>
-<li>文件身份提交不改变任何迁移实现内容。</li>
-<li>最后一项提交的范围为迁移列表和 self 升级测试。</li>
+<li>已发布提交仍是当前 self 的祖先，原有提交哈希和作者记录可查。</li>
+<li>业务来源通过合并父提交定位，迁移执行位置通过普通提交和映射表定位。</li>
+<li>本轮外层提交固定已推送的 self 头及同一轮维护说明。</li>
 </ul>
-<h2 id="固定来源与祖先关系"><a class="header" href="#固定来源与祖先关系">固定来源与祖先关系</a></h2>
-<p>本轮固定来源为：</p>
-<ul>
-<li><code>upstream/main@23836eb610b6673dc4ef7001d432e48dd3af1537</code>；</li>
-<li>Codespace PR #38337 <code>0f1c19ba10e2d6e026efd0f63e435e545fc3d230</code>；</li>
-<li>Pages PR #40071 <code>5000d55fb2b0c3312fe4a49e3716bd871efc1ce7</code>。</li>
-</ul>
-<p>两个 PR 头都包含同一个上游提交，因此不另建一笔重复的上游合并。分别保留两个 PR 合并，是为了让下一轮仍能独立追踪 Codespace 和 Pages 的提交增量。</p>
+<h2 id="下轮起点与推送"><a class="header" href="#下轮起点与推送">下轮起点与推送</a></h2>
+<p>下轮 Codespace 增量起点为 <code>09670abbdecdd30f42a13e1e20b1dd2a625cc527</code>，Pages 为 <code>5000d55fb2b0c3312fe4a49e3716bd871efc1ce7</code>，已包含主线为 <code>23836eb610b6673dc4ef7001d432e48dd3af1537</code>。分别记录来源，才能区分 PR 更新和额外主线更新的范围。</p>
+<p>内层完成验证后推送 <code>origin/self</code>，确认远端提交可获取，再提交外层 <code>main</code> 中的子模块指针及维护文档。外层提交时使用明确文件清单，保持其他子模块和用户工作原样。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>三次 <code>git merge-base --is-ancestor &lt;来源&gt; self</code> 都返回成功。</li>
-<li>两个 PR 头的共同上游为 <code>23836eb610</code>。</li>
-<li>下一轮分别以 <code>0f1c19ba10</code>、<code>5000d55fb2</code> 为 PR 增量起点。</li>
-</ul>
-<h2 id="后续历史组织"><a class="header" href="#后续历史组织">后续历史组织</a></h2>
-<p>下一轮继续为每个发生更新的 PR 创建双父合并提交，并在所有业务合并完成后单独提交 self 数据库安排。普通上游代码由 PR 带入；如果将来 PR 不再包含目标上游，再根据真实祖先关系增加明确的上游合并。</p>
-<p>这种历史结构优先保存事实：来源提交保持原哈希，人工冲突解决位于对应合并，self 特有迁移位于后续普通提交。外层仓库只在内层推送成功后更新子模块指针。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>新 PR 头通过合并第二父进入 self。</li>
-<li>self 数据库提交的范围为迁移列表、迁移实现和迁移测试。</li>
-<li>外层提交所指向的内层提交已经存在于 <code>origin/self</code>。</li>
+<li>内层远端 self 与外层记录的内层提交一致。</li>
+<li>内层保持 self，外层保持 main。</li>
+<li>两层均采用正常推进的推送，原提交历史保持可追溯。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="上游同步流程"><a class="header" href="#上游同步流程">上游同步流程</a></h1>
-<h2 id="一固定来源与工作区"><a class="header" href="#一固定来源与工作区">一、固定来源与工作区</a></h2>
-<p>每轮先获取 <code>upstream/main</code>、Codespace PR #38337 和 Pages PR #40071 的远端当前头，记录完整哈希和日期。确认内层位于 <code>self</code> 且工作树干净；同时记录外层已有用户改动，后续只暂存维护范围内的文件。</p>
-<p>固定来源使一次同步具有可重复的审计边界。PR 若已经包含目标上游提交，就由 PR 合并带入该上游；祖先关系不满足时，再按实际关系设计额外合并。</p>
+<h2 id="固定来源和本轮范围"><a class="header" href="#固定来源和本轮范围">固定来源和本轮范围</a></h2>
+<p>获取并记录官方主线、Codespace PR #38337、Pages PR #40071 的远端头，以及更新前 self 提交和数据库版本。明确本轮是指定 PR 更新还是同时更新官方主线；分别记录“远端最新主线”和“本轮实际包含主线”，使范围可核验。</p>
+<p>确认内层 self、外层 main，记录已有用户改动。只有来源发生变化的 PR 需要新增合并；已合入且没有变化的 PR 保留原历史。本轮为 Codespace <code>09670abbde</code>，Pages <code>5000d55fb2</code> 沿用，实际包含主线仍为 <code>23836eb610</code>。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>维护记录包含三个远端来源的完整哈希。</li>
-<li>合并前内层分支为 <code>self</code>，没有未提交改动。</li>
-<li>外层已有用户改动在同步前后保持未暂存状态。</li>
+<li>记录每个输入的完整哈希、日期及更新前数据库版本。</li>
+<li>PR 远端头与实际合并第二父相同。</li>
+<li>用户现有修改和任务范围明确区分。</li>
 </ul>
-<h2 id="二正常合并两个-pr"><a class="header" href="#二正常合并两个-pr">二、正常合并两个 PR</a></h2>
-<p>依次使用双父合并接入两个 PR 当前头，非数据库冲突按“最新上游 + Codespace + Pages”的正常组合行为处理。每次合并单独提交，并在提交信息中记录固定来源头；这样原作者提交、提交顺序和下一轮增量起点都由 Git 保存。</p>
-<p>业务冲突需要结合两边测试和调用关系处理，例如仓库删除同时执行 Codespace 解绑、Pages 墓碑更新和上游删除逻辑。解决后比较正常合并结果，确认 self 没有额外业务分支。</p>
+<h2 id="正常业务合并与独立数据库安排"><a class="header" href="#正常业务合并与独立数据库安排">正常业务合并与独立数据库安排</a></h2>
+<p>先生成正常合并树并保存哈希，再以双父合并接入发生变化的 PR。业务代码按双方当前实现正常组合；如有业务文本冲突，逐项记录组合依据。合并第二父保留 PR 原始提交，使下一轮增量可从该头继续。</p>
+<p>审核自动合并的数据库结果，特别检查 Git 重命名追踪是否把新 PR 结构写入已发布 self 补丁。合并时保留历史迁移的含义，再以独立普通提交增加本轮实际需要的变化。本轮采用无业务文本冲突的正常树，因此可直接逐文件证明所有非数据库代码相同。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>每个更新的 PR 都有独立双父合并提交。</li>
-<li>合并第二父等于本轮记录的 PR 头。</li>
-<li>非数据库结果只表达两个 PR 与上游功能的正常组合。</li>
+<li>每个更新的 PR 有独立双父合并。</li>
+<li>已发布迁移和官方文件保持来源内容。</li>
+<li>最终 <code>modelmigration/</code> 以外与确认的正常合并结果一致。</li>
 </ul>
-<h2 id="三安排-self-数据库迁移"><a class="header" href="#三安排-self-数据库迁移">三、安排 self 数据库迁移</a></h2>
-<p>先保留所有官方 <code>vXXX.go</code> 文件和测试，再检查两个自维护 PR 的数据库变化。两个 PR 已经由 self 早期迁移覆盖的完整建表文件不重复注册；真正新增的变化以 <code>pr-&lt;PR&gt;-v&lt;最初来源&gt;-patch&lt;N&gt;</code> 保存。所有待执行函数追加到 self 当前末尾编号。</p>
-<p>官方文件身份与 self 执行编号分开，是因为已发布数据库不能重新解释旧编号，而上游文件路径又需要保持可直接比较。下一项实际编号始终由 self 当前末尾决定。</p>
+<h2 id="迁移增量与兼容范围"><a class="header" href="#迁移增量与兼容范围">迁移增量与兼容范围</a></h2>
+<p>官方新增迁移保持原 <code>vXXX.go</code> 和测试，self 只在末尾注册执行位置。两个自维护 PR 的增量沿原来源身份递增 patchN。新迁移测试使用上一版 self 的版本表与旧结构调用完整迁移器，同时覆盖迁移后的再次启动。</p>
+<p>兼容范围为 self 连续历史。数据处理按真实结构差异设计：可保持原值的配置直接保留，需要明确丢弃的运行数据先写清对象和理由。本轮迁移 374 的旧 Codespace 清理已单独审阅；以后仍逐项判断变化，375 之后的实例不会再次执行这项清理。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>官方迁移文件与上游逐字一致。</li>
-<li>自维护 PR 增量具有稳定的 <code>pr-*</code> 文件身份和直接测试。</li>
-<li>self 迁移编号连续追加，没有改写已发布编号。</li>
+<li>self 编号连续追加，文件身份与执行编号在映射表对应。</li>
+<li>新版本存在完整升级、保留范围及重复启动测试。</li>
+<li>有一次性删除时，说明删除项、保留项、错误处理和部署收尾步骤。</li>
 </ul>
-<h2 id="四验证升级和业务组合"><a class="header" href="#四验证升级和业务组合">四、验证升级和业务组合</a></h2>
-<p>迁移测试既要检查编号边界，也要使用上一版真实 self 版本记录执行完整迁移入口。代码验证通过仓库 Make 目标执行格式化、依赖整理、生成检查、静态检查、构建、后端测试、前端测试、迁移测试、集成测试和端到端测试。</p>
-<p>集成环境差异记录测试名、工具版本、实际值和期望值。只有已经证明与本轮代码无关的环境差异才作为已知结果记录；新增回归需要在本轮修复。完成后运行 <code>make clean</code> 清理测试产物。</p>
+<h2 id="验证与交付"><a class="header" href="#验证与交付">验证与交付</a></h2>
+<p>通过仓库 Make 目标运行格式化、依赖与生成检查、lint、构建、后端、前端、迁移、集成和端到端测试。多数据库迁移验证使用隔离测试库和 <code>GOTEST_FLAGS='-timeout 40m -count=1'</code>，避免测试缓存掩盖数据库切换。格式检查通过工作树与暂存区比较，先暂存已审核修改，再运行检查并复核生成物。</p>
+<p>环境差异如实记录测试名、工具版本和实际值；新增问题在任务范围内修复。验证后清理本轮测试产物和临时数据库容器，更新维护说明、目录与 AGENTS。重读 <code>/tmp/todo-mi.md</code> 时按其实际内容核对，不把旧任务说明误认为本轮迁移计划。</p>
+<p>先推送内层 self，再提交推送外层指针和维护记录。部署到真实实例另按 patch4 发布说明执行，代码验证不代表已操作线上数据库或集群。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>上一版 self 数据库通过完整迁移入口到达新版本。</li>
-<li>所有 Gitea 测试都由 Make 目标启动。</li>
-<li>清理后内层工作树干净，生成文件没有未提交差异。</li>
+<li>验证记录区分通过、已知环境问题和未执行项目。</li>
+<li>正常合并树差异、官方文件、历史补丁和版本列表均完成审计。</li>
+<li>mdBook 构建通过，外层只暂存本轮维护范围。</li>
+<li>内外远端提交与本地结果一致；实际部署状态单独说明。</li>
 </ul>
-<h2 id="五执行来源与差异审计"><a class="header" href="#五执行来源与差异审计">五、执行来源与差异审计</a></h2>
-<p>完成测试后重新查询远端哈希，确认来源在实施期间没有变化。检查三个来源都是 self 祖先，官方迁移文件与上游一致，并用两个 PR 的正常合并树比较非数据库文件。需要人工解决的正常业务冲突逐项记录组合理由。</p>
-<p>这一步把“代码看起来能运行”提升为“结果确实来自已记录来源”。self 长期差异应能集中列在 <code>modelmigration</code> 中，而不是散落在业务路由、服务或前端。</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="合并结果与数据库差异审计"><a class="header" href="#合并结果与数据库差异审计">合并结果与数据库差异审计</a></h1>
+<h2 id="本轮固定基准"><a class="header" href="#本轮固定基准">本轮固定基准</a></h2>
+<p>2026-11-19 从 <code>self@8d65b612a28b71a2fef99c5534a19ec2344bd783</code> 合并 Codespace PR <code>09670abbdecdd30f42a13e1e20b1dd2a625cc527</code>。Pages 保持 <code>5000d55fb2</code>，PR 已包含的官方主线保持 <code>23836eb610</code>。本轮没有额外更新主线。</p>
+<p>先由 Git 生成正常合并树，再把 self 数据库增量与它比较。这样“只有数据库差异”有精确的可复现基准：它是已有 self（包含 Pages）与本轮 Codespace 的正常业务组合，不是单独 Codespace PR 的树。</p>
+<pre><code class="language-bash">git merge-tree --write-tree \
+  8d65b612a28b71a2fef99c5534a19ec2344bd783 \
+  09670abbdecdd30f42a13e1e20b1dd2a625cc527
+</code></pre>
+<p>本轮返回树 <code>b1f1d5f8656885ec7445e857dff1a43e74972326</code>，无文本冲突。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>实施前后远端来源哈希一致，或已重新合并变化后的新头。</li>
-<li>排除正常人工冲突后，非数据库文件比较没有额外差异。</li>
-<li>self 特有差异集中为迁移执行安排、PR 迁移增量和升级测试。</li>
+<li>双父合并 <code>e152d93af21700a53df53c05924c0a607afff450</code> 的两个父提交与上述输入一致。</li>
+<li>正常合并树可以从固定输入重新生成。</li>
+<li>PR 的业务实现、配置、生成文件及业务测试均采用该树内容。</li>
 </ul>
-<h2 id="六提交推送和文档闭环"><a class="header" href="#六提交推送和文档闭环">六、提交、推送和文档闭环</a></h2>
-<p>先提交并推送内层 <code>gitea/self</code>，确认远端可以解析最终提交。随后更新本目录、<code>src/SUMMARY.md</code>、根目录 <code>AGENTS.md</code> 和外层 <code>gitea</code> 指针，构建 mdBook，并只暂存这些维护文件。最后提交并推送外层 <code>main</code>。</p>
-<p>先内层后外层可以保证文档和子模块指针引用的提交已经可获取。精确暂存保护外层正在进行的其他设计和子模块修改。</p>
+<h2 id="自动合并中需要识别的数据库变化"><a class="header" href="#自动合并中需要识别的数据库变化">自动合并中需要识别的数据库变化</a></h2>
+<p>Git 将 PR 新完整 <code>v370.go</code> 的修改自动跟随重命名应用到 self 的历史 <code>pr-38337-v365-patch1.go</code>。文本合并虽成功，但若直接接受，已部署 self 不会重新执行迁移 365，新结构变化就会遗漏。</p>
+<p>因此合并提交保留 patch1 的已发布内容，并移除新导入、只针对 PR 新完整结构的 <code>v370_test.go</code>。self 通过后续 patch4 和完整升级测试验证最终结构，历史 patch1—patch3 的含义保持稳定。官方 <code>v365</code>—<code>v369</code> 及测试完全不变。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>origin/self</code> 与内层本地 <code>self</code> 指向同一提交。</li>
-<li>外层维护提交只包含明确列出的维护文件和 <code>gitea</code> 指针。</li>
-<li><code>origin/main</code> 推送完成后，外层其他用户改动仍保持原状态。</li>
+<li>合并提交相对更新前 self 的 <code>modelmigration/</code> 没有变化。</li>
+<li>patch4 单独追加为 374，数据库普通提交只修改迁移目录。</li>
+<li>patch4 测试覆盖 PR 新结构和 self 真实升级，官方文件仍与固定主线逐字相同。</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="合并结果与冲突解决记录"><a class="header" href="#合并结果与冲突解决记录">合并结果与冲突解决记录</a></h1>
-<h2 id="本轮固定结果"><a class="header" href="#本轮固定结果">本轮固定结果</a></h2>
-<p>2026-11-16 从 <code>self@53d76a7ab066085c21af9098862392ba1d2fc420</code> 合并 Codespace PR <code>0f1c19ba10</code> 和 Pages PR <code>5000d55fb2</code>，两者都包含 <code>upstream/main@23836eb610</code>。最终 self 为 <code>8d65b612a28b71a2fef99c5534a19ec2344bd783</code>，数据库从版本 372 提升到 374。</p>
-<p>业务冲突按两个 PR 的正常组合解决，self 长期差异只保留在数据库迁移安排。这个原则保证当前部署得到两个 PR 的完整功能，又让上一版 self 数据库沿原生迁移器升级。</p>
+<h2 id="最终差异检查"><a class="header" href="#最终差异检查">最终差异检查</a></h2>
+<pre><code class="language-bash">git diff --exit-code \
+  b1f1d5f8656885ec7445e857dff1a43e74972326 098facfe362119127e54aed8faddd0c3caa40914 \
+  -- . ':!modelmigration'
+git diff --name-status \
+  b1f1d5f8656885ec7445e857dff1a43e74972326 098facfe362119127e54aed8faddd0c3caa40914
+git diff --exit-code 8d65b612a28b71a2fef99c5534a19ec2344bd783 \
+  098facfe362119127e54aed8faddd0c3caa40914 -- modelmigration/v29/pr-38337-v365-patch1.go \
+  modelmigration/v29/pr-38337-v365-patch2.go \
+  modelmigration/v29/pr-38337-v365-patch3.go \
+  modelmigration/v29/pr-38337-v365-patch3_test.go \
+  modelmigration/v29/pr-40071-v365-patch1.go
+git diff --exit-code 23836eb610b6673dc4ef7001d432e48dd3af1537 \
+  098facfe362119127e54aed8faddd0c3caa40914 -- 'modelmigration/v29/v36*.go'
+</code></pre>
+<p>首项比较覆盖整个非迁移目录，没有额外排除业务文件。完整差异只包括保留历史 patch1、替换 PR 完整迁移测试、增加 patch4、注册版本和 self 升级测试。外层文档维护不属于内层 Gitea 业务差异。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>三个固定来源均为最终 self 的祖先。</li>
-<li>最终迁移列表连续到 373，期望数据库版本为 374。</li>
-<li>工作树中没有冲突标记或未合并路径。</li>
-</ul>
-<h2 id="codespace-合并冲突"><a class="header" href="#codespace-合并冲突">Codespace 合并冲突</a></h2>
-<p>第一笔合并在迁移列表、Codespace 基础迁移、仓库设置和仓库转移测试发生冲突。迁移列表保留已发布 self 365—371；Codespace 基础迁移保留 <code>pr-38337-v365-patch1.go</code>，同时把被重命名检测碰撞的官方 <code>v368.go</code> 以原文件加入。PR 自带的完整 <code>v370.go</code> 不重复进入 self。</p>
-<p>仓库设置继续使用 Pages 扩展后的 <code>UpdateRepositoryOptions</code>，仓库转移测试同时保留 Pages 更新时间断言和 Codespace/上游作用域工作流断言。这样冲突结果与两个功能共同存在时的服务接口一致。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li><code>pr-38337-v365-patch1.go</code> 保持已发布 self 基础迁移内容。</li>
-<li>官方 <code>v368.go</code> 与上游一致，PR 的完整 <code>v370.go</code> 不存在。</li>
-<li><code>TestTransferOwnership</code> 同时检查 Pages 时间和作用域工作流来源。</li>
-</ul>
-<h2 id="pages-合并冲突"><a class="header" href="#pages-合并冲突">Pages 合并冲突</a></h2>
-<p>第二笔合并只需要人工处理迁移列表和仓库设置错误响应。迁移列表继续保留 self 365—371，Pages 自带的完整 <code>v370.go</code> 不重复进入；仓库更新调用保留 <code>UpdateRepositoryOptions</code>，错误响应采用 Pages 当前头使用的 <code>ServerErrorAuto</code>。</p>
-<p>组织可见性、仓库删除、仓库转移和管理端测试的双方组合已经在上一版 self 中存在，本轮合并结果继续保留这些行为：组织删除前置检查、Pages 生命周期时间传播、Codespace 解绑、Pages 删除墓碑和仓库写锁均同时生效。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>仓库设置使用当前 <code>UpdateRepositoryOptions</code> 接口和自动错误响应。</li>
-<li>仓库删除事务先处理 Codespace 关系和 Pages 墓碑，再删除仓库记录。</li>
-<li>组织可见性变化继续把 Pages 更新时间传入仓库处理。</li>
-</ul>
-<h2 id="官方迁移文件恢复"><a class="header" href="#官方迁移文件恢复">官方迁移文件恢复</a></h2>
-<p>上一版 self 中三个官方迁移曾以 <code>pr-39998-v365-patch1</code>、<code>pr-40231-v366-patch1</code>、<code>pr-40214-v367-patch1</code> 保存。本轮把它们恢复为官方 <code>v365</code>、<code>v366</code>、<code>v367</code> 路径，并保留官方测试文件原名。五次重命名内容相似度均为 100%，函数仍注册在 self 的 368—370。</p>
-<p>恢复路径是为了保持官方文件身份和未来迁移槽位连续。只有 Codespace、Pages 两个由本项目继续维护的 PR 使用 <code>pr-*</code> 规则；已经进入上游的正式迁移按官方文件管理。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li><code>f19882d9ba</code> 显示五项 100% 重命名和零行内容变化。</li>
-<li>官方 <code>v365</code>—<code>v369</code> 文件及测试与上游一致。</li>
-<li>官方迁移由 <code>v365</code>—<code>v369</code> 文件和统一接入记录表达。</li>
-</ul>
-<h2 id="self-372-到-374"><a class="header" href="#self-372-到-374">self 372 到 374</a></h2>
-<p>上一版 self 已完成迁移 371，数据库版本为 372。本轮把官方 <code>v368.go</code> 的团队名称唯一索引函数注册为 self 372，把官方 <code>v369.go</code> 的运行器名称函数注册为 self 373。文件身份保持官方编号，执行位置由 self 连续序列决定。</p>
-<p>真实升级测试从版本表 372 和迁移前结构开始调用完整迁移器，验证两项数据变化和最终版本 374。这比只比较函数列表更接近实际部署升级。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>372 → 374 升级实际执行两项迁移并通过。</li>
-<li>团队重复名称得到处理，Actions 任务回填运行器名称。</li>
-<li>迁移后版本表为 374。</li>
-</ul>
-<h2 id="非数据库差异检查"><a class="header" href="#非数据库差异检查">非数据库差异检查</a></h2>
-<p>使用两个 PR 当前头生成正常合并树，排除数据库目录以及正常合并本来就需要人工组合的 <code>routers/api/v1/api.go</code>、<code>services/org/org.go</code>、<code>services/repository/delete.go</code>、<code>tests/integration/api_admin_test.go</code> 后，与 self 比较没有差异。四个人工文件再按双方路由权限、Pages 生命周期、Codespace 清理和当前测试语义逐项检查。</p>
-<p>因此 self 没有新增额外业务兼容层；业务实现就是上游与两个 PR 的合并结果，数据库目录承担 self 升级差异。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>自动合并文件的非数据库比较为空。</li>
-<li>四个人工组合文件同时包含双方必要行为，执行路径与正常功能组合一致。</li>
-<li>相对上游的 self 数据库差异可完整列为四项 PR 来源文件、迁移列表和 self 测试。</li>
+<li>非迁移比较输出为空、退出码为 0。</li>
+<li>完整文件清单全部位于 <code>modelmigration/</code>。</li>
+<li>已发布 PR 文件和官方文件比较输出均为空。</li>
+<li>旧轮次人工合并记录仍可在 Git 文档历史中追溯，当前说明只描述本轮实际变化。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="验证记录"><a class="header" href="#验证记录">验证记录</a></h1>
-<h2 id="验证范围与环境"><a class="header" href="#验证范围与环境">验证范围与环境</a></h2>
-<p>本页记录 2026-11-16 对 <code>self@8d65b612a28b71a2fef99c5534a19ec2344bd783</code> 的验证。环境为 Linux <code>6.18.60-1-lts</code>、Go <code>go1.27.3-X:nodwarf5</code>、Git <code>2.56.0</code>、Node.js <code>v24.22.2</code>、pnpm <code>12.17.0</code>。</p>
-<p>验证覆盖 <code>upstream/main@23836eb610</code>、Codespace PR <code>0f1c19ba10</code>、Pages PR <code>5000d55fb2</code>、self 迁移 372—373 和上一版数据库 372 到当前版本 374 的实际升级。所有 Gitea 测试均从仓库 Make 目标启动。</p>
+<h2 id="范围和环境"><a class="header" href="#范围和环境">范围和环境</a></h2>
+<p>本页记录 2026-11-19 对本轮 self 合并及数据库增量的实际验证，最终提交为 <code>098facfe362119127e54aed8faddd0c3caa40914</code>。固定输入为 self <code>8d65b612a2</code>、Codespace PR <code>09670abbde</code>；Pages <code>5000d55fb2</code> 和已包含官方主线 <code>23836eb610</code> 保持原样。所有 Gitea 测试均通过仓库 Make 目标启动。</p>
+<p>环境：Linux <code>6.18.60-1-lts</code>，Go <code>go1.27.4-X:nodwarf5</code>，Git <code>2.56.1</code>，Node.js <code>v24.22.3</code>，pnpm <code>12.17.0</code>。测试使用临时 SQLite 数据库及三个仅绑定本机随机端口的临时数据库容器，没有连接部署实例或 Kubernetes。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>验证日期、最终提交和五项主要工具版本已记录。</li>
-<li>三个固定来源都是被验证提交的祖先。</li>
-<li>远端 <code>origin/self</code> 已确认指向被验证提交。</li>
+<li>验证内容对应本轮固定输入和最终迁移实现。</li>
+<li>临时测试环境与部署数据分离。</li>
+<li>已知环境差异和未执行的部署操作明确列出。</li>
 </ul>
-<h2 id="格式化生成静态检查与构建"><a class="header" href="#格式化生成静态检查与构建">格式化、生成、静态检查与构建</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>命令</th><th>结果</th><th>说明</th></tr></thead><tbody>
-<tr><td><code>make fmt</code></td><td>通过</td><td>Go 格式化完成，未留下差异</td></tr>
-<tr><td><code>make tidy</code></td><td>通过</td><td>Go 模块声明无需更新</td></tr>
-<tr><td><code>make generate-swagger</code></td><td>通过</td><td>OpenAPI 文件重新生成且无需提交变化</td></tr>
-<tr><td><code>make swagger-validate</code></td><td>通过</td><td>Swagger 2.0 文档有效</td></tr>
-<tr><td><code>make checks</code></td><td>通过</td><td>生成、格式和依赖检查完成</td></tr>
-<tr><td><code>make lint</code></td><td>通过</td><td>Go 0 项问题，621 个模板及前端、文档、配置检查通过</td></tr>
-<tr><td><code>make build</code></td><td>通过</td><td>前端生产资源和 Gitea 二进制构建成功</td></tr>
+<h2 id="格式检查与构建"><a class="header" href="#格式检查与构建">格式、检查与构建</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Make 目标</th><th>结果</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>make fmt</code></td><td>通过</td><td>格式化迁移实现和测试</td></tr>
+<tr><td><code>make tidy generate-swagger swagger-validate</code></td><td>通过</td><td>依赖及生成文件没有引入业务差异</td></tr>
+<tr><td><code>make checks</code></td><td>通过</td><td>最终重跑退出 0；依赖漏洞警告见下文</td></tr>
+<tr><td><code>make lint</code></td><td>通过</td><td>最终重跑 Go 检查 0 issues，621 个模板无错误，其余检查通过</td></tr>
+<tr><td><code>make build</code></td><td>通过</td><td>最终提交再次构建，版本 <code>29.0.0+dev-507-g098facfe36</code></td></tr>
 </tbody></table>
 </div>
-<p><code>make checks</code> 报告依赖 <code>github.com/blakesmith/ar</code> 的 <code>GO-2026-6905</code>，当前没有可用修复版本；检查目标按上游现有规则记录后返回成功。构建版本为 <code>29.0.0+dev-499-g8d65b612a2</code>。</p>
+<p>首次检查在修改尚未暂存时触发 <code>fmt-check</code> 的工作树比较，另发现测试导入处不需要的 lint 忽略标记。已移除该标记，审核并暂存后重跑 <code>make -k checks lint test-migration</code>，退出码 0。此后检查输出没有额外生成文件改动。</p>
+<p><code>make checks</code> 中的安全扫描报告既有依赖 <code>github.com/blakesmith/ar</code> 的 <code>GO-2026-6905</code>，扫描结果的修复版本为 N/A；Make 目标按当前上游规则记录后返回成功。本轮没有修改依赖或业务代码来消除该警告。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>七个标准目标均以状态 0 退出。</li>
-<li>生成和依赖整理后内层没有新差异。</li>
-<li>漏洞记录包含编号、依赖和当前无修复版本的事实。</li>
+<li>最终检查日志为 <code>/tmp/gitea-self-375-checks-final.log</code>，退出码 0。</li>
+<li>首轮发现的本轮 lint 问题已修复，最终结果以重跑为准。</li>
+<li>漏洞警告单独记录，不能把检查退出成功解释为无漏洞。</li>
 </ul>
-<h2 id="数据库后端和前端测试"><a class="header" href="#数据库后端和前端测试">数据库、后端和前端测试</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>命令</th><th>结果</th><th>覆盖内容</th></tr></thead><tbody>
-<tr><td><code>make migrations.individual.test</code></td><td>通过</td><td>全部迁移包的直接测试</td></tr>
-<tr><td><code>make test-migration</code></td><td>通过</td><td>历史数据库、全部逐项迁移和 self 372 → 374</td></tr>
-<tr><td><code>make test-backend</code></td><td>通过</td><td>全部后端包，包括 Codespace、Pages、组织和仓库服务</td></tr>
-<tr><td><code>make test-frontend</code></td><td>121 个文件、402 项测试通过</td><td>Vitest 前端测试</td></tr>
+<h2 id="功能与迁移测试"><a class="header" href="#功能与迁移测试">功能与迁移测试</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Make 目标</th><th>结果</th><th>覆盖</th></tr></thead><tbody>
+<tr><td><code>make test-backend</code></td><td>通过</td><td>完整后端单元测试</td></tr>
+<tr><td><code>make test-frontend</code></td><td>通过</td><td>121 个文件，402 项测试</td></tr>
+<tr><td><code>make test-migration</code></td><td>通过</td><td>历史数据库迁移测试、全部逐项迁移、self 372 和 374 升级</td></tr>
+<tr><td><code>make test-integration</code></td><td>完整执行，1 个顶层测试失败</td><td>唯一失败为下述既有归档长度断言，包含其 GitHubStyle 子测试</td></tr>
+<tr><td><code>make test-e2e</code></td><td>通过</td><td>Chromium、Firefox、WebKit 共 219 项通过、6 项按套件规则跳过</td></tr>
 </tbody></table>
 </div>
-<p>新增 <code>TestSelfMigrationTail</code> 检查 372、373、374 的待执行边界；<code>TestUpgradeSelfDatabaseFrom372</code> 使用旧 SQLite 结构和版本表执行完整迁移，并验证数据结果和版本 374。官方 <code>v368</code>、<code>v369</code> 的直接测试继续保持上游内容。</p>
+<p>self 新增测试使用真实旧表结构和版本表执行完整 <code>Migrate</code>，覆盖 374 → 375、372 → 375、375 再次启动保留新实例与令牌。直接迁移测试验证旧实例和孤立凭据清理、共享 DBFS 路径隔离、个人密钥密文及管理配置保留、索引和自增序列延续、失败回滚和 DDL 重试。</p>
+<p>完整集成套件包含 <code>TestAPIDownloadArchive</code> 及其 <code>GitHubStyle</code> 子测试的既有差异：期望 tar.gz 为 266 字节，本机为 264。直接对原始测试仓库运行本机 <code>git archive --format=tar.gz --prefix=repo1/ master</code> 同样为 264 字节，并能解包出 <code>repo1/README.md</code>；没有经过任何 Codespace 代码。本轮保留原测试和归档实现，如实记录该失败。</p>
+<p>主验证命令 <code>make -k tidy generate-swagger swagger-validate checks lint build test-backend test-frontend test-migration test-integration test-e2e</code> 已执行到末尾，退出码 2。首轮格式与 lint 问题经修正后单独重跑通过；最终尚未通过的项目只有上述集成归档断言。浏览器套件退出成功，不包含真实 Codespace 集群运行验证。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>四个测试目标均以状态 0 退出。</li>
-<li>真实升级测试验证版本推进、团队名称处理和运行器名称回填。</li>
-<li>Codespace、Pages、组织与仓库服务测试通过。</li>
+<li>迁移清理和保留范围、失败重试及再次启动均有执行结果。</li>
+<li>集成套件完成后列出全部失败，不将已知失败标作通过。</li>
+<li>主验证日志保存在 <code>/tmp/gitea-self-375-validation.log</code>。</li>
+<li>浏览器套件覆盖三种浏览器，完整执行到 219 通过、6 跳过；没有新增浏览器失败。</li>
 </ul>
-<h2 id="完整集成测试"><a class="header" href="#完整集成测试">完整集成测试</a></h2>
-<p><code>make test-integration</code> 从 Actions 测试运行到最后的 Workflow Run API。Codespace 路由与状态机、Pages 管理端与 API、组织变化、仓库删除与转移、两个 PR 的组合路径均通过。</p>
-<p>唯一失败为上游 <code>TestAPIDownloadArchive</code> 的固定压缩字节长度断言：本机 Git 2.56.0 对普通 API 路径和 GitHub 风格路径都生成 264 字节 <code>tar.gz</code>，测试夹具期望 266 字节。单独执行 <code>make 'test-integration#TestAPIDownloadArchive'</code> 得到相同结果；响应状态、归档生成和其他格式测试正常。该文件相对正常 PR 合并结果没有 self 差异，用户已确认此既知环境错误无需处理。</p>
+<h2 id="多数据库迁移验证"><a class="header" href="#多数据库迁移验证">多数据库迁移验证</a></h2>
+<p>以下通过 <code>make migrations.individual.test MIGRATE_TEST_PACKAGES='gitea.dev/modelmigration gitea.dev/modelmigration/v29' GOTEST_FLAGS='-timeout 40m -count=1'</code> 执行，分别指定 <code>GITEA_TEST_DATABASE</code> 及临时库连接。强制重新运行，避免切换数据库时复用测试缓存。</p>
+<div class="table-wrapper"><table><thead><tr><th>数据库</th><th>结果</th><th>范围</th></tr></thead><tbody>
+<tr><td>SQLite，仓库默认驱动</td><td>通过</td><td>全部迁移套件及 self 升级，另覆盖视图阻止 DDL 后的重试</td></tr>
+<tr><td>PostgreSQL 17</td><td>通过</td><td>modelmigration 和 v29 全部测试</td></tr>
+<tr><td>MySQL 8.4</td><td>通过</td><td>modelmigration 和 v29 全部测试</td></tr>
+<tr><td>SQL Server 2019，15.0.4500.2</td><td>通过</td><td>modelmigration 和 v29 全部测试</td></tr>
+</tbody></table>
+</div>
+<p>跨数据库首次运行发现 PostgreSQL 旧 UUID 条件索引返回完整物理名，以及 SQL Server 测试不能显式插入自增版本 ID。实现已按索引列识别 UUID，测试改为由数据库分配版本记录 ID；上述结果均为修正后、禁用缓存的最终重跑结果。</p>
+<p>日志分别为 <code>/tmp/gitea-self-375-pg.log</code>、<code>/tmp/gitea-self-375-mysql.log</code>、<code>/tmp/gitea-self-375-mssql.log</code>。这些结果验证迁移行为，不表示三个外部数据库都执行了完整业务集成套件；完整业务集成使用 SQLite。</p>
+<p>验证后已停止并删除 <code>gitea-self375-pg-test</code>、<code>gitea-self375-mysql-test</code>、<code>gitea-self375-mssql-test</code> 三个临时容器，删除的仅是可重新生成的测试数据。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>完整套件运行到最后一个测试文件。</li>
-<li>唯一失败为 <code>TestAPIDownloadArchive</code> 的两处 264/266 字节断言。</li>
-<li>单独重跑稳定复现，没有第二类集成失败。</li>
+<li>三个外部数据库命令最终退出码均为 0。</li>
+<li>SQLite 专属故障注入在其他数据库明确跳过，其余迁移测试实际执行。</li>
+<li>临时容器在验证结束后删除，不保留测试凭据或部署数据。</li>
 </ul>
-<h2 id="端到端测试"><a class="header" href="#端到端测试">端到端测试</a></h2>
-<p><code>make test-e2e</code> 使用仓库容器运行 Chromium、Firefox 和 WebKit。宿主机 Playwright 预检查提示缺少浏览器动态库，但容器提供运行环境，最终 219 项通过、6 项按浏览器能力跳过、0 项失败，命令状态为 0。</p>
-<p>这组测试覆盖本轮上游新增和更新的 Actions、仓库设置、PR 差异复制、项目工作流以及常用仓库操作，证明完整前端与服务组合可以启动并工作。</p>
+<h2 id="差异审计与文档闭环"><a class="header" href="#差异审计与文档闭环">差异审计与文档闭环</a></h2>
+<p>正常合并树为 <code>b1f1d5f8656885ec7445e857dff1a43e74972326</code>。最终树与它比较，<code>modelmigration/</code> 以外输出为空，退出码 0；完整差异清单只包含迁移注册、升级测试、历史 patch1 保留、patch4 及替代的 PR 完整结构测试。官方 v365—v369 及其测试与主线 <code>23836eb610</code> 完全相同，历史 PR 补丁与更新前 self 完全相同。可复现命令见 <a href="maintenance/self/conflict-resolutions.html">差异审计</a>。</p>
+<p>维护说明替换旧的“当前 374”内容，保留历史迁移的来源说明，并新增 patch4 发布步骤；目录和 AGENTS 同步更新。文档由 <code>mdbook build</code> 验证，mdbook-mermaid 的构建版本提示不影响生成。</p>
+<p>最终构建日志为 <code>/tmp/gitea-self-375-build-final.log</code>。本轮失败诊断目录和集成测试二进制移至 <code>/tmp/gitea-self375-test-artifacts.oYNUOE</code>，可以取回；更新前已存在的测试目录保持原样。保留本轮构建的 Gitea 二进制，源码工作树干净。</p>
+<p>重新读取 <code>/tmp/todo-mi.md</code>：它是已完成的 Codespace 配置边界清理计划，并非本轮数据库迁移计划。全部清单已勾选，本次接入的 PR 包含该配置调整；本轮测试没有要求重新打开其中事项。文件保持原样。</p>
+<p>实际部署资源清理、新镜像发布和线上生命周期验收未在本次执行；这是 <a href="maintenance/self/patches/pr-38337-v365-patch4.html">patch4 部署说明</a> 定义的发布操作，而不是代码仓库修改。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li><code>make test-e2e</code> 状态为 0。</li>
-<li>结果为 219 项通过、6 项跳过、0 项失败。</li>
-<li>Chromium、Firefox、WebKit 都实际运行了测试。</li>
-</ul>
-<h2 id="来源文件与迁移审计"><a class="header" href="#来源文件与迁移审计">来源、文件与迁移审计</a></h2>
-<p>实施结束后再次查询远端，三个来源哈希与开始时一致。祖先检查全部成功，两个双父合并的第二父精确对应 PR 头。官方 <code>v365</code>—<code>v369</code> 文件及测试与上游逐字一致，两个 PR 的重复 <code>v370.go</code> 不在最终树中。</p>
-<p>非数据库自动合并文件与两个 PR 的正常合并树比较为空；四个正常人工冲突文件按双方语义审阅。相对上游的 self 数据库差异只包含四项自维护 PR 来源文件、迁移列表、self 边界测试和真实升级测试。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li>远端哈希、祖先关系和合并第二父检查通过。</li>
-<li>九个官方迁移文件比较通过，<code>v370.go</code> 缺失检查通过。</li>
-<li>非数据库没有 self 专用兼容代码。</li>
-</ul>
-<h2 id="文档与产物清理"><a class="header" href="#文档与产物清理">文档与产物清理</a></h2>
-<p>内层执行 <code>make clean</code>，删除构建二进制、测试二进制、临时配置和集成测试目录，工作树保持干净。维护文档更新为当前规则，删除三个过时官方补丁文档，并由 mdBook 构建验证链接和目录。</p>
-<p>外层只提交 <code>gitea</code> 指针、<code>src/maintenance/self/</code>、<code>src/SUMMARY.md</code> 和根目录 <code>AGENTS.md</code>；原有 README、Codespace 子模块和 Codespace 设计文档改动继续留在用户工作区。</p>
-<p>最终重新读取 <code>/tmp/todo-mi.md</code>。其中克隆面板布局修复、清理和验证清单均已勾选完成；本轮更新接入该功能分支的最新提交后，前端测试、生产构建和三浏览器端到端测试继续通过，因此该计划保持闭环。</p>
-<p><strong>实现验收点</strong></p>
-<ul>
-<li><code>make clean</code> 后内层 <code>git status</code> 干净。</li>
-<li>mdBook 构建通过，目录不包含失效文档链接。</li>
-<li>外层维护提交不包含用户原有的其他改动。</li>
-<li><code>/tmp/todo-mi.md</code> 的全部清单仍为完成状态，当前验证没有发现需要重新打开的事项。</li>
+<li>内层差异范围、官方及历史文件逐字比较完成。</li>
+<li>内层先推送，外层再提交指针及文档；其他子模块保持原样。</li>
+<li>mdBook 与 <code>git diff --check</code> 通过，文档提交哈希和数据库版本与代码一致。</li>
+<li>明确区分代码验证完成和真实实例部署完成。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="codespace-pr-38337来源迁移-365-patch1"><a class="header" href="#codespace-pr-38337来源迁移-365-patch1">Codespace PR #38337：来源迁移 365 patch1</a></h1>
 <h2 id="来源与执行位置"><a class="header" href="#来源与执行位置">来源与执行位置</a></h2>
@@ -2740,20 +2676,21 @@ f19882d9ba  恢复官方 v365—v367 文件身份
 <li>迁移完成后的数据库版本为 366，默认 Dev Container 模板存在。</li>
 </ul>
 <h2 id="与当前-pr-头的关系"><a class="header" href="#与当前-pr-头的关系">与当前 PR 头的关系</a></h2>
-<p>当前 Codespace 头 <code>0f1c19ba10e2d6e026efd0f63e435e545fc3d230</code> 已包含上游数据库版本 370，因此把完整 Codespace 迁移放在来源 <code>v370.go</code>。self 已经发布基础结构、Manager 注册令牌和后续索引清理，最终结构由 patch1、patch2、patch3 共同提供，不重复注册当前 PR 的完整 <code>v370.go</code>。</p>
+<p>当前 Codespace 头 <code>09670abbdecdd30f42a13e1e20b1dd2a625cc527</code> 已包含上游数据库版本 370，因此把完整 Codespace 迁移放在来源 <code>v370.go</code>。self 最终结构由 patch1—patch4 共同提供：前三项记录已发布的基础结构、Manager 注册令牌和索引清理，patch4 完成本次数字实例 ID 和密钥快照变化。</p>
 <p>保持最初 <code>v365</code> 身份，可以在 PR 再次变基时继续把后续变化归到同一来源系列；当前 PR 所在槽位变化不会改写已发布 self 历史。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
 <li>当前迁移列表只注册一次 <code>AddCodespaceTables</code>。</li>
 <li>Manager 注册令牌由 patch2 建立，排队超时索引由 patch3 删除。</li>
+<li>本次新结构由 patch4 推进，patch1 保持最初已发布内容。</li>
 <li>当前 Codespace PR 头是最终 self 的祖先，重复 <code>v370.go</code> 不在最终树中。</li>
 </ul>
 <h2 id="关键数据库行为"><a class="header" href="#关键数据库行为">关键数据库行为</a></h2>
-<p>Codespace 在 Manager 开始创建操作前可以没有运行时 UUID，获得 UUID 后要求唯一。基础迁移使用来源实现的唯一索引，并为 SQL Server 使用只约束非空 UUID 的条件索引。迁移最初创建的 <code>queued_timeout</code> 索引在 patch3 中清理。</p>
+<p>本项记录旧结构：Codespace 在 Manager 开始创建操作前可以没有运行时 UUID，获得 UUID 后要求唯一。基础迁移使用来源实现的唯一索引，并对需要的数据库使用非空 UUID 条件索引。<code>queued_timeout</code> 在 patch3 中清理；UUID 及其索引在 patch4 中移除。保留本项旧结构，是为了让迁移历史与现有 self 数据库实际经历一致。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
-<li>Codespace UUID 唯一约束测试通过。</li>
-<li>SQL Server 条件允许多条尚无运行时 UUID 的记录。</li>
+<li>patch1 后存在 UUID 唯一约束；完整迁移到 375 后 UUID 列及索引消失。</li>
+<li>新的完整升级测试验证最终结构，历史文件保持已发布内容。</li>
 <li>旧 self 数据在 patch3 清理索引时保持不变。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="codespace-pr-38337来源迁移-365-patch2"><a class="header" href="#codespace-pr-38337来源迁移-365-patch2">Codespace PR #38337：来源迁移 365 patch2</a></h1>
@@ -2789,10 +2726,10 @@ f19882d9ba  恢复官方 v365—v367 文件身份
 <ul>
 <li>文件为 <code>pr-38337-v365-patch3.go</code>，测试使用同一前缀。</li>
 <li><code>DropCodespaceQueuedTimeoutIndex</code> 注册为 self 371。</li>
-<li>上一版 self 完成该迁移后的数据库版本为 372。</li>
+<li>该历史迁移完成后的数据库版本为 372。</li>
 </ul>
 <h2 id="实现理由"><a class="header" href="#实现理由">实现理由</a></h2>
-<p>迁移读取当前数据库方言提供的索引信息，找到 <code>queued_timeout</code> 后使用方言生成的语句删除。目标索引已经不存在时直接成功，<code>running_timeout</code> 和表数据保持不变。这个增量把旧 self 结构推进到当前 PR 的完整结构。</p>
+<p>迁移读取当前数据库方言提供的索引信息，找到 <code>queued_timeout</code> 后使用方言生成的语句删除。目标索引已经不存在时直接成功，<code>running_timeout</code> 和表数据保持不变。这个增量对应 self 372—374 使用的结构；当前 PR 的后续变化由 patch4 接续。</p>
 <p><strong>实现验收点</strong></p>
 <ul>
 <li>索引存在时删除，不存在时重复执行仍成功。</li>
@@ -2804,8 +2741,81 @@ f19882d9ba  恢复官方 v365—v367 文件身份
 <p><strong>实现验收点</strong></p>
 <ul>
 <li>直接测试在 <code>make test-migration</code> 中通过。</li>
-<li>当前 PR 的完整结构与 patch1、patch2、patch3 执行后的 self 结构一致。</li>
+<li>当前 PR 的完整结构由 patch1—patch4 接续完成，本项历史含义保持原样。</li>
 <li>版本 372 的现有 self 不会再次执行本项。</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="codespace-pr-38337来源迁移-365-patch4"><a class="header" href="#codespace-pr-38337来源迁移-365-patch4">Codespace PR #38337：来源迁移 365 patch4</a></h1>
+<h2 id="来源目的与执行位置"><a class="header" href="#来源目的与执行位置">来源、目的与执行位置</a></h2>
+<p>本项接入 Codespace PR <code>09670abbdecdd30f42a13e1e20b1dd2a625cc527</code> 的新数据库结构。相关来源提交为 <code>24e9558ca9838eb8528ceec668e7127546be5d61</code>（创建时选择密钥并保存快照）和 <code>c334da5d5f73419e11d6d1d7982e57084feb1cc0</code>（数字实例 ID 及 Manager 返回访问地址）。</p>
+<p>旧实例使用 UUID，旧个人密钥按仓库关联提供；新实例改用数字 ID，并在创建时明确选择密钥、保存实例自己的加密快照。旧运行资源和新协议无法直接等同。本次审阅确定删除旧实例及关联运行数据，保留可直接继续使用的个人和管理配置，用户升级后重新创建 Codespace。</p>
+<p>实现文件为 <code>modelmigration/v29/pr-38337-v365-patch4.go</code>，函数 <code>ResetLegacyCodespaceInstancesAndUpdateSchema</code> 注册为 self 374，完成后版本为 375。名称继续使用最初来源 <code>v365</code>，使 PR 当前完整迁移位于 <code>v370.go</code> 这一事实与 self 执行顺序各自明确。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>PR 原始提交可沿双父合并追溯，self 迁移为后续普通提交。</li>
+<li>patch1—patch3、Pages patch1 和官方迁移保持已发布内容。</li>
+<li>版本 374 只需执行本项即可到 375。</li>
+</ul>
+<h2 id="数据处理范围"><a class="header" href="#数据处理范围">数据处理范围</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>对象</th><th>处理结果</th><th>原因</th></tr></thead><tbody>
+<tr><td><code>codespace</code> 全部旧行</td><td>删除，包含创建中、运行中、停止、失败、删除中的实例</td><td>各状态都属于旧协议，统一重新创建</td></tr>
+<tr><td><code>codespace_gitea_token</code>、<code>codespace_open_token</code>、<code>codespace_ssh_key</code></td><td>清空，包含孤立关联</td><td>旧实例消失后这些凭据已经失去用途</td></tr>
+<tr><td><code>public_key</code> 的 Codespace 类型 4</td><td>删除，其他类型原样保留</td><td>撤销旧实例 SSH 访问，覆盖丢失关联的旧公钥</td></tr>
+<tr><td>DBFS <code>1:codespace_log/</code> 命名空间</td><td>删除对应元数据和数据块</td><td>旧日志不能关联到新数字实例，其他命名空间原样保留</td></tr>
+<tr><td><code>codespace.uuid</code> 及其索引</td><td>删除</td><td>新协议统一使用已有数字主键</td></tr>
+<tr><td><code>codespace.secrets_encrypted</code></td><td>新增 <code>LONGTEXT</code> 列</td><td>新实例保存创建时选定的密钥快照</td></tr>
+<tr><td><code>codespace_user_secret.data_size</code>、<code>all_repositories</code></td><td>删除</td><td>当前 PR 已移除这些字段</td></tr>
+<tr><td><code>codespace_user_secret_repository</code></td><td>删除整张旧关联表</td><td>新流程以创建时选择代替旧仓库关联</td></tr>
+<tr><td>个人密钥 ID、所有者、名称、密文及时间</td><td>原样保留</td><td>加密格式未变，用户仍可在新创建流程中选择</td></tr>
+<tr><td>Manager、注册令牌、模板、仓库权限授权及授权明细</td><td>原样保留</td><td>管理配置和仓库授权仍由当前 PR 使用</td></tr>
+<tr><td>其他 Gitea 和 Pages 数据</td><td>保持正常业务结构及内容</td><td>本项仅替换 Codespace 旧运行数据</td></tr>
+</tbody></table>
+</div>
+<p>个人密钥旧仓库限制被移除，不能把它理解为限制自动迁移到了新结构。新流程按 PR 的创建权限检查及显式选择生成快照；fork PR 等场景继续由 PR 业务逻辑限制复用已保存密钥。本迁移保留密文，不读取明文，也不为旧实例合成快照。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>所有状态的旧实例及孤立凭据被清理；普通 SSH 公钥与其他 DBFS 文件保留原值。</li>
+<li>DBFS 路径匹配转义 <code>_</code>，<code>codespaceXlog/</code>、<code>codespace_log_other/</code> 不被误匹配。</li>
+<li>个人密钥密文、时间和唯一索引保持原值，Manager、模板、授权表快照一致。</li>
+<li>最终 Codespace、个人密钥列和索引与当前模型一致。</li>
+</ul>
+<h2 id="执行顺序与失败重试"><a class="header" href="#执行顺序与失败重试">执行顺序与失败重试</a></h2>
+<p>迁移先在同一事务中删除旧实例、凭据、公钥及日志，再增加快照列，按方言元数据删除 UUID 索引和三个旧字段，最后删除旧关联表。任何数据库错误直接返回，由原生迁移器停止升级并保留待执行版本。</p>
+<p>DDL 的事务行为因数据库而异，因此不承诺所有步骤整体回滚。清理事务失败时已删除行会回滚；清理成功而后续 DDL 失败时，旧实例可能已经删除，版本仍为 374。修复明确报错后继续使用同一版本重试，已删除的列、索引、表可以接受重复执行。整个升级期间保持业务停止，成功到 375 后才开放服务。</p>
+<p>SQLite 使用原生 <code>DROP COLUMN</code>，保留空实例表的自增序列和其余索引；其他数据库使用仓库既有删列实现。各数据库均使用 <code>DELETE</code> 清理实例，不重建实例表或重置自增值，防止新实例重用已删除的历史数字 ID。UUID 索引按列身份识别，以适配 PostgreSQL 返回完整物理名称的情况。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>注入清理错误时，Codespace 公钥删除回滚。</li>
+<li>DDL 失败时版本保持 374，修复后再次执行完成到 375。</li>
+<li>迁移前曾删除的最高实例 ID 不被新实例重用。</li>
+<li>完成到 375 后再次调用完整迁移器，保留新实例及新令牌。</li>
+</ul>
+<h2 id="部署顺序与运行资源清理"><a class="header" href="#部署顺序与运行资源清理">部署顺序与运行资源清理</a></h2>
+<p>本页定义发布时的操作顺序；本次代码合并与测试没有操作现有数据库或集群。</p>
+<ol>
+<li>记录现有 self 提交、数据库版本、Manager 和目标 GiteaSite 的名称、UID。停止所有 Gitea 副本及后台任务，暂停入口请求，避免迁移期间写入旧数据。</li>
+<li>在仍能管理旧资源的 Manager 中禁用目标 GiteaSite，并保留控制器运行以完成清理。只列出 <code>spec.site</code> 的名称及 UID 均匹配该站点的 Codespace 资源。</li>
+<li>使用 Manager 管理端的运行资源删除操作。接口核对资源 UID、resourceVersion 和 Pod UID，并要求所属站点处于禁用状态；若返回资源冲突，刷新身份后重新确认。等待控制器完成 Pod 停止、PVC 删除和运行资源收尾。对保留策略为 Retain 的卷，另按明确卷 ID 处理剩余存储。共享组件及其他站点继续保留。</li>
+<li>确认目标站点旧实例对应的 Pod、PVC、Codespace 资源已清理，再启动本版本执行数据库迁移；版本达到 375 后再恢复入口。迁移错误时保持停机，依据错误修复后重试。</li>
+<li>配套更新 CRD、Manager、Gateway、Agent 及运行镜像。Gitea 当前协议依赖为 <code>gitea.dev/codespace-proto-go@3efecf8a2275</code>，现有 Codespace 来源 <code>e32ab67ed9c00aa36bd86a706b29e3f24a391064</code> 使用相同协议；实际镜像必须由兼容该协议的代码构建，不能仅以标签名称判断。确认就绪后恢复站点调度。</li>
+<li>使用系统 OpenSSH 且启用 Gitea 管理 <code>authorized_keys</code> 的部署，运行 Gitea 既有公钥重建操作，清除旧文件条目。数据库已经移除旧 Codespace 公钥；共享缓存沿正常失效时间处理，无需清空其他业务缓存。</li>
+<li>验证保留的个人密钥、Manager、模板和权限授权；创建新实例，验证密钥选择、数字 ID、访问地址、SSH、日志及停止/恢复/删除。再重启 Gitea，确认新实例仍在。</li>
+</ol>
+<p>旧工作目录和日志按本次审阅结论丢弃，不提供旧实例恢复功能。若迁移后需要回退部署，必须使用升级前的完整数据库恢复方案；单独换回旧二进制不能逆向恢复已删除的表、列和数据。数据库快照也不等于旧运行卷的备份。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li>发布记录包含目标站点 UID、旧资源清理结果、数据库 375 及配套镜像版本。</li>
+<li>操作只作用于目标站点，资源仍被使用或身份改变时以明确错误停止处理。</li>
+<li>数据库迁移和集群资源清理分别验收；数据库测试通过不代替实际集群验收。</li>
+<li>新实例完整生命周期及重复启动验证完成后，部署升级才算完成。</li>
+</ul>
+<h2 id="测试与维护记录"><a class="header" href="#测试与维护记录">测试与维护记录</a></h2>
+<p>直接测试覆盖删除和保留范围、日志路径隔离、保留索引、自增序列及事务回滚；完整迁移测试覆盖 372、374 升级和 375 再次启动。SQLite 另以视图依赖模拟 DDL 中断。所有测试由 Gitea Make 目标启动，各数据库及完整套件的实际结果记在 <a href="maintenance/self/patches/../verification.html">验证记录</a>。</p>
+<p>这是迁移 374 的一次性数据政策。后续 PR 变化从 375 开始追加，按新变化决定是否需要保留、转换或明确清理数据；版本 375 的实例不会再次执行本次清理。</p>
+<p><strong>实现验收点</strong></p>
+<ul>
+<li><code>make test-migration</code> 及指定数据库的迁移测试按验证记录完成。</li>
+<li>self 自有实现、调度和测试都位于 <code>modelmigration/</code>。</li>
+<li><a href="maintenance/self/patches/../migration-map.html">迁移映射</a>、<a href="maintenance/self/patches/../database-versioning.html">数据库版本</a>、<code>AGENTS.md</code> 和目录同步更新。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="pages-pr-40071来源迁移-365-patch1"><a class="header" href="#pages-pr-40071来源迁移-365-patch1">Pages PR #40071：来源迁移 365 patch1</a></h1>
 <h2 id="来源与执行位置-3"><a class="header" href="#来源与执行位置-3">来源与执行位置</a></h2>
