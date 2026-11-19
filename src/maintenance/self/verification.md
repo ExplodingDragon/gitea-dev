@@ -1,101 +1,98 @@
 # 验证记录
 
-## 验证范围与环境
+## 范围和环境
 
-本页记录 2026-11-16 对 `self@8d65b612a28b71a2fef99c5534a19ec2344bd783` 的验证。环境为 Linux `6.18.60-1-lts`、Go `go1.27.3-X:nodwarf5`、Git `2.56.0`、Node.js `v24.22.2`、pnpm `12.17.0`。
+本页记录 2026-11-19 对本轮 self 合并及数据库增量的实际验证，最终提交为 `098facfe362119127e54aed8faddd0c3caa40914`。固定输入为 self `8d65b612a2`、Codespace PR `09670abbde`；Pages `5000d55fb2` 和已包含官方主线 `23836eb610` 保持原样。所有 Gitea 测试均通过仓库 Make 目标启动。
 
-验证覆盖 `upstream/main@23836eb610`、Codespace PR `0f1c19ba10`、Pages PR `5000d55fb2`、self 迁移 372—373 和上一版数据库 372 到当前版本 374 的实际升级。所有 Gitea 测试均从仓库 Make 目标启动。
+环境：Linux `6.18.60-1-lts`，Go `go1.27.4-X:nodwarf5`，Git `2.56.1`，Node.js `v24.22.3`，pnpm `12.17.0`。测试使用临时 SQLite 数据库及三个仅绑定本机随机端口的临时数据库容器，没有连接部署实例或 Kubernetes。
 
 **实现验收点**
 
-- 验证日期、最终提交和五项主要工具版本已记录。
-- 三个固定来源都是被验证提交的祖先。
-- 远端 `origin/self` 已确认指向被验证提交。
+- 验证内容对应本轮固定输入和最终迁移实现。
+- 临时测试环境与部署数据分离。
+- 已知环境差异和未执行的部署操作明确列出。
 
-## 格式化、生成、静态检查与构建
+## 格式、检查与构建
 
-| 命令 | 结果 | 说明 |
+| Make 目标 | 结果 | 说明 |
 | --- | --- | --- |
-| `make fmt` | 通过 | Go 格式化完成，未留下差异 |
-| `make tidy` | 通过 | Go 模块声明无需更新 |
-| `make generate-swagger` | 通过 | OpenAPI 文件重新生成且无需提交变化 |
-| `make swagger-validate` | 通过 | Swagger 2.0 文档有效 |
-| `make checks` | 通过 | 生成、格式和依赖检查完成 |
-| `make lint` | 通过 | Go 0 项问题，621 个模板及前端、文档、配置检查通过 |
-| `make build` | 通过 | 前端生产资源和 Gitea 二进制构建成功 |
+| `make fmt` | 通过 | 格式化迁移实现和测试 |
+| `make tidy generate-swagger swagger-validate` | 通过 | 依赖及生成文件没有引入业务差异 |
+| `make checks` | 通过 | 最终重跑退出 0；依赖漏洞警告见下文 |
+| `make lint` | 通过 | 最终重跑 Go 检查 0 issues，621 个模板无错误，其余检查通过 |
+| `make build` | 通过 | 最终提交再次构建，版本 `29.0.0+dev-507-g098facfe36` |
 
-`make checks` 报告依赖 `github.com/blakesmith/ar` 的 `GO-2026-6905`，当前没有可用修复版本；检查目标按上游现有规则记录后返回成功。构建版本为 `29.0.0+dev-499-g8d65b612a2`。
+首次检查在修改尚未暂存时触发 `fmt-check` 的工作树比较，另发现测试导入处不需要的 lint 忽略标记。已移除该标记，审核并暂存后重跑 `make -k checks lint test-migration`，退出码 0。此后检查输出没有额外生成文件改动。
+
+`make checks` 中的安全扫描报告既有依赖 `github.com/blakesmith/ar` 的 `GO-2026-6905`，扫描结果的修复版本为 N/A；Make 目标按当前上游规则记录后返回成功。本轮没有修改依赖或业务代码来消除该警告。
 
 **实现验收点**
 
-- 七个标准目标均以状态 0 退出。
-- 生成和依赖整理后内层没有新差异。
-- 漏洞记录包含编号、依赖和当前无修复版本的事实。
+- 最终检查日志为 `/tmp/gitea-self-375-checks-final.log`，退出码 0。
+- 首轮发现的本轮 lint 问题已修复，最终结果以重跑为准。
+- 漏洞警告单独记录，不能把检查退出成功解释为无漏洞。
 
-## 数据库、后端和前端测试
+## 功能与迁移测试
 
-| 命令 | 结果 | 覆盖内容 |
+| Make 目标 | 结果 | 覆盖 |
 | --- | --- | --- |
-| `make migrations.individual.test` | 通过 | 全部迁移包的直接测试 |
-| `make test-migration` | 通过 | 历史数据库、全部逐项迁移和 self 372 → 374 |
-| `make test-backend` | 通过 | 全部后端包，包括 Codespace、Pages、组织和仓库服务 |
-| `make test-frontend` | 121 个文件、402 项测试通过 | Vitest 前端测试 |
+| `make test-backend` | 通过 | 完整后端单元测试 |
+| `make test-frontend` | 通过 | 121 个文件，402 项测试 |
+| `make test-migration` | 通过 | 历史数据库迁移测试、全部逐项迁移、self 372 和 374 升级 |
+| `make test-integration` | 完整执行，1 个顶层测试失败 | 唯一失败为下述既有归档长度断言，包含其 GitHubStyle 子测试 |
+| `make test-e2e` | 通过 | Chromium、Firefox、WebKit 共 219 项通过、6 项按套件规则跳过 |
 
-新增 `TestSelfMigrationTail` 检查 372、373、374 的待执行边界；`TestUpgradeSelfDatabaseFrom372` 使用旧 SQLite 结构和版本表执行完整迁移，并验证数据结果和版本 374。官方 `v368`、`v369` 的直接测试继续保持上游内容。
+self 新增测试使用真实旧表结构和版本表执行完整 `Migrate`，覆盖 374 → 375、372 → 375、375 再次启动保留新实例与令牌。直接迁移测试验证旧实例和孤立凭据清理、共享 DBFS 路径隔离、个人密钥密文及管理配置保留、索引和自增序列延续、失败回滚和 DDL 重试。
 
-**实现验收点**
+完整集成套件包含 `TestAPIDownloadArchive` 及其 `GitHubStyle` 子测试的既有差异：期望 tar.gz 为 266 字节，本机为 264。直接对原始测试仓库运行本机 `git archive --format=tar.gz --prefix=repo1/ master` 同样为 264 字节，并能解包出 `repo1/README.md`；没有经过任何 Codespace 代码。本轮保留原测试和归档实现，如实记录该失败。
 
-- 四个测试目标均以状态 0 退出。
-- 真实升级测试验证版本推进、团队名称处理和运行器名称回填。
-- Codespace、Pages、组织与仓库服务测试通过。
-
-## 完整集成测试
-
-`make test-integration` 从 Actions 测试运行到最后的 Workflow Run API。Codespace 路由与状态机、Pages 管理端与 API、组织变化、仓库删除与转移、两个 PR 的组合路径均通过。
-
-唯一失败为上游 `TestAPIDownloadArchive` 的固定压缩字节长度断言：本机 Git 2.56.0 对普通 API 路径和 GitHub 风格路径都生成 264 字节 `tar.gz`，测试夹具期望 266 字节。单独执行 `make 'test-integration#TestAPIDownloadArchive'` 得到相同结果；响应状态、归档生成和其他格式测试正常。该文件相对正常 PR 合并结果没有 self 差异，用户已确认此既知环境错误无需处理。
+主验证命令 `make -k tidy generate-swagger swagger-validate checks lint build test-backend test-frontend test-migration test-integration test-e2e` 已执行到末尾，退出码 2。首轮格式与 lint 问题经修正后单独重跑通过；最终尚未通过的项目只有上述集成归档断言。浏览器套件退出成功，不包含真实 Codespace 集群运行验证。
 
 **实现验收点**
 
-- 完整套件运行到最后一个测试文件。
-- 唯一失败为 `TestAPIDownloadArchive` 的两处 264/266 字节断言。
-- 单独重跑稳定复现，没有第二类集成失败。
+- 迁移清理和保留范围、失败重试及再次启动均有执行结果。
+- 集成套件完成后列出全部失败，不将已知失败标作通过。
+- 主验证日志保存在 `/tmp/gitea-self-375-validation.log`。
+- 浏览器套件覆盖三种浏览器，完整执行到 219 通过、6 跳过；没有新增浏览器失败。
 
-## 端到端测试
+## 多数据库迁移验证
 
-`make test-e2e` 使用仓库容器运行 Chromium、Firefox 和 WebKit。宿主机 Playwright 预检查提示缺少浏览器动态库，但容器提供运行环境，最终 219 项通过、6 项按浏览器能力跳过、0 项失败，命令状态为 0。
+以下通过 `make migrations.individual.test MIGRATE_TEST_PACKAGES='gitea.dev/modelmigration gitea.dev/modelmigration/v29' GOTEST_FLAGS='-timeout 40m -count=1'` 执行，分别指定 `GITEA_TEST_DATABASE` 及临时库连接。强制重新运行，避免切换数据库时复用测试缓存。
 
-这组测试覆盖本轮上游新增和更新的 Actions、仓库设置、PR 差异复制、项目工作流以及常用仓库操作，证明完整前端与服务组合可以启动并工作。
+| 数据库 | 结果 | 范围 |
+| --- | --- | --- |
+| SQLite，仓库默认驱动 | 通过 | 全部迁移套件及 self 升级，另覆盖视图阻止 DDL 后的重试 |
+| PostgreSQL 17 | 通过 | modelmigration 和 v29 全部测试 |
+| MySQL 8.4 | 通过 | modelmigration 和 v29 全部测试 |
+| SQL Server 2019，15.0.4500.2 | 通过 | modelmigration 和 v29 全部测试 |
 
-**实现验收点**
+跨数据库首次运行发现 PostgreSQL 旧 UUID 条件索引返回完整物理名，以及 SQL Server 测试不能显式插入自增版本 ID。实现已按索引列识别 UUID，测试改为由数据库分配版本记录 ID；上述结果均为修正后、禁用缓存的最终重跑结果。
 
-- `make test-e2e` 状态为 0。
-- 结果为 219 项通过、6 项跳过、0 项失败。
-- Chromium、Firefox、WebKit 都实际运行了测试。
+日志分别为 `/tmp/gitea-self-375-pg.log`、`/tmp/gitea-self-375-mysql.log`、`/tmp/gitea-self-375-mssql.log`。这些结果验证迁移行为，不表示三个外部数据库都执行了完整业务集成套件；完整业务集成使用 SQLite。
 
-## 来源、文件与迁移审计
-
-实施结束后再次查询远端，三个来源哈希与开始时一致。祖先检查全部成功，两个双父合并的第二父精确对应 PR 头。官方 `v365`—`v369` 文件及测试与上游逐字一致，两个 PR 的重复 `v370.go` 不在最终树中。
-
-非数据库自动合并文件与两个 PR 的正常合并树比较为空；四个正常人工冲突文件按双方语义审阅。相对上游的 self 数据库差异只包含四项自维护 PR 来源文件、迁移列表、self 边界测试和真实升级测试。
-
-**实现验收点**
-
-- 远端哈希、祖先关系和合并第二父检查通过。
-- 九个官方迁移文件比较通过，`v370.go` 缺失检查通过。
-- 非数据库没有 self 专用兼容代码。
-
-## 文档与产物清理
-
-内层执行 `make clean`，删除构建二进制、测试二进制、临时配置和集成测试目录，工作树保持干净。维护文档更新为当前规则，删除三个过时官方补丁文档，并由 mdBook 构建验证链接和目录。
-
-外层只提交 `gitea` 指针、`src/maintenance/self/`、`src/SUMMARY.md` 和根目录 `AGENTS.md`；原有 README、Codespace 子模块和 Codespace 设计文档改动继续留在用户工作区。
-
-最终重新读取 `/tmp/todo-mi.md`。其中克隆面板布局修复、清理和验证清单均已勾选完成；本轮更新接入该功能分支的最新提交后，前端测试、生产构建和三浏览器端到端测试继续通过，因此该计划保持闭环。
+验证后已停止并删除 `gitea-self375-pg-test`、`gitea-self375-mysql-test`、`gitea-self375-mssql-test` 三个临时容器，删除的仅是可重新生成的测试数据。
 
 **实现验收点**
 
-- `make clean` 后内层 `git status` 干净。
-- mdBook 构建通过，目录不包含失效文档链接。
-- 外层维护提交不包含用户原有的其他改动。
-- `/tmp/todo-mi.md` 的全部清单仍为完成状态，当前验证没有发现需要重新打开的事项。
+- 三个外部数据库命令最终退出码均为 0。
+- SQLite 专属故障注入在其他数据库明确跳过，其余迁移测试实际执行。
+- 临时容器在验证结束后删除，不保留测试凭据或部署数据。
+
+## 差异审计与文档闭环
+
+正常合并树为 `b1f1d5f8656885ec7445e857dff1a43e74972326`。最终树与它比较，`modelmigration/` 以外输出为空，退出码 0；完整差异清单只包含迁移注册、升级测试、历史 patch1 保留、patch4 及替代的 PR 完整结构测试。官方 v365—v369 及其测试与主线 `23836eb610` 完全相同，历史 PR 补丁与更新前 self 完全相同。可复现命令见 [差异审计](conflict-resolutions.md)。
+
+维护说明替换旧的“当前 374”内容，保留历史迁移的来源说明，并新增 patch4 发布步骤；目录和 AGENTS 同步更新。文档由 `mdbook build` 验证，mdbook-mermaid 的构建版本提示不影响生成。
+
+最终构建日志为 `/tmp/gitea-self-375-build-final.log`。本轮失败诊断目录和集成测试二进制移至 `/tmp/gitea-self375-test-artifacts.oYNUOE`，可以取回；更新前已存在的测试目录保持原样。保留本轮构建的 Gitea 二进制，源码工作树干净。
+
+重新读取 `/tmp/todo-mi.md`：它是已完成的 Codespace 配置边界清理计划，并非本轮数据库迁移计划。全部清单已勾选，本次接入的 PR 包含该配置调整；本轮测试没有要求重新打开其中事项。文件保持原样。
+
+实际部署资源清理、新镜像发布和线上生命周期验收未在本次执行；这是 [patch4 部署说明](patches/pr-38337-v365-patch4.md) 定义的发布操作，而不是代码仓库修改。
+
+**实现验收点**
+
+- 内层差异范围、官方及历史文件逐字比较完成。
+- 内层先推送，外层再提交指针及文档；其他子模块保持原样。
+- mdBook 与 `git diff --check` 通过，文档提交哈希和数据库版本与代码一致。
+- 明确区分代码验证完成和真实实例部署完成。

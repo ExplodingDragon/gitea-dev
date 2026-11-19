@@ -13,26 +13,28 @@
 | 官方删除 OpenID 2.0 表 | `87ebf3b1ba` | `v366.go` | 369 | 370 | 官方文件，self 改执行位置 |
 | 官方最新发行版指针 | `a5201dc427` | `v367.go` | 370 | 371 | 官方文件，self 改执行位置 |
 | Codespace 排队超时索引清理 | `79e802a5fa` | `pr-38337-v365-patch3.go` | 371 | 372 | 已发布 self 历史 |
-| 官方团队名称唯一索引 | `6bc92f464a` | `v368.go` | 372 | 373 | 本轮接入 |
-| 官方 Actions 运行器名称 | `dc9a2aefdc` | `v369.go` | 373 | 374 | 本轮接入 |
+| 官方团队名称唯一索引 | `6bc92f464a` | `v368.go` | 372 | 373 | 已发布 self 历史 |
+| 官方 Actions 运行器名称 | `dc9a2aefdc` | `v369.go` | 373 | 374 | 已发布 self 历史 |
+| Codespace 密钥快照、数字实例 ID 及旧实例清理 | `24e9558ca9`、`c334da5d5f`；本轮头 `09670abbde` | `pr-38337-v365-patch4.go` | 374 | 375 | 本轮接入 |
 
 **实现验收点**
 
-- 表中九项 self 迁移编号连续为 365—373。
-- 四项自维护来源使用 `pr-*` 名称，五项官方来源使用 `v365`—`v369` 原名。
+- 表中十项 self 迁移编号连续为 365—374。
+- 五项自维护来源使用 `pr-*` 名称，五项官方来源使用 `v365`—`v369` 原名。
 - 每项完成后版本等于 self 迁移编号加一。
 
 ## 两个 PR 当前完整迁移的关系
 
-Codespace 与 Pages 当前头都包含上游数据库版本 370，因此各自在 `modelmigration/v29/v370.go` 放置完整功能迁移。self 已经在 365—367 执行 Codespace、Pages 和 Manager 注册令牌结构，又在 371 执行 Codespace 的后续索引清理，所以不会再次注册两个 PR 的完整 `v370.go`。
+Codespace `09670abbde` 与 Pages `5000d55fb2` 都包含上游数据库版本 370，因此各自在 `modelmigration/v29/v370.go` 放置完整功能迁移。self 已经在 365—367 执行基础结构，在 371 清理排队超时索引，本轮再由 374 清理旧实例并更新列和关联表。
 
-这不是舍弃 PR 的数据库变化，而是把当前完整结构拆解为 self 已经发布的四项增量。业务代码仍直接来自 PR 当前头；数据库只保留现有 self 实例真正需要执行的变化。
+两个 PR 的当前完整结构由五项自维护增量共同提供。业务代码保持正常合并结果；数据库只执行现有 self 实例尚未完成的变化。因此完整 `v370.go` 及其只适用于新结构的测试由对应的 self 补丁和升级测试替代。
 
 **实现验收点**
 
 - `AddCodespaceTables`、`AddPagesTables`、`AddCodespaceManagerRegistrationTokenTable` 各注册一次。
 - `DropCodespaceQueuedTimeoutIndex` 注册为 371，并有直接测试。
-- self 通过四项增量得到两个 PR 的当前数据库结构，官方后续 `v370.go` 位置保持可用。
+- `ResetLegacyCodespaceInstancesAndUpdateSchema` 注册为 374；完整升级后 Codespace 列和索引与当前模型一致。
+- self 通过五项增量得到两个 PR 的当前数据库结构，官方后续 `v370.go` 位置保持可用。
 
 ## 官方文件与 self 编号的关系
 

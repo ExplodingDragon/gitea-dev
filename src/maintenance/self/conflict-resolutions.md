@@ -1,73 +1,60 @@
-# 合并结果与冲突解决记录
+# 合并结果与数据库差异审计
 
-## 本轮固定结果
+## 本轮固定基准
 
-2026-11-16 从 `self@53d76a7ab066085c21af9098862392ba1d2fc420` 合并 Codespace PR `0f1c19ba10` 和 Pages PR `5000d55fb2`，两者都包含 `upstream/main@23836eb610`。最终 self 为 `8d65b612a28b71a2fef99c5534a19ec2344bd783`，数据库从版本 372 提升到 374。
+2026-11-19 从 `self@8d65b612a28b71a2fef99c5534a19ec2344bd783` 合并 Codespace PR `09670abbdecdd30f42a13e1e20b1dd2a625cc527`。Pages 保持 `5000d55fb2`，PR 已包含的官方主线保持 `23836eb610`。本轮没有额外更新主线。
 
-业务冲突按两个 PR 的正常组合解决，self 长期差异只保留在数据库迁移安排。这个原则保证当前部署得到两个 PR 的完整功能，又让上一版 self 数据库沿原生迁移器升级。
+先由 Git 生成正常合并树，再把 self 数据库增量与它比较。这样“只有数据库差异”有精确的可复现基准：它是已有 self（包含 Pages）与本轮 Codespace 的正常业务组合，不是单独 Codespace PR 的树。
 
-**实现验收点**
+```bash
+git merge-tree --write-tree \
+  8d65b612a28b71a2fef99c5534a19ec2344bd783 \
+  09670abbdecdd30f42a13e1e20b1dd2a625cc527
+```
 
-- 三个固定来源均为最终 self 的祖先。
-- 最终迁移列表连续到 373，期望数据库版本为 374。
-- 工作树中没有冲突标记或未合并路径。
-
-## Codespace 合并冲突
-
-第一笔合并在迁移列表、Codespace 基础迁移、仓库设置和仓库转移测试发生冲突。迁移列表保留已发布 self 365—371；Codespace 基础迁移保留 `pr-38337-v365-patch1.go`，同时把被重命名检测碰撞的官方 `v368.go` 以原文件加入。PR 自带的完整 `v370.go` 不重复进入 self。
-
-仓库设置继续使用 Pages 扩展后的 `UpdateRepositoryOptions`，仓库转移测试同时保留 Pages 更新时间断言和 Codespace/上游作用域工作流断言。这样冲突结果与两个功能共同存在时的服务接口一致。
+本轮返回树 `b1f1d5f8656885ec7445e857dff1a43e74972326`，无文本冲突。
 
 **实现验收点**
 
-- `pr-38337-v365-patch1.go` 保持已发布 self 基础迁移内容。
-- 官方 `v368.go` 与上游一致，PR 的完整 `v370.go` 不存在。
-- `TestTransferOwnership` 同时检查 Pages 时间和作用域工作流来源。
+- 双父合并 `e152d93af21700a53df53c05924c0a607afff450` 的两个父提交与上述输入一致。
+- 正常合并树可以从固定输入重新生成。
+- PR 的业务实现、配置、生成文件及业务测试均采用该树内容。
 
-## Pages 合并冲突
+## 自动合并中需要识别的数据库变化
 
-第二笔合并只需要人工处理迁移列表和仓库设置错误响应。迁移列表继续保留 self 365—371，Pages 自带的完整 `v370.go` 不重复进入；仓库更新调用保留 `UpdateRepositoryOptions`，错误响应采用 Pages 当前头使用的 `ServerErrorAuto`。
+Git 将 PR 新完整 `v370.go` 的修改自动跟随重命名应用到 self 的历史 `pr-38337-v365-patch1.go`。文本合并虽成功，但若直接接受，已部署 self 不会重新执行迁移 365，新结构变化就会遗漏。
 
-组织可见性、仓库删除、仓库转移和管理端测试的双方组合已经在上一版 self 中存在，本轮合并结果继续保留这些行为：组织删除前置检查、Pages 生命周期时间传播、Codespace 解绑、Pages 删除墓碑和仓库写锁均同时生效。
-
-**实现验收点**
-
-- 仓库设置使用当前 `UpdateRepositoryOptions` 接口和自动错误响应。
-- 仓库删除事务先处理 Codespace 关系和 Pages 墓碑，再删除仓库记录。
-- 组织可见性变化继续把 Pages 更新时间传入仓库处理。
-
-## 官方迁移文件恢复
-
-上一版 self 中三个官方迁移曾以 `pr-39998-v365-patch1`、`pr-40231-v366-patch1`、`pr-40214-v367-patch1` 保存。本轮把它们恢复为官方 `v365`、`v366`、`v367` 路径，并保留官方测试文件原名。五次重命名内容相似度均为 100%，函数仍注册在 self 的 368—370。
-
-恢复路径是为了保持官方文件身份和未来迁移槽位连续。只有 Codespace、Pages 两个由本项目继续维护的 PR 使用 `pr-*` 规则；已经进入上游的正式迁移按官方文件管理。
+因此合并提交保留 patch1 的已发布内容，并移除新导入、只针对 PR 新完整结构的 `v370_test.go`。self 通过后续 patch4 和完整升级测试验证最终结构，历史 patch1—patch3 的含义保持稳定。官方 `v365`—`v369` 及测试完全不变。
 
 **实现验收点**
 
-- `f19882d9ba` 显示五项 100% 重命名和零行内容变化。
-- 官方 `v365`—`v369` 文件及测试与上游一致。
-- 官方迁移由 `v365`—`v369` 文件和统一接入记录表达。
+- 合并提交相对更新前 self 的 `modelmigration/` 没有变化。
+- patch4 单独追加为 374，数据库普通提交只修改迁移目录。
+- patch4 测试覆盖 PR 新结构和 self 真实升级，官方文件仍与固定主线逐字相同。
 
-## self 372 到 374
+## 最终差异检查
 
-上一版 self 已完成迁移 371，数据库版本为 372。本轮把官方 `v368.go` 的团队名称唯一索引函数注册为 self 372，把官方 `v369.go` 的运行器名称函数注册为 self 373。文件身份保持官方编号，执行位置由 self 连续序列决定。
+```bash
+git diff --exit-code \
+  b1f1d5f8656885ec7445e857dff1a43e74972326 098facfe362119127e54aed8faddd0c3caa40914 \
+  -- . ':!modelmigration'
+git diff --name-status \
+  b1f1d5f8656885ec7445e857dff1a43e74972326 098facfe362119127e54aed8faddd0c3caa40914
+git diff --exit-code 8d65b612a28b71a2fef99c5534a19ec2344bd783 \
+  098facfe362119127e54aed8faddd0c3caa40914 -- modelmigration/v29/pr-38337-v365-patch1.go \
+  modelmigration/v29/pr-38337-v365-patch2.go \
+  modelmigration/v29/pr-38337-v365-patch3.go \
+  modelmigration/v29/pr-38337-v365-patch3_test.go \
+  modelmigration/v29/pr-40071-v365-patch1.go
+git diff --exit-code 23836eb610b6673dc4ef7001d432e48dd3af1537 \
+  098facfe362119127e54aed8faddd0c3caa40914 -- 'modelmigration/v29/v36*.go'
+```
 
-真实升级测试从版本表 372 和迁移前结构开始调用完整迁移器，验证两项数据变化和最终版本 374。这比只比较函数列表更接近实际部署升级。
+首项比较覆盖整个非迁移目录，没有额外排除业务文件。完整差异只包括保留历史 patch1、替换 PR 完整迁移测试、增加 patch4、注册版本和 self 升级测试。外层文档维护不属于内层 Gitea 业务差异。
 
 **实现验收点**
 
-- 372 → 374 升级实际执行两项迁移并通过。
-- 团队重复名称得到处理，Actions 任务回填运行器名称。
-- 迁移后版本表为 374。
-
-## 非数据库差异检查
-
-使用两个 PR 当前头生成正常合并树，排除数据库目录以及正常合并本来就需要人工组合的 `routers/api/v1/api.go`、`services/org/org.go`、`services/repository/delete.go`、`tests/integration/api_admin_test.go` 后，与 self 比较没有差异。四个人工文件再按双方路由权限、Pages 生命周期、Codespace 清理和当前测试语义逐项检查。
-
-因此 self 没有新增额外业务兼容层；业务实现就是上游与两个 PR 的合并结果，数据库目录承担 self 升级差异。
-
-**实现验收点**
-
-- 自动合并文件的非数据库比较为空。
-- 四个人工组合文件同时包含双方必要行为，执行路径与正常功能组合一致。
-- 相对上游的 self 数据库差异可完整列为四项 PR 来源文件、迁移列表和 self 测试。
+- 非迁移比较输出为空、退出码为 0。
+- 完整文件清单全部位于 `modelmigration/`。
+- 已发布 PR 文件和官方文件比较输出均为空。
+- 旧轮次人工合并记录仍可在 Git 文档历史中追溯，当前说明只描述本轮实际变化。

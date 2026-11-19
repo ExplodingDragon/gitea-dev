@@ -1,83 +1,70 @@
 # 数据库版本与升级范围
 
-## 当前连续序列
+## 连续执行序列
 
-Gitea 的数据库版本等于最后完成的迁移编号加一。self 在上游迁移 364 之后保留已经发布的自维护序列，并把本轮两项新官方迁移追加到末尾：
+Gitea 版本表保存下一项待执行迁移编号，因此完成迁移 374 后版本为 375。self 在官方迁移 364 之后维护自己的连续执行序列，文件来源身份与执行编号分别记录。
 
-```go
-newMigration(365, "Add Codespace tables", v29.AddCodespaceTables),
-newMigration(366, "Add Pages support", v29.AddPagesTables),
-newMigration(367, "Add Codespace Manager registration token table", v29.AddCodespaceManagerRegistrationTokenTable),
-newMigration(368, "Normalize legacy repository unit and login source JSON", v29.NormalizeLegacyConfigJSON),
-newMigration(369, "Drop user_open_id table", v29.DropUserOpenIDTable),
-newMigration(370, "Add latest_release_id to repository table", v29.AddLatestReleaseIDToRepository),
-newMigration(371, "Drop obsolete Codespace queued timeout index", v29.DropCodespaceQueuedTimeoutIndex),
-newMigration(372, "Add unique index for team name", v29.AddUniqueTeamNameIndex),
-newMigration(373, "Add runner_name to action_task", v29.AddRunnerNameToActionTask),
-```
-
-| self 迁移 | 完成后版本 | 结构变化 |
+| self 迁移 | 完成后版本 | 内容 |
 | ---: | ---: | --- |
-| 365 | 366 | 建立 Codespace 基础结构 |
-| 366 | 367 | 建立 Pages 基础结构 |
-| 367 | 368 | 建立 Codespace Manager 注册令牌表 |
-| 368 | 369 | 规范化旧配置 JSON |
-| 369 | 370 | 删除 OpenID 2.0 表 |
-| 370 | 371 | 增加仓库最新发行版指针 |
-| 371 | 372 | 删除 Codespace 已停用的排队超时索引 |
-| 372 | 373 | 建立组织内团队名称唯一索引 |
-| 373 | 374 | 保存 Actions 任务使用的运行器名称 |
+| 365 | 366 | Codespace 基础结构，patch1 |
+| 366 | 367 | Pages 基础结构，patch1 |
+| 367 | 368 | Codespace Manager 注册令牌，patch2 |
+| 368 | 369 | 官方 v365：旧 JSON 规范化 |
+| 369 | 370 | 官方 v366：移除 OpenID 2.0 表 |
+| 370 | 371 | 官方 v367：最新发行版指针 |
+| 371 | 372 | Codespace 排队超时索引清理，patch3 |
+| 372 | 373 | 官方 v368：组织内团队名称唯一索引 |
+| 373 | 374 | 官方 v369：Actions 任务运行器名称 |
+| 374 | 375 | Codespace 旧实例清理及新结构，patch4 |
+
+上一版 self 已完成 365—373。把本次变化追加为 374，使该实例能准确执行新变化；保留历史文件同时保证更早 self 可以补齐同一条执行序列。
 
 **实现验收点**
 
-- `migrations.go` 中 365—373 连续、没有重复编号。
-- 每行完成后版本等于迁移编号加一。
-- 当前最终数据库版本为 374。
+- `migrations.go` 连续注册到 374，期望版本为 375。
+- 历史 365—373 的函数及含义保持原样。
+- 官方文件和测试仍使用上游原名及内容。
 
-## 为什么从 372 继续追加
+## 兼容性矩阵
 
-上一版 self 已经发布数据库版本 372，这个数字表示 365—371 全部完成。上游最新代码把团队名称唯一索引和运行器名称迁移放在官方编号 368、369；如果按官方编号重新排列，就会改变已发布 self 数据库中 368、369 的既有含义。
+| 数据库来源 | 本轮处理 | 直接验证内容 |
+| --- | --- | --- |
+| 上一版 self 374 | 执行 374，到 375 | 完整迁移器、清理范围、最终结构、失败重试 |
+| 历史 self 372 | 顺序执行 372、373、374，到 375 | 团队重命名、运行器名回填和 Codespace 结构升级 |
+| 当前 self 375 | 保持 375 | 再次调用迁移器，保留新实例和新令牌 |
+| 更早且仍受 Gitea 支持的 self | 补齐连续序列 | 历史迁移套件；直接 self 升级测试以 372、374 为准 |
+| 全新安装 | 创建当前模型结构，版本 375 | 构建、集成及端到端测试 |
+| 官方或独立 PR 已安装数据库 | 按来源另行制定转换 | 本轮兼容承诺限定 self 历史 |
 
-因此 self 复用官方迁移函数，但把实际执行编号安排为 372、373。旧 self 数据库会按 Gitea 原生迁移器顺序执行新增项，官方文件本身仍保持 `v368.go`、`v369.go`。这个设计同时保护已运行实例和上游文件身份。
+数字相同的版本可能来自不同分支结构，版本表无法识别来源。因此按真实部署来源界定升级范围，比根据表是否存在猜测来源更明确。迁移中的列存在检查仅用于同一 self 迁移中断后的重试。
 
-**实现验收点**
-
-- 版本 372 的数据库依次执行 `AddUniqueTeamNameIndex` 和 `AddRunnerNameToActionTask`。
-- 官方 `v368.go`、`v369.go` 的代码与测试没有为 self 改名或改写。
-- 两项迁移完成后版本记录依次变为 373、374。
-
-## 支持的升级来源
-
-本项目支持全新安装和 self 历史中的连续升级。当前直接验证的生产锚点为上一版 self 数据库 372；更早 self 版本按同一迁移列表补齐尚未执行的编号。Gitea 已不支持的过低历史版本仍遵循上游迁移器给出的升级路径。
-
-上游或单独 PR 在迁移 365 之后安装、升级得到的数据库不属于 self 兼容范围，因为它们用相同数字表示不同结构。需要迁入 self 时，应使用进入分歧迁移前的备份，或单独设计一次有明确来源和验收数据的转换；日常 self 更新不通过检测表是否存在来猜测来源。
+本次兼容特例是明确清理旧 Codespace：旧实例及运行数据重新创建；个人密钥、Manager 等保留项按 [patch4](patches/pr-38337-v365-patch4.md) 处理。升级是单向变化，旧二进制不能继续使用升级后的数据库。
 
 **实现验收点**
 
-- 现有 self 版本 372 可以直接升级到 374。
-- `make test-migration` 验证历史数据库能执行当前迁移器。
-- 运维记录包含实例所用分支，能判断数据库是否属于 self 历史。
+- 运维记录升级前的 self 提交和数据库版本。
+- 374、372 和 375 三个入口由真实迁移测试覆盖。
+- 业务验收分别检查保留数据和重新创建的 Codespace，不以旧实例保留作为本次目标。
 
-## 372 到 374 的真实升级测试
+## 真实升级与重复启动测试
 
-`modelmigration/self_migrations_test.go` 建立版本 372 的 SQLite 数据库，使用迁移前的 `team`、`action_task` 和 `action_runner` 结构写入数据，再调用完整的 `modelmigration.Migrate`。测试确认重复团队名得到稳定重命名，`runner_name` 从运行器表回填，版本表最终写为 374。
+`self_migrations_test.go` 通过冻结的历史迁移构造旧 Codespace 表，写入真实版本表，再执行 `Migrate`。374 测试核对最终列和索引，并插入新模型实例及令牌后再次执行迁移，确认不会重复清理。372 测试继续检查两项官方数据变化。
 
-测试使用完整迁移入口而不是直接调用两个函数，因此同时验证待执行迁移选择、执行顺序和版本推进。`migrations_test.go` 另行检查 372、373、374 三个边界的待执行列表。
-
-**实现验收点**
-
-- `TestUpgradeSelfDatabaseFrom372` 在 `make test-migration` 中通过。
-- 旧团队数据和 Actions 任务数据在升级后仍可读取。
-- 版本边界测试证明不会漏执行或重复调度 372、373。
-
-## 下一项迁移
-
-下一项 self 数据库变化从实际编号 374 开始，完成后数据库版本为 375。若变化来自两个自维护 PR 已有迁移，则为对应 `pr-*` 身份增加下一个 `patchN`；若变化来自新的官方 `vXXX.go`，保留官方文件名和内容，只在 self 迁移列表末尾安排执行编号。
-
-采用这两条路径是为了分别表达“我们维护的 PR 增量”和“上游正式迁移”。执行编号始终追加，来源身份始终保持稳定，审阅者可以同时回答代码来源和旧实例执行时机。
+SQLite 中通过依赖 `uuid` 的临时视图制造删列失败，确认版本停留 374；解除依赖后重试到 375。直接迁移测试另行验证清理事务回滚、重复执行、删除最高 ID 后自增序列仍延续，以及保留数据和索引。重试只用于升级维护期间，业务恢复以版本 375 成功为前提。
 
 **实现验收点**
 
-- 下一项 self 实际迁移编号为 374。
-- 新迁移在映射中同时记录来源文件身份、self 编号、完成后版本和测试。
-- 新增官方迁移可以直接与同一上游文件逐字比较。
+- `TestUpgradeSelfDatabaseFrom372`、`TestUpgradeSelfDatabaseFrom374` 通过。
+- `TestUpgradeSelfDatabaseFrom374RetriesFailedSchemaChange` 验证失败保留版本及成功重试。
+- `TestSelfMigrationTail` 覆盖 372、373、374、375 的待执行边界。
+- [验证记录](verification.md) 区分完整套件、数据库种类及实际结果。
+
+## 下一次追加
+
+下一项实际迁移编号为 375，完成后版本为 376。Codespace 后续数据库变化使用 patch5，Pages 后续变化使用 patch2；官方变化继续保留 `vXXX.go`，再在 self 末尾注册。patch4 的清理是本次已确认的旧协议替换，不作为日后每次更新的通用操作。
+
+**实现验收点**
+
+- 下一轮先比较固定来源的实际数据库差异，再决定新增项。
+- 新增迁移配套上一版 self 的真实升级测试及映射记录。
+- 现有 375 数据库从新追加项继续，不再次调度迁移 374。

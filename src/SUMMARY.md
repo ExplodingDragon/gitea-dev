@@ -51,4 +51,5 @@
 - [Codespace PR #38337 来源迁移 365 patch1](maintenance/self/patches/pr-38337-v365-patch1.md)
 - [Codespace PR #38337 来源迁移 365 patch2](maintenance/self/patches/pr-38337-v365-patch2.md)
 - [Codespace PR #38337 来源迁移 365 patch3](maintenance/self/patches/pr-38337-v365-patch3.md)
+- [Codespace PR #38337 来源迁移 365 patch4](maintenance/self/patches/pr-38337-v365-patch4.md)
 - [Pages PR #40071 来源迁移 365 patch1](maintenance/self/patches/pr-40071-v365-patch1.md)
