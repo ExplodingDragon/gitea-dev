@@ -232,9 +232,13 @@ Kata 原始块卷在挂载前通过 mTLS 核对 CR、Pod、PVC 和操作许可�
 
 环境模板支持 HTTP、HTTPS、SOCKS5 代理及直连目标。代理使用标准 URL，管理页面回显实际配置；大小写标准环境变量覆盖 Agent、Docker 拉取、构建和容器运行。SOCKS5 为未单独配置的 HTTP/HTTPS 提供后备。直连列表合并回环、Kubernetes Service、用户配置及 Compose 服务名和网络别名，使集群与服务间流量保持直连。代理构建使用 Docker 预定义参数，运行配置从 Codespace 快照取得，Dev Container 持久状态只保存非代理执行信息。
 
-Agent 在启动 dockerd 前把 Runtime 系统 CA、公开内部根证书、站点 CA 和代理 CA 合并为 `/run/codespace/ca/bundle.pem`，去重后原子写入。Docker 通过 `SSL_CERT_FILE` 使用该文件，已配置 Registry 取得 `certs.d` 投影；Git 配置 `sslCAInfo`，OCI Feature 客户端从同一文件构造信任池，使首次下载即使用完整信任链。
+Agent 在启动 dockerd 和构建客户端前把 Runtime 系统 CA、公开内部根证书、站点 CA 和代理 CA 合并为 `/run/codespace/ca/bundle.pem`，去重后原子写入。Docker、Buildx 和 Compose Bake 通过 `SSL_CERT_FILE` 使用该文件，进程内构建认证客户端显式配置相同信任，已配置 Registry 取得 `certs.d` 投影。令牌请求可能在构建客户端发出，因此客户端和 daemon 都需要取得 CA。Git 配置 `sslCAInfo`，HTTPS 和 OCI Feature 下载共用在系统根证书上追加平台 CA 的客户端，`initializeCommand` 同时取得 Runtime 路径的 CA 环境变量。
 
-同一文件只读映射为 `/var/lib/gitea-codespace/ca/bundle.pem`。容器启动和恢复时按发行版更新系统信任库，必要时安装标准证书工具，并提供 `SSL_CERT_FILE`、`NODE_EXTRA_CA_CERTS` 和 Git 固定文件配置。Feature 安装发生在构建阶段，使用构建镜像自身证书；容器运行时再引用已挂载的平台文件。CA 脚本在平台目录创建临时文件并在退出时清理，以避开 systemd 启动期间重新挂载 `/tmp` 的时序。
+同一平台文件只读映射为 `/var/lib/gitea-codespace/ca/bundle.pem`。Dev Container 基础镜像提供发行版的 `ca-certificates` 证书包。Agent 在主容器启动前通过 Docker 文件 API 读取其系统证书包，保留镜像和用户的原有证书，并追加带明确起止标记的平台证书区段；恢复时替换该区段，使已撤下的平台证书不会成为下一次的原始输入。缺少系统证书包时明确提示基础镜像预装证书包，避免通过尚未建立信任的网络安装工具。
+
+每次受控启动和恢复时，站点 CA 取自当前站点配置，代理 CA 沿用实例创建时确认的运行快照，再与 Runtime 系统 CA 和当前内部根证书合并。因此更新站点 CA 可在下次启动时生效，修改模板代理 CA 则只影响新建实例；这一差异保持站点连接信任与实例代理配置各自的更新边界。
+
+`/var/lib/gitea-codespace/trust/bundle.pem` 链接到本容器合并后的系统证书包，`SSL_CERT_FILE` 和 Git 使用此路径；`NODE_EXTRA_CA_CERTS` 追加只读平台文件。systemd 的已有 service drop-in 同时配置这两个变量。统一的 Docker 启动入口覆盖单镜像、Dockerfile、runArgs、Compose 主服务和恢复，使 PID 1、模板 `start` 和 IDE 启动时信任已经就绪，同时保持镜像构建缓存不变。Compose 附属服务继续使用自身的证书配置。Feature 安装发生在构建阶段，使用构建镜像自身证书。
 
 Manager、Gateway、Cache 和 Agent 的 mTLS 始终从各自身份目录加载证书、私钥与根池。Dev Container 取得的是公开出站信任包，这两类信任材料服务于不同边界，站点或代理 CA 不因此取得内部组件身份授权。
 
@@ -245,8 +249,10 @@ Manager、Gateway、Cache 和 Agent 的 mTLS 始终从各自身份目录加载�
 - 放行实际 Gitea 克隆目标后 HTTP/SSH 克隆可完成，失败日志给出目标而不泄露凭据。
 - 代理作用于下载、镜像拉取、构建及相关容器；恢复使用实例快照，直连列表包含用户目标、集群服务和有效 Compose 别名。
 - 字面 IP 代理保存时核对公网出站或显式 TCP 规则是否覆盖目标；域名代理按实际解析范围放行。代理凭据保留在授权配置中，Dev Container 状态和普通日志采用各自脱敏规则。
-- 首次网络请求前生成统一 CA Bundle，Docker、Git 和 OCI Feature 下载使用同一信任；恢复取得当前证书。
-- 主容器系统信任与固定证书环境变量采用同一 Bundle，Feature 构建使用构建镜像自身信任，临时文件准备不受 systemd 挂载 `/tmp` 影响。
+- 首次网络请求前生成 Runtime CA Bundle，Docker daemon、Buildx、进程内构建认证、Git、两种 Feature 下载及 initializeCommand 使用该信任。
+- 恢复时重新合并当前站点 CA、Runtime 系统 CA 和内部根证书，代理 CA 沿用实例快照；模板代理 CA 更新只影响新建实例。
+- 主容器启动前已保留镜像的公共和企业证书并追加平台证书；systemd 服务、IDE 和模板 start 使用本容器完整信任。
+- 平台 CA 更新只替换自有区段，原有系统和用户证书保持有效；Compose 附属服务使用自身证书配置，Feature 构建使用构建镜像自身信任。
 - 组件身份验证继续使用独立证书、私钥和根池，公开出站 CA 仅服务于相应 TLS 访问。
 
 ## 运行资源统计
