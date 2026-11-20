@@ -1611,6 +1611,7 @@ make check
 <p>Cache 从 Manager 获取配置、短期 Registry 凭据和维护许可。Registry 使用 HTTPS Basic 认证承载 Manager 签发的短期令牌：固定用户名只标识认证方式，密码字段中的签名令牌携带 Cache、站点命名空间、操作权限和有效期。这样 Docker、Compose 和 BuildKit 都能使用标准 Registry 认证流程，同时由 Cache 对每个请求执行完整授权。上游地址仍作为配置和授权中的真实地址保存；为了让带端口的地址也能组成合法 OCI 路径，Cache 镜像路径使用由完整上游地址计算出的稳定 SHA-256 标识，例如 <code>/mirror/&lt;upstream-id&gt;/&lt;repository&gt;</code>。端口参与摘要计算，因此不同端口不会共用路径；这个标识只负责路径编码，回源和允许列表仍通过真实上游配置完成。</p>
 <p>Runtime Agent 在创建 Dev Container 前把 Registry 凭据写入 <code>/run/codespace/docker-config/config.json</code>。该目录位于内存型 EmptyDir，并通过 <code>DOCKER_CONFIG</code> 同时提供给 Agent 中的 Docker CLI 和 Compose 启动的外部 Buildx 进程。构建结束后 Agent 立即删除认证文件，因此凭据不会进入工作区、Runtime 数据卷或恢复状态。使用标准文件而不是进程内配置，是因为 Bake 模式下的 Buildx 是独立进程，无法读取父进程内存中的 Docker 配置。</p>
 <p>每个 Registry 请求都验证凭据、Cache 身份、站点命名空间、操作权限和有效期；镜像代理只允许拉取，构建缓存允许拉取和推送。缓存路径用于隔离对象，签名凭据用于授权访问，两者共同防止共享 Cache 中的跨站点读取。缓存丢失时允许在原授权范围内回源；维护许可保证同一存储同一时刻只有一个垃圾回收执行者。</p>
+<p>Cache 是可选的加速服务。Manager 无法登记某个 Cache 的凭据有效期时，记录原因并尝试其他可用 Cache；全部不可用或站点未配置 Cache 时，Runtime 直接使用原仓库。Runtime 直接经镜像代理拉取镜像或下载 OCI Feature 时，传输失败或连续两分钟没有进展便尝试原仓库；持续有进展的传输可以继续，避免大镜像因总耗时过长而重复下载。这个无进展期限只作用于这两条下载路径，成品镜像缓存与 BuildKit 构建缓存使用各自的处理流程。回源仍受站点出站策略、原仓库认证和证书要求约束；请求取消会结束当前操作。</p>
 <p>申请清理许可和提交清理完成均等待 Manager 按请求序号确认。等待受超时和调用取消控制，结束后释放请求记录；迟到的响应只对应原请求，连接故障同时结束尚未确认的维护请求。这样“已发送”与“已完成”有明确区别，重连也不会继续持有旧请求的等待资源。</p>
 <p>垃圾回收使用现有的 Cache GC Lease 协调凭据发放和清理。一次镜像推送包含 blob 上传、HEAD 复用和 manifest 提交等多个请求，因此仅等待当前 HTTP 请求结束不足以保护完整推送。维护过程按以下顺序执行：</p>
 <ol>
@@ -1645,6 +1646,8 @@ make check
 <li><code>ReadyAt</code> 跨 Cache 控制连接重建和 Manager 重启保持不变，清理完成或许可过期后恢复凭据发放。</li>
 <li>Cache 控制连接轮换不会重置最近清理时间；最小清理间隔内保持服务，未完成清理恢复原截止时间，完成清理释放持有者并保留凭据到期记录。</li>
 <li>Cache 清空后可以回源，已有 Codespace 仍可从 PVC 恢复。</li>
+<li>Cache 凭据有效期登记失败时尝试其他 Cache；未配置或全部不可用时，在原仓库可访问且授权有效的条件下仍能完成创建。</li>
+<li>直接镜像拉取与 OCI Feature 下载在镜像代理失败或连续两分钟无进展时回源，持续有进展的传输可以继续；请求取消会结束操作，回源沿用原有网络、认证和证书要求。</li>
 <li>同一存储同一时刻只有一个垃圾回收执行者。</li>
 <li>数字仓库和用户 ID 相同的不同站点仍使用不同缓存目录和授权。</li>
 <li>控制流单向中断、发送阻塞、迟到响应和重复响应均不能使 Cache 超过已确认的许可期限运行。</li>
@@ -1712,7 +1715,7 @@ make check
 </pre>
 <p>Gitea 先锁定目标提交，再在同一数据库事务中校验用户、仓库、环境标签、Dev Container 配置和授权，并创建 Codespace 与 queued 操作。Manager 领取后按 Site UID 与数字 Codespace ID 持久化 CR 和操作输入，再授予本地执行许可。Agent 完成工作区、Dev Container 和 SSH、SFTP 等基础访问能力后发布 ready，Manager 上报完整访问地址并提交 create 结果。Web IDE 是附加服务，它的启动或重启不参与 Codespace 主状态判断；Endpoint 的发布条件见<a href="codespace/runtime-platform.html#web-ide-%E4%BA%A4%E4%BB%98%E4%B8%8E%E5%90%AF%E5%8A%A8">Web IDE 交付与启动</a>。Gitea 完成 create 时校验当前运行 Token，并把当前操作版本保存为运行实例版本；Metadata 是可以重建的缓存，因此缓存写入延迟或丢失不会让已经完成的 Runtime 永久卡在 creating。</p>
 <p>Manager 在持久接受操作后立即把操作已接收的日志入队，并随着 PVC、Pod 的状态变化记录简短进度；调度失败或容器等待时使用 Kubernetes 的原因代码说明等待位置。这样页面从基础设施创建阶段就有可读日志，而不必等到 Agent 开始编译环境。Agent 收到操作后先记录证书和容器引擎准备，再记录工作区准备等执行阶段和命令输出。两种来源统一由 Manager 异步上传，日志接收和网络发送都与资源创建分离。</p>
-<p>日志使用有界内存，少量缺失属于诊断信息的可接受代价；实际执行结果仍由持久化的生命周期事实确定。Agent 执行结束后最多用 5 秒提交尾部输出，Manager 最终提交结果前也最多给已有队列 5 秒排空时间。具体批次、丢失与重试语义见<a href="codespace/rpc-spec.html#%E6%93%8D%E4%BD%9C%E6%97%A5%E5%BF%97">操作日志协议</a>。</p>
+<p>日志使用有界内存，少量缺失属于诊断信息的可接受代价；实际执行结果仍由持久化的生命周期事实确定。Agent 执行结束后独立保留最多 5 秒尾部上传时间；Manager 对停止、删除和失败操作保留最多 5 秒尾部发送时间，结果提交与资源清理继续推进。创建或恢复成功后保留事件发送能力，使实例内脚本与 Provider 能报告后续诊断。具体批次、限流、丢失与重试语义见<a href="codespace/rpc-spec.html#%E6%93%8D%E4%BD%9C%E6%97%A5%E5%BF%97">操作日志协议</a>。</p>
 <p>环境模板的调试开关保存到新建 Codespace 的运行快照，后续恢复沿用该快照。开启时，Manager 在状态变化及资源删除前先采集 Pod、PVC、节点状态和相关事件，再读取普通容器与 init 容器的当前及上一次运行日志；同阶段状态未变化时通过进程内记录跳过重复采集，Manager 重启后可以重新采集，整次采集共用两秒预算。先记录资源状态是为了在节点日志接口缓慢或不可用时，仍能留下调度和终止原因。每个日志请求最多读取最后 200 行、64 KiB，事件保留最近 20 条。</p>
 <p>Agent 在内部容器回滚前采集退出状态及标准输出、错误输出尾部，使 systemd 等容器内初始化错误进入同一操作日志。每个容器请求最后 200 行，整次日志正文最多 64 KiB，与状态查询共用两秒预算。Manager 的 Pod 日志反映外层运行情况，Agent 的 Docker 日志反映内部容器运行情况，两者共用凭据脱敏规则；字节截断或读取中断时仅输出已确认完整的边界行，避免泄露无法匹配脱敏规则的凭据片段。采集失败只记录说明，资源清理继续执行。</p>
 <p>输入和权限错误在持久化前返回。Manager 领取后若发现环境授权、运行设置或持久化操作身份存在确定性错误，会使用 Codespace ID 和当前操作版本提交失败；尚未创建 CR 的 create 也能直接进入 failed。已经产生的局部 CR 使用同一操作版本进入清理：create 删除局部资源，resume 停止已启动资源并保留工作区。Gitea 保留 Manager 归属，直到完整清单确认实例消失后解除。采用同一最终提交接口的原因是 Gitea 仍是业务状态的唯一权威，而清理需要能够独立重试。</p>
@@ -1905,6 +1908,7 @@ make check
 <tr><td><code>AgentAccessService</code></td><td>Gateway ↔ Agent</td><td>Codespace 内部</td><td>Shell、命令、SFTP、HTTP 和回环端口转发</td></tr>
 <tr><td><code>RuntimeEndpointService</code></td><td>Dev Container → Agent</td><td>Codespace 内部</td><td>通过本地 Unix socket 管理 HTTP Endpoint</td></tr>
 <tr><td><code>RuntimeUSBIPService</code></td><td>Dev Container → Agent</td><td>Codespace 内部</td><td>通过本地 Unix socket 执行受限 USB/IP 客户端操作</td></tr>
+<tr><td><code>RuntimeEventService</code></td><td>Dev Container → Agent</td><td>Codespace 内部</td><td>通过本地 Unix socket 上报实例事件，由 Manager 限流并写入日志</td></tr>
 </tbody></table>
 </div>
 <p>Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端留在 Manager 与内部协议。平台使用同一个二进制交付各组件，但 Manager、Agent、Gateway、Cache 和 Runtime 命令运行在不同进程或 Pod 中，仍需要明确的进程间通信。生成代码和调用端统一使用 Connect v2，通过 HTTP 传输适配器承载 Connect/gRPC，复用双向流、取消、背压、消息限制和 mTLS，避免维护额外的自定义传输格式。身份从请求元数据传入认证上下文，业务方法直接接收和返回 Proto 消息。</p>
@@ -1960,7 +1964,7 @@ make check
 <p>Agent 资源报告只包含当次采集成功的指标，缺失项由 Manager 保留仍有效的既有观察。Manager 按来源和指标缓存这些临时数据，组合后才对 Gitea 上报完整统计，因此单项采集失败不会被误解为零使用量。</p>
 <p>块卷挂载前使用 <code>PrepareVolume</code> 请求确认。Manager 根据 mTLS 身份读取当前 CR、Pod 和 PVC，并校验操作许可；首次请求持久记录格式化已开始后返回成功，挂载后确认请求把状态更新为就绪。这个独立请求发生在工作区可写之前，使卷初始化也能获得持久化保护，Agent 仍只访问 Manager 服务。</p>
 <p>Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。Cache GC 的完整时序见<a href="codespace/runtime-platform.html#cache">运行平台</a>；其关键协议语义是：凭据只有在最晚到期时间登记成功后才返回，维护许可携带持久化的 <code>ReadyAt</code>，已有凭据可以在该时间前完成一次跨多个 HTTP 请求的镜像推送。</p>
-<p>控制流重连或 Manager 重启时，未完成维护沿用原 <code>ReadyAt</code>，不重新延长凭据窗口；完成清理后才恢复新凭据发放。这个边界只扩展 Cache 内部控制确认的时间语义，不增加 Gitea RPC、公共 Proto 或 Kubernetes CRD。</p>
+<p>控制流重连或 Manager 重启时，未完成维护沿用原 <code>ReadyAt</code>，保持既定凭据窗口；清理完成或维护许可过期后恢复新凭据发放。</p>
 <p>Gateway 使用按能力签发的短期票据访问 Shell、命令、SFTP、HTTP Endpoint 或回环端口。票据中的 <code>format_version</code> 标识签名内容格式，与 RPC 服务版本分别管理；签名覆盖期限、实例、Pod、目标版本和访问能力，Agent 按这些事实验证访问。Shell 与命令是两种独立能力，因为 SSH Shell 请求可以在没有 PTY 时通过标准输入接收脚本，而命令请求携带需要由登录 Shell 求值的明确内容。PTY 是这两种请求都可以附带的终端属性。这样 Agent 可以按实际请求签发和校验票据，VS Code Remote-SSH 等客户端也能通过无 PTY Shell 执行初始化脚本。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。</p>
 <p>远程转发复用同一票据模型，监听和接受连接使用两种独立能力。<code>ReverseTCPListen</code> 的目标是容器 TCP 绑定或 USB/IP 来源二选一；Agent 创建监听后返回 <code>reverse_tcp_ready.port</code>。普通绑定使用主容器网络命名空间，USB/IP 使用 Agent 回环随机端口。后续监听流报告连接 ID，Gateway 为每个连接建立独立 Access 流。监听 ID 和连接 ID 仅在当前 Runtime 内存中有效；全部待接受和已建立连接共享现有上限，未在 30 秒内领取的待接受连接释放。</p>
 <p><code>Access</code> 的 <code>accepted</code> 表示 Shell、命令或 SFTP 的 Docker exec 已成功附着，或者 TCP 目标已实际连接。HTTP Endpoint 与 SSH 回环转发共用 TCP 消息语义：<code>stdin</code> 与 <code>stdout</code> 传输数据，<code>stdin_eof</code> 只结束向目标发送，<code>stdout_eof</code> 只表示目标停止发送，<code>exit_status</code> 表示执行结束。两个方向分别结束，因此 HTTP Transport 能及时发现上游空闲连接关闭，SSH 客户端也能在收到 EOF 后继续发送剩余输入。stderr 保持为容器进程的独立诊断通道，SFTP 适配器最多保留 4 KiB 诊断用于失败说明；TCP 拨号和传输错误直接通过 RPC 返回。</p>
@@ -2000,12 +2004,14 @@ make check
 <li>GC Lease 的最近完成时间在控制连接轮换后仍有效，最小间隔内不会重复触发清理。</li>
 </ul>
 <h2 id="操作日志"><a class="header" href="#操作日志">操作日志</a></h2>
-<p>Manager 是向 Gitea 提交日志的唯一主体。基础设施进度在 Manager 内产生，Agent 的阶段与命令输出通过 <code>UploadLogs</code> 提交；两种来源进入同一操作的内存队列，按 Manager 接收顺序发送，保留各行原始时间戳。这让 Pod 创建之前就有进度，同时把偏移和网络重试集中在发送层。</p>
+<p>Manager 是向 Gitea 提交日志的唯一主体。基础设施进度在 Manager 内产生，Agent 的阶段与命令输出通过 <code>UploadLogs</code> 提交；实例内脚本和 Provider 通过公共事件命令提交运行期诊断。这些来源进入实例当前操作的同一个内存队列，按 Manager 接收顺序发送；操作输出保留原始时间戳，公共事件由 Manager 生成时间戳。这让 Pod 创建之前就有进度，运行期间也能留下应用诊断，同时把偏移和网络重试集中在发送层。</p>
 <p>Agent 在入队前完成凭据脱敏、UTF-8 整理和拆行，单行最多 32 KiB。Agent 输出与 Manager 诊断共用脱敏实现，同时识别已知凭据的原文、URL 编码、Base64 和 JSON 转义形式；多行凭据按整体及各行处理，因为日志既可能来自命令输出，也可能来自序列化的状态消息。队列达到 64 行或约 128 KiB 时发送；低流量通过 1 秒定时器形成批次，持续产生新日志不会重置等待时间。每批 RPC 携带操作版本和日志行，Manager 校验当前 Pod 身份、操作版本和批次大小后入队。回复表示已处理接收请求；实际到达 Gitea 的时间由独立发送流程决定。Agent 请求出错或回复丢失时放弃该批次，因为 Manager 可能已接收，后续批次继续提交。</p>
 <p>Agent 每操作的队列预算为 1 MiB；Manager 每操作为 1 MiB、全部操作合计为 64 MiB。预算包含正在上传的数据和行记录开销。达到预算时丢弃新日志，在随后有空间时追加汇总的丢失行数。日志是诊断信息，接受进程重启、网络异常或内存满时的少量缺失，换取生命周期执行和资源使用的可预测性。队列、发送偏移和进度去重信息都由进程内存管理；执行报告继续按生命周期要求持久化。</p>
 <p>每个操作只有一个 Manager 发送流程。初始化时使用 <code>UpdateLog</code> 的空 <code>Lines</code>、<code>Offset = 0</code> 查询远端末尾，然后发送不可变批次；成功后采用 Gitea 返回的 <code>NextOffset</code>。发送位置由日志接口确认，使 Manager 重启后的发送从已保存的末尾接续，操作领取只传递执行所需的输入与租约。</p>
 <p>暂时错误由发送层按 1、2、4、5 秒的间隔重试，每次 RPC 最多 5 秒，同一批次保持内容、时间戳和偏移不变，使响应丢失后的重试能够复用 Gitea 的重放确认。偏移冲突或空缺时放弃冲突批次，重新查询末尾后继续。操作过期、实例消失或达到日志上限时结束发送；其他永久请求错误记录本地诊断并结束。网络等待在队列锁之外进行，各实例独立发送。</p>
-<p>Agent 命令结束后提交剩余半行，最多等待 5 秒完成当前输出发送，再上报执行结果。Manager 准备最终提交结果时，通过既有报告循环给予日志队列最多 5 秒排空时间；队列已空、已关闭或期限到达即可继续最终提交。站点停用、领导权结束、操作替换及实例删除都会结束对应发送流程。重新启动后以 Gitea 当前末尾开始，已确认的历史日志仍由 Gitea 保存。</p>
+<p>Agent 命令结束后提交剩余半行并通知执行结果，输出上传独立保留最多 5 秒。Manager 写入一次操作完成摘要；创建或恢复成功的运行实例保留发送器，以接收之后的事件，停止、删除和失败操作则保留最多 5 秒尾部发送时间。结果提交和资源清理不等待日志排空。站点停用、领导权结束、操作替换及实例删除都会结束对应发送流程。Manager 重启后，当前有效运行实例的事件可以从 Gitea 已保存的末尾恢复发送，不重复历史操作摘要。</p>
+<p>公共事件使用 <code>RuntimeEventService.Emit</code> 进入 Agent 的现有 Unix Socket，再通过已有 mTLS 客户端调用 <code>AgentControlService.ReportEvent</code>。请求只携带类型和正文，Manager 根据当前 Agent 身份确定实例和操作版本。类型为 1 至 48 个 ASCII 字母、数字、点、下划线或连字符；正文为非空 UTF-8，最多 16384 字节，支持多行。Agent 在用户代码执行前准备凭据脱敏信息，Manager 为每个物理行添加 <code>[EVENT] [type]</code> 前缀；事件是用户代码的自述，不修改状态或活动计时。命令用法见 <a href="https://github.com/ExplodingDragon/gitea-codespace/blob/main/docs/events.md">公共事件指南</a>。</p>
+<p>Manager 通过 <code>--event-max-per-second</code> 接收正整数限额，默认每实例最近一秒最多接收五条，Helm 对应 <code>events.maxPerSecond</code>。同一实例的调用者和事件类型共用计数，多行消息只算一条；操作版本变化保留计数，实例清理释放计数，领导权变更后允许重新计数。事件按完整格式化后的内存大小一起接收或拒绝，超限直接返回 <code>ResourceExhausted</code>，不会排队等待额度。成功只确认接收入队，Gitea 最终保存由原有发送流程处理；事件不单独持久化，少量丢失符合诊断日志的用途。</p>
 <h3 id="实现验收点-89"><a class="header" href="#实现验收点-89">实现验收点</a></h3>
 <ul>
 <li>Pod 创建前产生接收进度，PVC、调度、容器等待、停止和删除进度能够与 Agent 输出进入同一操作日志。</li>
@@ -2016,6 +2022,10 @@ make check
 <li>偏移冲突后重新取得远端末尾，重启后也从远端当前末尾接续。</li>
 <li>低速持续输出触发定时上传；日志排空到期后执行结果仍能完成提交。</li>
 <li>日志终止或站点关闭会释放队列与发送流程，其他实例继续正常发送。</li>
+<li>创建、恢复成功后可以继续接收事件，Manager 重启后接续远端末尾且不重复历史摘要。</li>
+<li>公共事件通过当前 Agent 身份归属实例，已知凭据在转发前脱敏，正文按 UTF-8 字节数校验。</li>
+<li>并发事件共用实例速率额度，操作切换保留最近一秒计数，多行事件整体入队或整体拒绝。</li>
+<li>停止、删除及失败收尾不等待事件送达；已有永久日志错误不会被后续事件反复重开。</li>
 </ul>
 <h2 id="错误重试与关闭"><a class="header" href="#错误重试与关闭">错误、重试与关闭</a></h2>
 <p>接口使用标准 RPC 状态区分参数、认证、权限、对象、状态冲突和暂时不可用。写操作通过操作版本、资源 UID、Metadata 代数或稳定资源键实现幂等。</p>
@@ -2195,7 +2205,7 @@ make check
 <tr><td><code>internal/gateway</code>、<code>internal/agent</code>、<code>internal/runtimecmd</code></td><td>路由与连接复用、Docker exec、访问流传输</td><td><a href="codespace/runtime-platform.html#gateway-%E4%B8%8E%E8%AE%BF%E9%97%AE">Gateway 与访问</a>、<a href="codespace/rpc-spec.html#%E7%BB%84%E4%BB%B6%E4%B8%8E-agent">内部 RPC</a></td></tr>
 <tr><td><code>internal/cache</code>、组件控制器与控制流</td><td>Registry、凭据授权和单写维护许可</td><td><a href="codespace/runtime-platform.html#cache">Cache</a></td></tr>
 <tr><td><code>internal/agent</code>、<code>internal/cgroup</code>、<code>internal/cluster</code> 资源采集</td><td>Agent 探测、Kubernetes 采样、来源选择与完整快照上报</td><td><a href="codespace/runtime-platform.html#%E8%BF%90%E8%A1%8C%E8%B5%84%E6%BA%90%E7%BB%9F%E8%AE%A1">运行资源统计</a></td></tr>
-<tr><td><code>internal/logbuffer</code>、Agent 输出与 Manager 诊断</td><td>共用脱敏与有界日志缓冲、按操作上传</td><td><a href="codespace/rpc-spec.html#%E6%93%8D%E4%BD%9C%E6%97%A5%E5%BF%97">操作日志</a></td></tr>
+<tr><td><code>internal/logbuffer</code>、<code>internal/runtimeevent</code>、Agent 输出与 Manager 诊断</td><td>共用脱敏与有界日志缓冲，操作输出和限流事件统一上传</td><td><a href="codespace/rpc-spec.html#%E6%93%8D%E4%BD%9C%E6%97%A5%E5%BF%97">操作日志</a></td></tr>
 </tbody></table>
 </div>
 <h3 id="实现验收点-98"><a class="header" href="#实现验收点-98">实现验收点</a></h3>
