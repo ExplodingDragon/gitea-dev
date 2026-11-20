@@ -148,7 +148,7 @@ Native Runtime Pod 以 root 运行，使用 dockerd 所需的固定 capability�
 
 Agent 在 Kata Runtime 中发现活动的 `vhci_hcd` 控制器时启用 USB/IP，并使用平台镜像中的标准客户端。用户通过已有 SSH 身份建立 `-R usbip.<来源名>:3240:<服务端>:<端口>`，SSH 客户端访问实际服务端。Agent 将每个逻辑来源绑定到独立回环随机端口，使 USB/IP 与 Dev Container 的普通端口分离。来源命名、CLI 和转发协议见 [组件与 Agent](rpc-spec.md#组件与-agent)，用户操作见 [USB 连接指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/docs/usbip.md)。
 
-创建和恢复按当前能力准备平台 USB CLI。VS Code、DSH 与 Yep Anywhere 的集成按能力显示各自的 USB 管理入口，通过 CLI JSON 查询和修改设备。能力查询失败只影响 USB 界面；转发断开后仍可查询和解绑已导入设备。操作错误保留已有列表，超时后查询实际状态，由用户决定是否重试，避免重复执行结果未知的设备操作。
+创建和恢复按当前能力准备平台 USB CLI。VS Code 与 DSH 的集成按能力显示各自的 USB 管理入口，通过 CLI JSON 查询和修改设备。能力查询失败只影响 USB 界面；转发断开后仍可查询和解绑已导入设备。操作错误保留已有列表，超时后查询实际状态，由用户决定是否重试，避免重复执行结果未知的设备操作。
 
 Agent 显式挂载来宾 devtmpfs，再将其非递归映射到主 Dev Container 的标准 `/dev`，让设备节点随内核热插拔直接出现。外层 Pod 的 `/dev` 通常是独立 tmpfs，不能替代来宾设备树。主容器分别保留 `/dev/pts`、`/dev/shm` 和 `/dev/mqueue`，共享 IPC 与共享内存设置继续采用 Docker 语义。最终创建请求追加原始 USB、USB 串口、CDC ACM、I²C、SPI、USB miscellaneous（含 USBTMC）的字符设备规则，以及处理 eudev netlink 事件所需的 `NET_ADMIN`。HIDRAW 和 GPIO 的主设备号由来宾内核动态分配，因此创建容器时从已注册的字符设备中发现并追加规则；驱动需在创建前加载，已有容器保留创建时的规则。块设备访问与文件系统挂载采用开发配置显式声明的权限，具体准备步骤见 [Helm USB/IP 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md#enable-kata-usbip)。`/dev` 或 `/dev/pts` 存在冲突挂载时明确失败，因为两个来源无法同时定义设备树。
 
