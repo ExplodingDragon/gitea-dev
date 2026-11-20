@@ -12,6 +12,7 @@
 | `AgentAccessService`     | Gateway ↔ Agent        | Codespace 内部       | Shell、命令、SFTP、HTTP 和回环端口转发                 |
 | `RuntimeEndpointService` | Dev Container → Agent   | Codespace 内部       | 通过本地 Unix socket 管理 HTTP Endpoint                |
 | `RuntimeUSBIPService`    | Dev Container → Agent   | Codespace 内部       | 通过本地 Unix socket 执行受限 USB/IP 客户端操作        |
+| `RuntimeEventService`    | Dev Container → Agent   | Codespace 内部       | 通过本地 Unix socket 上报实例事件，由 Manager 限流并写入日志 |
 
 Gitea 接口只表达 Codespace 业务语义；Kubernetes、Pod 和缓存后端留在 Manager 与内部协议。平台使用同一个二进制交付各组件，但 Manager、Agent、Gateway、Cache 和 Runtime 命令运行在不同进程或 Pod 中，仍需要明确的进程间通信。生成代码和调用端统一使用 Connect v2，通过 HTTP 传输适配器承载 Connect/gRPC，复用双向流、取消、背压、消息限制和 mTLS，避免维护额外的自定义传输格式。身份从请求元数据传入认证上下文，业务方法直接接收和返回 Proto 消息。
 
@@ -89,7 +90,7 @@ Agent 资源报告只包含当次采集成功的指标，缺失项由 Manager �
 
 Cache 控制流用递增序号关联请求和确认。Manager 首次获取或后续续约对应 Lease 成功后返回正的许可时长；后续独立配置推送的许可时长为零。客户端仅消费一次对应发送记录，并用发送时间计算到期，避免响应延迟或重放延长旧执行者的权限。Cache GC 的完整时序见[运行平台](runtime-platform.md#cache)；其关键协议语义是：凭据只有在最晚到期时间登记成功后才返回，维护许可携带持久化的 `ReadyAt`，已有凭据可以在该时间前完成一次跨多个 HTTP 请求的镜像推送。
 
-控制流重连或 Manager 重启时，未完成维护沿用原 `ReadyAt`，不重新延长凭据窗口；完成清理后才恢复新凭据发放。这个边界只扩展 Cache 内部控制确认的时间语义，不增加 Gitea RPC、公共 Proto 或 Kubernetes CRD。
+控制流重连或 Manager 重启时，未完成维护沿用原 `ReadyAt`，保持既定凭据窗口；清理完成或维护许可过期后恢复新凭据发放。
 
 Gateway 使用按能力签发的短期票据访问 Shell、命令、SFTP、HTTP Endpoint 或回环端口。票据中的 `format_version` 标识签名内容格式，与 RPC 服务版本分别管理；签名覆盖期限、实例、Pod、目标版本和访问能力，Agent 按这些事实验证访问。Shell 与命令是两种独立能力，因为 SSH Shell 请求可以在没有 PTY 时通过标准输入接收脚本，而命令请求携带需要由登录 Shell 求值的明确内容。PTY 是这两种请求都可以附带的终端属性。这样 Agent 可以按实际请求签发和校验票据，VS Code Remote-SSH 等客户端也能通过无 PTY Shell 执行初始化脚本。Dev Container 通过挂载的 Unix socket 管理 Endpoint，不需要访问 Manager 网络端口。
 
@@ -140,7 +141,7 @@ Agent 直接在授权目标容器的网络命名空间中创建 TCP socket，再
 
 ## 操作日志
 
-Manager 是向 Gitea 提交日志的唯一主体。基础设施进度在 Manager 内产生，Agent 的阶段与命令输出通过 `UploadLogs` 提交；两种来源进入同一操作的内存队列，按 Manager 接收顺序发送，保留各行原始时间戳。这让 Pod 创建之前就有进度，同时把偏移和网络重试集中在发送层。
+Manager 是向 Gitea 提交日志的唯一主体。基础设施进度在 Manager 内产生，Agent 的阶段与命令输出通过 `UploadLogs` 提交；实例内脚本和 Provider 通过公共事件命令提交运行期诊断。这些来源进入实例当前操作的同一个内存队列，按 Manager 接收顺序发送；操作输出保留原始时间戳，公共事件由 Manager 生成时间戳。这让 Pod 创建之前就有进度，运行期间也能留下应用诊断，同时把偏移和网络重试集中在发送层。
 
 Agent 在入队前完成凭据脱敏、UTF-8 整理和拆行，单行最多 32 KiB。Agent 输出与 Manager 诊断共用脱敏实现，同时识别已知凭据的原文、URL 编码、Base64 和 JSON 转义形式；多行凭据按整体及各行处理，因为日志既可能来自命令输出，也可能来自序列化的状态消息。队列达到 64 行或约 128 KiB 时发送；低流量通过 1 秒定时器形成批次，持续产生新日志不会重置等待时间。每批 RPC 携带操作版本和日志行，Manager 校验当前 Pod 身份、操作版本和批次大小后入队。回复表示已处理接收请求；实际到达 Gitea 的时间由独立发送流程决定。Agent 请求出错或回复丢失时放弃该批次，因为 Manager 可能已接收，后续批次继续提交。
 
@@ -150,7 +151,11 @@ Agent 每操作的队列预算为 1 MiB；Manager 每操作为 1 MiB、全部操
 
 暂时错误由发送层按 1、2、4、5 秒的间隔重试，每次 RPC 最多 5 秒，同一批次保持内容、时间戳和偏移不变，使响应丢失后的重试能够复用 Gitea 的重放确认。偏移冲突或空缺时放弃冲突批次，重新查询末尾后继续。操作过期、实例消失或达到日志上限时结束发送；其他永久请求错误记录本地诊断并结束。网络等待在队列锁之外进行，各实例独立发送。
 
-Agent 命令结束后提交剩余半行，最多等待 5 秒完成当前输出发送，再上报执行结果。Manager 准备最终提交结果时，通过既有报告循环给予日志队列最多 5 秒排空时间；队列已空、已关闭或期限到达即可继续最终提交。站点停用、领导权结束、操作替换及实例删除都会结束对应发送流程。重新启动后以 Gitea 当前末尾开始，已确认的历史日志仍由 Gitea 保存。
+Agent 命令结束后提交剩余半行并通知执行结果，输出上传独立保留最多 5 秒。Manager 写入一次操作完成摘要；创建或恢复成功的运行实例保留发送器，以接收之后的事件，停止、删除和失败操作则保留最多 5 秒尾部发送时间。结果提交和资源清理不等待日志排空。站点停用、领导权结束、操作替换及实例删除都会结束对应发送流程。Manager 重启后，当前有效运行实例的事件可以从 Gitea 已保存的末尾恢复发送，不重复历史操作摘要。
+
+公共事件使用 `RuntimeEventService.Emit` 进入 Agent 的现有 Unix Socket，再通过已有 mTLS 客户端调用 `AgentControlService.ReportEvent`。请求只携带类型和正文，Manager 根据当前 Agent 身份确定实例和操作版本。类型为 1 至 48 个 ASCII 字母、数字、点、下划线或连字符；正文为非空 UTF-8，最多 16384 字节，支持多行。Agent 在用户代码执行前准备凭据脱敏信息，Manager 为每个物理行添加 `[EVENT] [type]` 前缀；事件是用户代码的自述，不修改状态或活动计时。命令用法见 [公共事件指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/docs/events.md)。
+
+Manager 通过 `--event-max-per-second` 接收正整数限额，默认每实例最近一秒最多接收五条，Helm 对应 `events.maxPerSecond`。同一实例的调用者和事件类型共用计数，多行消息只算一条；操作版本变化保留计数，实例清理释放计数，领导权变更后允许重新计数。事件按完整格式化后的内存大小一起接收或拒绝，超限直接返回 `ResourceExhausted`，不会排队等待额度。成功只确认接收入队，Gitea 最终保存由原有发送流程处理；事件不单独持久化，少量丢失符合诊断日志的用途。
 
 ### 实现验收点
 
@@ -162,6 +167,10 @@ Agent 命令结束后提交剩余半行，最多等待 5 秒完成当前输出�
 - 偏移冲突后重新取得远端末尾，重启后也从远端当前末尾接续。
 - 低速持续输出触发定时上传；日志排空到期后执行结果仍能完成提交。
 - 日志终止或站点关闭会释放队列与发送流程，其他实例继续正常发送。
+- 创建、恢复成功后可以继续接收事件，Manager 重启后接续远端末尾且不重复历史摘要。
+- 公共事件通过当前 Agent 身份归属实例，已知凭据在转发前脱敏，正文按 UTF-8 字节数校验。
+- 并发事件共用实例速率额度，操作切换保留最近一秒计数，多行事件整体入队或整体拒绝。
+- 停止、删除及失败收尾不等待事件送达；已有永久日志错误不会被后续事件反复重开。
 
 ## 错误、重试与关闭
 

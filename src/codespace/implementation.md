@@ -61,7 +61,7 @@ Codespace 仓库的工具版本由模块文件、Makefile 和[持续集成配置
 | `internal/gateway`、`internal/agent`、`internal/runtimecmd` | 路由与连接复用、Docker exec、访问流传输 | [Gateway 与访问](runtime-platform.md#gateway-与访问)、[内部 RPC](rpc-spec.md#组件与-agent) |
 | `internal/cache`、组件控制器与控制流 | Registry、凭据授权和单写维护许可 | [Cache](runtime-platform.md#cache) |
 | `internal/agent`、`internal/cgroup`、`internal/cluster` 资源采集 | Agent 探测、Kubernetes 采样、来源选择与完整快照上报 | [运行资源统计](runtime-platform.md#运行资源统计) |
-| `internal/logbuffer`、Agent 输出与 Manager 诊断 | 共用脱敏与有界日志缓冲、按操作上传 | [操作日志](rpc-spec.md#操作日志) |
+| `internal/logbuffer`、`internal/runtimeevent`、Agent 输出与 Manager 诊断 | 共用脱敏与有界日志缓冲，操作输出和限流事件统一上传 | [操作日志](rpc-spec.md#操作日志) |
 
 ### 实现验收点
 
