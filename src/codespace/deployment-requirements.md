@@ -25,7 +25,7 @@ Manager 连接一个逻辑 Kubernetes 集群。集群需要提供 CRD、Lease、
 
 每个环境模板绑定运行方式、StorageClass、资源限制和 Dev Container 附加配置。Kata 与 Sysbox 进一步选择 RuntimeClass，该资源需要使用 `codespace.gitea.dev/isolation=kata` 或 `codespace.gitea.dev/isolation=sysbox` 标签声明隔离方式，Manager 才会把它作为对应模板选项。Native 使用集群默认 CRI，不保存 RuntimeClass，并从 Node 可分配扩展资源中选择 Device Plugin 设备。这样集群安装结果与模板选择使用同一份可查询事实，保存接口也能在创建工作负载前发现运行时、存储或设备能力不匹配。保存成功后，模板控制器依据这些依赖的实际可用性自动维护就绪状态，使依赖变化能够直接反映到管理页面。
 
-Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。Kata 的工作区卷以块设备进入来宾，Sysbox 与 Native 的工作区卷以文件系统挂载；Manager 根据运行方式选择对应形式。Native 设备通过 Kubernetes 扩展资源、Device Plugin 和 CDI 分配，Manager 把同一设备数量写入 Pod requests 与 limits，让 kubelet 保持唯一的设备分配权威。
+Kata 需要硬件虚拟化或可用的嵌套虚拟化；Sysbox 需要受支持的内核、容器运行时和存储驱动。Kata 的工作区卷以块设备进入来宾，Sysbox 与 Native 的工作区卷以文件系统挂载；Manager 根据运行方式选择对应形式。Native 通过 Kubernetes 扩展资源和 Device Plugin 分配设备，Manager 把同一设备数量写入 Pod requests 与 limits，让 kubelet 保持唯一的设备分配权威。模板再选择 CDI 或手动映射，将 Runtime 已获得的设备传给主 Dev Container；额外节点路径由管理员在模板中显式授权。
 
 需要远程 USB 的 Kata 节点池使用包含 `DEVTMPFS`、`USB`、`USBIP_CORE`、`USBIP_VHCI_HCD` 和目标设备类驱动的来宾内核，并在 Runtime Agent 启动前使 VHCI 控制器处于活动状态。平台从 `/sys/devices/platform/vhci_hcd.*` 发现能力，因此同一控制面可管理普通及支持 USB/IP 的 Kata 节点池。用户通过 Gateway SSH 注册 `usbip.<来源名>:3240`，SSH 客户端连接实际 USB/IP 服务端；多个来源使用各自的 Agent 回环随机端口。主 Dev Container 按发行版启动 udev/eudev，设备规则和非 root 权限随开发镜像交付。
 
@@ -33,7 +33,7 @@ USB/IP 的隔离边界是 Codespace 对应的 Kata 虚拟机。Agent、主 Dev C
 
 使用需要特权能力的 Kata 配置时，所选 Kata handler 必须启用 `privileged_without_host_devices=true`，把来宾内能力与宿主机设备注入分开。整棵来宾 devtmpfs 的设备节点会在主容器标准 `/dev` 中可见，但能否打开仍受设备 cgroup 和 Linux capability 控制；显式 Dev Container `privileged`、`devices`、`capAdd` 或等效的标准配置可以扩大来宾内部的设备访问范围。部署验证应同时检查实际 RuntimeClass handler、Kata 配置和 Pod 的设备挂载，而不能只检查 RuntimeClass 名称。
 
-Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。Native 节点需要验证默认 CRI 能够运行平台所需的嵌套 Docker，并为模板需要的设备安装 Device Plugin 与 CDI 配置。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选运行方式、节点和扩容策略。
+Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平台镜像和目标 StorageClass 完成真实 Pod 验证。Native 节点需要验证默认 CRI 能够运行平台所需的嵌套 Docker，并为模板需要的资源安装 Device Plugin。选择 CDI 传递时，准备节点 CDI 定义及 Runtime 所需的设备、挂载和 hook 依赖；选择手动映射时，验证声明路径与设备权限即可。设备选择和路径边界见[Native 设备设计](runtime-platform.md#native-设备与-cdi)。每个 Codespace 使用独立 PVC，StorageClass 需要适配所选运行方式、节点和扩容策略。
 
 三种运行方式都需要让 Agent 读取内部 Docker 容器的进程信息并进入其网络命名空间，以创建正向连接和普通反向监听。部署验证使用平台既有运行权限完成这一操作，同时检查 IPv4、IPv6 及辅助服务容器，才能确认实际运行时提供了完整的容器网络访问能力。socket 使用 Agent 的凭据与 cgroup，整体统计仍归属 Runtime Pod；容器账户权限由 Shell/SFTP 的 Docker exec 保持。
 
@@ -43,7 +43,7 @@ Kata 与 Sysbox 分别按官方文档安装，并先在专用节点池使用平�
 - 每个可选 RuntimeClass 都带有与实际运行方式一致的 `codespace.gitea.dev/isolation` 标签。
 - 管理页面中 RuntimeClass 与隔离方式联动，StorageClass 来源于当前集群；不存在的资源无法保存。
 - Kata 与 Sysbox 创建的 PVC 分别采用块模式与文件系统模式。
-- Native 使用默认 CRI 和文件系统 PVC，申请的扩展资源与 CDI 设备能够进入 Runtime Pod 和主 Dev Container。
+- Native 使用默认 CRI 和文件系统 PVC，已分配设备通过所选 CDI 或手动映射进入主 Dev Container，配置的远程用户可以实际访问设备；节点路径与管理员授权一致。
 - 支持 USB/IP 的 Kata 来宾在 Agent 启动前具有活动 VHCI；普通 Kata 来宾仍能运行，只是不提供远程 USB 能力。
 - 完整 USB/IP 验证经过 Manager、Gateway SSH、Agent、Runtime 回环监听和主容器标准 `/dev`，覆盖两个来源的重复 bus ID、独立取消、非 root 设备 I/O、断线重连及停止恢复；普通反向转发在 Native、Sysbox、Kata 中验证容器内动态端口。
 - 完整验证确认 Kubernetes 节点设备不会隐式进入 Runtime，关闭一个 USB/IP 来源只释放该来源的桥接连接；停止 Runtime 释放全部监听和连接，旧 Runtime 的票据不能访问新 Runtime。

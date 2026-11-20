@@ -118,11 +118,17 @@ Agent 校验程序清单后，把模板 `options` 与标准 Dev Container 的 `c
 
 Native 用于需要 Kubernetes Device Plugin 资源的开发环境。模板按扩展资源名和正整数数量声明设备，Manager 将相同数量写入 Runtime Pod 的 requests 与 limits，由 kubelet 分配设备。模板还可以标记某项资源满足标准 Dev Container 的 `hostRequirements.gpu`。运维人员需要验证节点默认 CRI 能在非特权 Runtime Pod 中启动 rootful dockerd 和子容器，因为 Native 的运行能力直接来自节点配置。
 
-CDI 是设备进入内部 Docker 的主要路径。Device Plugin 通过模板指定的环境变量提供本次分配的具体设备 ID，并通过 CRI CDI 把设备接入外层 Pod。Agent 从节点 CDI 定义中选取已分配设备，将它们映射为当前 Codespace 内稳定的逻辑名称，再写入专属 CDI 目录。停止恢复后物理设备 ID 可以变化，稳定逻辑名称让已有 Dev Container 能使用新分配继续启动。含 `all`、`none` 或 `void` 等宽泛值的分配不能确定具体设备，因而明确失败。
+模板分别声明资源申请与设备传递方式。使用节点 CDI 定义时，可以通过 Runtime 分配环境变量中的设备 ID 或完整 CDI 名称选择，也可以通过 Runtime 已获得的设备节点匹配。节点匹配要求每个用于识别的节点只对应一个 CDI 设备；匹配有歧义时明确失败，由管理员改用分配环境变量或手动映射。共享设备插件可能把多个资源份额分配到同一物理设备，因此申请数量与 CDI 设备数量分别表达资源份额和物理设备，不要求相等。
+
+手动映射可以独立于节点 CDI 使用：设备来源是 Runtime 中已有的设备节点或设备目录；挂载来源可选择 Runtime 路径，或管理员显式授权的节点路径。节点路径先挂载到 Runtime 的独立目录，再传给主 Dev Container，使驱动文件等补充内容不会覆盖 Runtime 自身的系统目录。节点路径授权属于管理员对模板的信任范围，与 kubelet 的设备分配分别管理。字段和预填建议见 [Helm 指南](https://github.com/ExplodingDragon/gitea-codespace/blob/main/charts/gitea-codespace/README.md#choose-a-workspace-runtime)。
+
+Agent 在创建和恢复时整理当前设备分配，将选中的 CDI 配置及手动映射合并为内部 Docker 使用的一个稳定 CDI 入口。来自节点 CDI 的设备和绑定挂载按 Runtime 中实际可见的路径转换；所需 hook 及其运行依赖也必须在 Runtime 中可用。稳定入口让已有 Dev Container 在恢复后使用新分配，设备准备错误通过当前操作上报；停止和删除使用已有运行状态清理资源。
 
 CDI 环境修改作用于容器初始进程。Agent 另将已选 CDI 规格和模板声明的设备环境加入远程环境，使标准生命周期、模板脚本、SSH 与 Web IDE 的 Docker Exec 取得相同分配。恢复时先重新探测基础环境，再应用当前设备环境，清除旧分配不再提供的变量。平台设备只注入主 Dev Container，Compose 辅助服务按仓库配置运行。
 
-标记为 GPU 的设备资源成为平台设备申请来源：`runArgs`、Compose `gpus` 和设备预留中语义为“全部 GPU”的写法统一指向已分配设备；另选数量或 ID 的请求明确失败。模板的“高级主机访问”用于补充 CDI 未描述的驱动文件、工具和分配环境，设备映射只转发外层 Pod 已获得的设备，并保护平台路径与环境变量。
+CDI 和模板中的数字附加组同时作用于容器初始进程与远程用户的命令，恢复时刷新平台管理的组成员关系，使普通用户仍能访问重新分配的设备。管理员按实际设备权限填写 GID，并使用容器内已有的用户名或 UID 作为 `remoteUser`；显式的 `user:group` 会使 Docker exec 忽略附加组，因此需要附加组时返回配置错误。
+
+标记为 GPU 的设备资源成为平台设备申请来源：`runArgs`、Compose `gpus` 和设备预留中语义为“全部 GPU”的写法统一指向已分配设备；另选数量或 ID 的请求明确失败。设备配置保护平台通信路径与环境变量，使设备访问和平台凭据各自保持明确范围。
 
 Native Runtime Pod 以 root 运行，使用 dockerd 所需的固定 capability、`seccomp=Unconfined` 和 `AppArmor=Unconfined`，再追加模板能力。管理页面展示固定能力并锁定为必需项，模板仅保存附加项。主 Dev Container 的 Docker 基础 capability、仓库 `capAdd` 和模板附加项按声明顺序合并去重，具体运行支持由节点内核及容器运行时决定。
 
@@ -130,11 +136,13 @@ Native Runtime Pod 以 root 运行，使用 dockerd 所需的固定 capability�
 
 - 模板就绪检查确认至少一个节点同时满足全部扩展资源；Runtime Pod 的设备 requests 与 limits 一致，实际分配由 Kubernetes 调度器和 kubelet 完成。
 - Native Runtime Pod 使用固定与附加能力并保持非 privileged；设备配额同时参与站点 ResourceQuota 和 Manager 创建容量检查。
-- CDI 只包含本次已分配设备，物理 ID 变化后保留稳定逻辑名称，已有 Dev Container 可恢复。
+- CDI 环境变量选择与设备节点选择均对应 Runtime 当前分配，节点匹配有歧义时明确失败；手动映射可在节点未提供 CDI 定义时使用。
+- 设备、挂载、环境和附加组合并到稳定 CDI 入口；恢复后物理分配可以变化，已有 Dev Container 使用当前分配。
+- Runtime 来源使用已有路径，节点来源仅挂载管理员明确授权的路径；节点挂载保留 Runtime 系统目录，平台通信路径与凭据保持有效。
 - 当前设备环境同时进入容器初始进程和平台 Docker Exec，恢复后已撤销的分配变量消失。
+- 普通用户在主进程、SSH、Web IDE 与生命周期命令中取得设备附加组，恢复后平台管理的组成员关系与当前分配一致。
 - Dockerfile 与 Compose 主服务获得相同平台设备配置，辅助服务保留仓库声明。
 - GPU 标记满足标准要求并统一“全部 GPU”写法；其他数量或 ID 选择明确失败，未标记时沿用标准 Docker 能力检查。
-- 高级主机访问只补充已分配设备的运行条件，平台通信路径与凭据保持有效。
 
 ### Kata USB 设备
 

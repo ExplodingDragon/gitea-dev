@@ -120,7 +120,7 @@ Kubernetes 端到端测试在专用测试集群中使用摘要固定的平台镜
 - 测试协议服务只实现端到端场景需要的 Gitea 行为，Manager 仍通过公开协议和真实网络连接访问它。
 - 测试结束后自动确认没有孤立资源。
 - Kata 验证首次块卷初始化，以及替换 Pod 后检查并挂载原文件系统的数据恢复行为。
-- Sysbox 验证隔离用户映射和文件系统 PVC；Native 验证 FUSE Device Plugin 分配、CDI 设备节点与分配环境能够进入 Dev Container。
+- Sysbox 验证隔离用户映射和文件系统 PVC；Native 使用本地 Device Plugin 验证 CDI 环境变量选择、设备节点选择和手动映射，覆盖普通用户设备读写、挂载、环境以及恢复后的分配和附加组变化。
 
 ## 完成标准
 
